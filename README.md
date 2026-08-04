@@ -5,7 +5,7 @@
 ## 当前能力
 
 - 来源：CSV、JSON、MySQL、Oracle、达梦 DM8、Gauss/openGauss、人大金仓 KingbaseES、PostgreSQL 只读查询；单次预览最多 1000 行。
-- 映射：推荐映射、逐字段确认、完整映射专家模式、转换与默认值。
+- 映射：推荐映射、逐字段确认、完整映射专家模式；支持可视化“旧值 → 新值”字典、默认值、大小写、空白清洗、整数/小数、布尔和日期标准化。
 - 校验：必填、长度、枚举、数字、条件必填和业务冲突检查。
 - 写入：通过 MySQL 原生驱动或企业数据库 ODBC 驱动，直接写入 `hi_bd_med`、`hi_bd_med_alias`、`hi_bd_med_unit`、`hi_bd_fac`、`hi_bd_med_pro`。
 - 可靠性：每条来源记录使用独立数据库事务，单条失败不影响其它记录；可仅重试失败记录。
@@ -40,6 +40,12 @@ Rust 单元测试：
 ```bash
 cd src-tauri
 cargo test --offline
+```
+
+前端转换规则测试：
+
+```bash
+npm test
 ```
 
 ## 数据库支持范围

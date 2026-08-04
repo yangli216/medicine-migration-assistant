@@ -439,7 +439,8 @@ button:disabled {
 .form-field select:focus,
 .form-field textarea:focus,
 .rule-row input:focus,
-.rule-row select:focus {
+.rule-row select:focus,
+.value-mapping-editor textarea:focus {
   border-color: var(--teal-600);
   box-shadow: 0 0 0 3px rgba(10, 154, 141, 0.09);
 }
@@ -930,7 +931,7 @@ button:disabled {
   transform: translateX(20px);
 }
 .rule-list {
-  max-height: 360px;
+  max-height: 520px;
   overflow: auto;
   border-top: 1px solid var(--line-soft);
 }
@@ -962,6 +963,63 @@ button:disabled {
 .rule-row select {
   height: 37px;
   font-size: 12px;
+}
+.value-mapping-editor {
+  grid-column: 1 / -1;
+  border: 1px solid #dbe5e7;
+  border-radius: 6px;
+  background: #f8fbfb;
+}
+.value-mapping-editor summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  cursor: pointer;
+  color: #536176;
+  font-size: 12px;
+  font-weight: 700;
+}
+.value-mapping-editor summary small {
+  color: var(--teal-700);
+}
+.value-mapping-editor > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 14px;
+  padding: 0 11px 11px;
+}
+.value-mapping-editor textarea {
+  grid-row: 1 / 3;
+  width: 100%;
+  min-height: 82px;
+  resize: vertical;
+  border: 1px solid #ccdadd;
+  border-radius: 6px;
+  padding: 9px 11px;
+  outline: 0;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.value-mapping-editor label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+  color: #59677b;
+  font-size: 12px;
+}
+.value-mapping-editor input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  accent-color: var(--teal-600);
+}
+.value-mapping-editor > div > small {
+  max-width: 230px;
+  line-height: 1.45;
 }
 .summary-cards {
   display: grid;

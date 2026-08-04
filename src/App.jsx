@@ -26,6 +26,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { command, demoRows, isDesktop, objectId } from "./api";
+import { applyFieldRule, parseValueMappings } from "./transforms";
 
 const steps = [
   "导入数据源",
@@ -831,16 +832,47 @@ export function App() {
     setStep(2);
   }
 
+  function fieldRulePreview(field) {
+    const sourceField = mapping[field.key];
+    if (!sourceField || !rows.length) return "";
+    const original = rows.find(
+      (row) => `${row[sourceField] ?? ""}`.trim() !== "",
+    )?.[sourceField];
+    if (original === undefined) return "";
+    const rule = rules[field.key] || {};
+    const converted = applyFieldRule(original, {
+      ...rule,
+      valueMappings: parseValueMappings(rule.valueMappingsText).mappings,
+    });
+    return `样例：${original} → ${converted ?? "空值"}`;
+  }
+
   async function prepareBatch() {
+    const invalidMapping = targetFields
+      .map((field) => ({
+        field,
+        parsed: parseValueMappings(rules[field.key]?.valueMappingsText),
+      }))
+      .find(({ parsed }) => parsed.invalidLines.length);
+    if (invalidMapping) {
+      return fail(
+        `${invalidMapping.field.label}的值映射第 ${invalidMapping.parsed.invalidLines.join("、")} 行格式不正确，请使用“旧值 = 新值”`,
+      );
+    }
     const mappings = targetFields
       .filter((field) => mapping[field.key] || rules[field.key]?.defaultValue)
-      .map((field) => ({
-        sourceField: mapping[field.key] || "",
-        targetField: field.key,
-        transform: rules[field.key]?.transform || "TRIM",
-        defaultValue: rules[field.key]?.defaultValue || "",
-        valueMappings: rules[field.key]?.valueMappings || {},
-      }));
+      .map((field) => {
+        const rule = rules[field.key] || {};
+        return {
+          sourceField: mapping[field.key] || "",
+          targetField: field.key,
+          transform: rule.transform || "TRIM",
+          defaultValue: rule.defaultValue || "",
+          valueMappings: parseValueMappings(rule.valueMappingsText).mappings,
+          valueMappingCaseInsensitive:
+            rule.valueMappingCaseInsensitive || false,
+        };
+      });
     const preparedRows = rows.map((row) => ({
       ...row,
       _sourceKey: row[sourceKey] ?? "",
@@ -1306,12 +1338,18 @@ export function App() {
                   <FloppyDisk size={21} />
                   <div>
                     <strong>字段转换</strong>
-                    <small>可为缺失字段设置固定值</small>
+                    <small>支持清洗、大小写、数值日期、默认值和值字典映射</small>
                   </div>
                 </div>
                 <div className="rule-list">
                   {targetFields
-                    .filter((field) => field.required || !mapping[field.key])
+                    .filter(
+                      (field) =>
+                        mapping[field.key] ||
+                        field.required ||
+                        rules[field.key]?.defaultValue ||
+                        rules[field.key]?.valueMappingsText,
+                    )
                     .map((field) => (
                       <div className="rule-row" key={field.key}>
                         <span>
@@ -1321,7 +1359,7 @@ export function App() {
                           </strong>
                           <small>
                             {mapping[field.key]
-                              ? `来自 ${mapping[field.key]}`
+                              ? `来自 ${mapping[field.key]}${fieldRulePreview(field) ? `；${fieldRulePreview(field)}` : ""}`
                               : "尚未匹配来源字段"}
                           </small>
                         </span>
@@ -1338,10 +1376,14 @@ export function App() {
                           }
                         >
                           <option value="TRIM">清理首尾空格</option>
+                          <option value="COLLAPSE_WHITESPACE">合并连续空格</option>
+                          <option value="REMOVE_WHITESPACE">移除全部空格</option>
                           <option value="INTEGER">转为整数</option>
                           <option value="DECIMAL">转为数字</option>
                           <option value="BOOLEAN_01">是/否转 1/0</option>
                           <option value="UPPER">转大写</option>
+                          <option value="LOWER">转小写</option>
+                          <option value="DATE_YYYY_MM_DD">日期转 YYYY-MM-DD</option>
                         </select>
                         <input
                           placeholder="缺失时使用默认值"
@@ -1356,6 +1398,57 @@ export function App() {
                             }))
                           }
                         />
+                        <details className="value-mapping-editor">
+                          <summary>
+                            <span>字段值映射（旧值 → 新值）</span>
+                            <small>
+                              {Object.keys(
+                                parseValueMappings(
+                                  rules[field.key]?.valueMappingsText,
+                                ).mappings,
+                              ).length || "未配置"}
+                            </small>
+                          </summary>
+                          <div>
+                            <textarea
+                              rows={4}
+                              placeholder={"西药 = 1\n中成药 = 2\n停用 = 0"}
+                              value={rules[field.key]?.valueMappingsText || ""}
+                              onChange={(event) =>
+                                setRules((current) => ({
+                                  ...current,
+                                  [field.key]: {
+                                    ...current[field.key],
+                                    valueMappingsText: event.target.value,
+                                  },
+                                }))
+                              }
+                            />
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={
+                                  rules[field.key]
+                                    ?.valueMappingCaseInsensitive || false
+                                }
+                                onChange={(event) =>
+                                  setRules((current) => ({
+                                    ...current,
+                                    [field.key]: {
+                                      ...current[field.key],
+                                      valueMappingCaseInsensitive:
+                                        event.target.checked,
+                                    },
+                                  }))
+                                }
+                              />
+                              英文字母忽略大小写
+                            </label>
+                            <small>
+                              每行一条，格式为“旧值 = 新值”；先执行值映射，再执行上方格式转换。
+                            </small>
+                          </div>
+                        </details>
                       </div>
                     ))}
                 </div>

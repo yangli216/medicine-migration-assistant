@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { applyFieldRule } from "./transforms";
 
 export const isDesktop =
   typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
@@ -215,16 +216,10 @@ function mockPrepare(request) {
   const rows = request.rows.map((raw, index) => {
     const normalized = {};
     request.mappings.forEach((mapping) => {
-      let value = raw[mapping.sourceField];
-      if (
-        (value === null || value === undefined || `${value}`.trim() === "") &&
-        mapping.defaultValue
-      )
-        value = mapping.defaultValue;
-      if (mapping.valueMappings && mapping.valueMappings[value] !== undefined)
-        value = mapping.valueMappings[value];
-      normalized[mapping.targetField] =
-        typeof value === "string" ? value.trim() : value;
+      normalized[mapping.targetField] = applyFieldRule(
+        raw[mapping.sourceField],
+        mapping,
+      );
     });
     const errors = [];
     [

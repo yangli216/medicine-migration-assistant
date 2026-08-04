@@ -63,6 +63,8 @@ pub struct FieldMapping {
     pub default_value: String,
     #[serde(default)]
     pub value_mappings: Map<String, Value>,
+    #[serde(default)]
+    pub value_mapping_case_insensitive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

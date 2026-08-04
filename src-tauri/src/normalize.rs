@@ -1,4 +1,5 @@
 use crate::model::{FieldMapping, TargetField};
+use chrono::NaiveDate;
 use serde_json::{Map, Number, Value};
 use std::collections::HashSet;
 
@@ -522,7 +523,7 @@ pub fn normalize(source: &Map<String, Value>, mappings: &[FieldMapping]) -> Map<
             value = Value::String(mapping.default_value.clone());
         }
         let lookup = value_text(&value);
-        if let Some(mapped) = mapping.value_mappings.get(&lookup) {
+        if let Some(mapped) = mapped_value(mapping, &lookup) {
             value = mapped.clone();
         }
         target.insert(
@@ -668,26 +669,84 @@ fn transform(value: Value, operation: &str) -> Value {
     match operation.trim().to_ascii_uppercase().as_str() {
         "UPPER" => Value::String(text.to_uppercase()),
         "LOWER" => Value::String(text.to_lowercase()),
-        "INTEGER" => text
-            .parse::<i64>()
+        "COLLAPSE_WHITESPACE" => {
+            Value::String(text.split_whitespace().collect::<Vec<_>>().join(" "))
+        }
+        "REMOVE_WHITESPACE" => Value::String(
+            text.chars()
+                .filter(|character| !character.is_whitespace())
+                .collect(),
+        ),
+        "INTEGER" => parse_integer(&text)
             .map(Value::from)
             .unwrap_or(Value::String(text)),
-        "DECIMAL" => text
+        "DECIMAL" => normalized_number(&text)
             .parse::<f64>()
             .ok()
             .and_then(Number::from_f64)
             .map(Value::Number)
             .unwrap_or(Value::String(text)),
-        "BOOLEAN_01" => Value::String(
-            if ["1", "true", "yes", "是", "y"].contains(&text.to_ascii_lowercase().as_str()) {
-                "1"
-            } else {
-                "0"
-            }
-            .into(),
-        ),
+        "BOOLEAN_01" => boolean_01(&text)
+            .map(|flag| Value::String(flag.into()))
+            .unwrap_or(Value::String(text)),
+        "DATE_YYYY_MM_DD" => normalize_date(&text)
+            .map(Value::String)
+            .unwrap_or(Value::String(text)),
         _ => Value::String(text),
     }
+}
+
+fn mapped_value<'a>(mapping: &'a FieldMapping, lookup: &str) -> Option<&'a Value> {
+    mapping.value_mappings.get(lookup).or_else(|| {
+        mapping
+            .value_mapping_case_insensitive
+            .then(|| {
+                mapping
+                    .value_mappings
+                    .iter()
+                    .find(|(source, _)| source.to_lowercase() == lookup.to_lowercase())
+                    .map(|(_, value)| value)
+            })
+            .flatten()
+    })
+}
+
+fn normalized_number(text: &str) -> String {
+    text.replace([',', '，'], "").replace(' ', "")
+}
+
+fn parse_integer(text: &str) -> Option<i64> {
+    let normalized = normalized_number(text);
+    normalized.parse::<i64>().ok().or_else(|| {
+        normalized
+            .parse::<f64>()
+            .ok()
+            .filter(|number| number.is_finite() && number.fract() == 0.0)
+            .and_then(|number| {
+                (number >= i64::MIN as f64 && number <= i64::MAX as f64).then_some(number as i64)
+            })
+    })
+}
+
+fn boolean_01(text: &str) -> Option<&'static str> {
+    let normalized = text.trim().to_lowercase();
+    if ["1", "true", "yes", "是", "y", "on", "启用", "有"].contains(&normalized.as_str()) {
+        Some("1")
+    } else if ["0", "false", "no", "否", "n", "off", "停用", "无"].contains(&normalized.as_str())
+    {
+        Some("0")
+    } else {
+        None
+    }
+}
+
+fn normalize_date(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    let date_part = trimmed.split([' ', 'T']).next().unwrap_or(trimmed);
+    ["%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y%m%d"]
+        .iter()
+        .find_map(|format| NaiveDate::parse_from_str(date_part, format).ok())
+        .map(|date| date.format("%Y-%m-%d").to_string())
 }
 
 fn require(data: &Map<String, Value>, key: &str, label: &str, errors: &mut Vec<String>) {
@@ -751,6 +810,49 @@ mod tests {
         assert_eq!(
             normalize(&source, &[mapping]).get("sdMed"),
             Some(&Value::String("1".into()))
+        );
+    }
+
+    #[test]
+    fn mapping_supports_case_insensitive_dictionary_and_common_transforms() {
+        let source = json!({
+            "FORM":"cap",
+            "NAME":"  阿莫西林   胶囊  ",
+            "FLAG":"未知",
+            "COUNT":"1,024.0",
+            "DATE":"2026/08/04 12:30:00"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let mappings: Vec<FieldMapping> = serde_json::from_value(json!([
+            {
+                "sourceField":"FORM","targetField":"sdDose","transform":"UPPER",
+                "valueMappings":{"CAP":"capsule"},"valueMappingCaseInsensitive":true
+            },
+            {"sourceField":"NAME","targetField":"naMed","transform":"COLLAPSE_WHITESPACE"},
+            {"sourceField":"FLAG","targetField":"fgMedRx","transform":"BOOLEAN_01"},
+            {"sourceField":"COUNT","targetField":"unitSaleFactor","transform":"INTEGER"},
+            {"sourceField":"DATE","targetField":"cdAppr","transform":"DATE_YYYY_MM_DD"}
+        ]))
+        .unwrap();
+        let normalized = normalize(&source, &mappings);
+        assert_eq!(
+            normalized.get("sdDose"),
+            Some(&Value::String("CAPSULE".into()))
+        );
+        assert_eq!(
+            normalized.get("naMed"),
+            Some(&Value::String("阿莫西林 胶囊".into()))
+        );
+        assert_eq!(
+            normalized.get("fgMedRx"),
+            Some(&Value::String("未知".into()))
+        );
+        assert_eq!(normalized.get("unitSaleFactor"), Some(&Value::from(1024)));
+        assert_eq!(
+            normalized.get("cdAppr"),
+            Some(&Value::String("2026-08-04".into()))
         );
     }
 

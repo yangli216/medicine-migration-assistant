@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 fn main() {
     if std::env::var_os("MEDICINE_MIGRATION_ORACLE_SMOKE_TEST").is_some() {
         match medicine_migration_assistant_lib::oracle_smoke_test_from_env() {
