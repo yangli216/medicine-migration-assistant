@@ -1,5 +1,6 @@
 {
   "bundle": {
-    "targets": ["nsis", "msi"]
+    "targets": ["nsis", "msi"],
+    "icon": ["icons/icon.ico"]
   }
 }
