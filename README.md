@@ -31,7 +31,7 @@ npm run desktop:build
 
 ### Windows EXE
 
-仓库提供 `.github/workflows/windows-build.yml`。进入 GitHub 仓库的 **Actions → Build Windows installer → Run workflow**，构建完成后下载 `medicine-migration-assistant-windows-x64`，其中包含 NSIS `.exe` 和 MSI 安装包。
+仓库提供 `.github/workflows/windows-build.yml`。进入 GitHub 仓库的 **Actions → Build Windows installer → Run workflow**，构建完成后下载 `medicine-migration-assistant-windows-x64`，其中包含可直接安装的 NSIS `.exe`。
 
 Windows 安装包不会携带 macOS Oracle 动态库。Oracle 连接需要在目标 Windows 电脑上安装与应用同为 64 位的 Oracle Instant Client 19c Basic/Basic Light 与 ODBC 驱动；MySQL 无需额外驱动，达梦、高斯、人大金仓和 PostgreSQL 使用各厂商 Windows 64 位 ODBC 驱动。
 
