@@ -1,0 +1,11 @@
+{
+  "bundle": {
+    "resources": {
+      "resources/oracle/instantclient_19_16/": "oracle/instantclient_19_16/"
+    },
+    "macOS": {
+      "signingIdentity": "-",
+      "hardenedRuntime": false
+    }
+  }
+}

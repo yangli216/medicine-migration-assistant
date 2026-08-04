@@ -1,0 +1,74 @@
+[
+  {
+    "id": "mysql-native",
+    "databaseKind": "mysql",
+    "title": "MySQL 原生驱动",
+    "version": "内置",
+    "defaultDriver": "",
+    "driverKeywords": [],
+    "defaultPort": 3306,
+    "delivery": "bundled",
+    "licenseNote": "随桌面应用内置，无需单独安装。",
+    "officialUrl": "https://www.mysql.com/"
+  },
+  {
+    "id": "oracle-instant-client-19c",
+    "databaseKind": "oracle",
+    "title": "Oracle Instant Client ODBC 19c",
+    "version": "19c · 按操作系统架构",
+    "defaultDriver": "Oracle 19 ODBC driver",
+    "driverKeywords": ["oracle", "instantclient_19"],
+    "defaultPort": 1521,
+    "delivery": "licensed-bundle",
+    "licenseNote": "macOS Intel 包内置 Oracle 官方 19.16 Basic Light 与 ODBC；Windows 版检测本机已安装的 Oracle 19c ODBC 驱动。",
+    "officialUrl": "https://www.oracle.com/database/technologies/instant-client/downloads.html"
+  },
+  {
+    "id": "dm8-odbc",
+    "databaseKind": "dameng",
+    "title": "达梦 DM8 通用 ODBC",
+    "version": "通用",
+    "defaultDriver": "DM8 ODBC DRIVER",
+    "driverKeywords": ["dm8", "dameng", "达梦"],
+    "defaultPort": 5236,
+    "delivery": "vendor-import",
+    "licenseNote": "预置配置；驱动二进制从达梦官方客户端或项目授权安装介质导入。",
+    "officialUrl": "https://eco.dameng.com/download/"
+  },
+  {
+    "id": "opengauss-odbc",
+    "databaseKind": "opengauss",
+    "title": "openGauss 通用 ODBC",
+    "version": "6.0 LTS",
+    "defaultDriver": "openGauss",
+    "driverKeywords": ["opengauss", "gauss"],
+    "defaultPort": 5432,
+    "delivery": "open-source-pack",
+    "licenseNote": "预置官方通用驱动配置，可按目标系统加入离线驱动包。",
+    "officialUrl": "https://opengauss.org/en/download/"
+  },
+  {
+    "id": "kingbase-odbc",
+    "databaseKind": "kingbase",
+    "title": "KingbaseES 通用 ODBC",
+    "version": "8.6",
+    "defaultDriver": "KingbaseES 8.6 ODBC Driver",
+    "driverKeywords": ["kingbase", "金仓"],
+    "defaultPort": 54321,
+    "delivery": "vendor-import",
+    "licenseNote": "预置配置；驱动二进制从人大金仓客户端或项目授权安装介质导入。",
+    "officialUrl": "https://help.kingbase.com.cn/"
+  },
+  {
+    "id": "postgresql-psqlodbc",
+    "databaseKind": "postgresql",
+    "title": "PostgreSQL Unicode ODBC",
+    "version": "17.x",
+    "defaultDriver": "PostgreSQL Unicode(x64)",
+    "driverKeywords": ["postgresql", "psql"],
+    "defaultPort": 5432,
+    "delivery": "open-source-pack",
+    "licenseNote": "预置 psqlODBC 通用驱动配置，可按目标系统加入离线驱动包。",
+    "officialUrl": "https://odbc.postgresql.org/"
+  }
+]
