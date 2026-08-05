@@ -90,7 +90,7 @@ pub async fn preview_source(request: &SourcePreviewRequest) -> Result<SourcePrev
     }
     let started = Instant::now();
     let pool = connect_mysql(&request.connection).await?;
-    let limit = request.limit.clamp(1, 1000);
+    let limit = request.limit.clamp(1, 10_000);
     let source_query = request.query.trim().trim_end_matches(';');
     let preview_sql = format!(
         "SELECT * FROM ({}) migration_source_preview LIMIT {}",

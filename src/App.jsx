@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
+  ArrowCounterClockwise,
   Check,
   CheckCircle,
   Clock,
@@ -27,14 +28,24 @@ import {
 } from "@phosphor-icons/react";
 import { command, demoRows, isDesktop, objectId } from "./api";
 import { applyFieldRule, parseValueMappings } from "./transforms";
+import {
+  buildDictionaryValueMappings,
+  dictionaryItemValue,
+  mergeValueMappingText,
+  recommendCostMergeMappings,
+} from "./dictionary";
 
 const steps = [
+  "连接新系统",
+  "选择任务",
   "导入数据源",
   "识别数据",
   "匹配字段",
-  "校验与修正",
-  "执行与审计",
+  "校验修正",
+  "执行审计",
 ];
+
+const initialTargetSystemUrl = "http://10.17.18.88:8000/rbmh-phis/";
 
 const targetFields = [
   {
@@ -50,16 +61,9 @@ const targetFields = [
     label: "物品类型编码",
     required: true,
     group: "基本信息",
-    hint: "1西药、2中成药、3草药、4保健品、5耗材、9其他",
+    hint: "以当前租户 rbmh.base.med.articleType 实时字典为准",
     aliases: ["DRUG_TYPE", "SD_MED", "YPLX", "物品类型"],
-  },
-  {
-    key: "idCstmg",
-    label: "费用归并主键",
-    required: true,
-    group: "基本信息",
-    hint: "新系统费用归并记录的24位主键",
-    aliases: ["CSTMG_ID", "ID_CSTMG", "FYGB", "费用归并"],
+    dictionaryId: "rbmh.base.med.articleType",
   },
   {
     key: "sdDose",
@@ -68,6 +72,7 @@ const targetFields = [
     group: "基本信息",
     hint: "需映射为新系统剂型字典编码",
     aliases: ["FORM_CODE", "DOSE_FORM", "JXDM", "剂型"],
+    dictionaryId: "rbmh.base.med.doseType",
   },
   {
     key: "unitPre",
@@ -108,6 +113,7 @@ const targetFields = [
     group: "用药规则",
     hint: "草药、耗材可不填",
     aliases: ["USAGE_CODE", "DFT_USAGE", "GYFF", "用法"],
+    dictionaryId: "rbmh.base.med.usage",
   },
   {
     key: "dftFreq",
@@ -116,6 +122,7 @@ const targetFields = [
     group: "用药规则",
     hint: "草药、耗材可不填",
     aliases: ["FREQ_CODE", "DFT_FREQ", "PCDM", "频次"],
+    dictionaryId: "rbmh.base.freq",
   },
   {
     key: "dftDoseOnce",
@@ -132,6 +139,7 @@ const targetFields = [
     group: "用药规则",
     hint: "需映射为新系统取整策略字典编码",
     aliases: ["ROUND_CODE", "SD_ROUND", "QZCL", "取整策略"],
+    dictionaryId: "rbmh.base.med.roundingStrategy",
   },
   {
     key: "sdDps",
@@ -140,6 +148,7 @@ const targetFields = [
     group: "用药规则",
     hint: "需映射为新系统发药方式字典编码",
     aliases: ["DISPENSE_CODE", "SD_DPS", "FYFS", "发药方式"],
+    dictionaryId: "rbmh.base.med.dispensingMethod",
   },
   {
     key: "idFac",
@@ -168,17 +177,17 @@ const targetFields = [
   {
     key: "unitSale",
     label: "零售包装单位",
-    required: true,
+    required: false,
     group: "包装价格",
-    hint: "例如盒、瓶、支",
+    hint: "存在商品信息时必填，例如盒、瓶、支",
     aliases: ["SALE_UNIT", "PACK_UNIT", "UNIT_SALE", "包装单位"],
   },
   {
     key: "unitSaleFactor",
     label: "包装系数",
-    required: true,
+    required: false,
     group: "包装价格",
-    hint: "必须为正整数",
+    hint: "存在商品信息时必填，必须为正整数",
     aliases: ["PACK_FACTOR", "UNIT_FACTOR", "BZXS", "包装系数"],
   },
   {
@@ -192,17 +201,17 @@ const targetFields = [
   {
     key: "pricePur",
     label: "进货价格",
-    required: true,
+    required: false,
     group: "包装价格",
-    hint: "允许为0，不允许负数",
+    hint: "存在商品信息时必填，允许为0，不允许负数",
     aliases: ["BUY_PRICE", "PURCHASE_PRICE", "PRICE_PUR", "进货价"],
   },
   {
     key: "priceSale",
     label: "零售价格",
-    required: true,
+    required: false,
     group: "包装价格",
-    hint: "允许为0，不允许负数",
+    hint: "存在商品信息时必填，允许为0，不允许负数",
     aliases: ["RETAIL_PRICE", "SALE_PRICE", "PRICE_SALE", "零售价"],
   },
   {
@@ -236,6 +245,7 @@ const targetFields = [
     group: "监管属性",
     hint: "需映射为新系统基药类型字典编码",
     aliases: ["BASIC_DRUG_TYPE", "SD_BAS_MED", "JYLX", "基药类型"],
+    dictionaryId: "rbmh.base.med.baseMed",
   },
   {
     key: "fgMedRx",
@@ -244,6 +254,7 @@ const targetFields = [
     group: "监管属性",
     hint: "统一转换为0否、1是",
     aliases: ["RX_FLAG", "FG_MED_RX", "CFYP", "处方药品"],
+    dictionaryId: "rbmh.base.med.prescriptiondrugIdentification",
   },
   {
     key: "sdChrgitmLv",
@@ -252,6 +263,7 @@ const targetFields = [
     group: "监管属性",
     hint: "原模板“档次”，按新系统字典编码接入",
     aliases: ["CHARGE_LEVEL", "SD_CHRGITM_LV", "YPDC", "档次"],
+    dictionaryId: "phis.medicareLevel",
   },
   {
     key: "sdStorage",
@@ -260,6 +272,7 @@ const targetFields = [
     group: "监管属性",
     hint: "需映射为新系统储藏字典编码",
     aliases: ["STORAGE_CODE", "SD_STORAGE", "YPCC", "药品储藏"],
+    dictionaryId: "phis.storageType",
   },
   {
     key: "sdSpeMed",
@@ -268,6 +281,79 @@ const targetFields = [
     group: "监管属性",
     hint: "需映射为新系统特殊药品字典编码",
     aliases: ["SPECIAL_DRUG_TYPE", "SD_SPE_MED", "TSYP", "特殊药品"],
+    dictionaryId: "rbmh.base.med.sdSpeMed",
+  },
+  {
+    key: "sdAllergy",
+    label: "过敏类别编码",
+    required: false,
+    group: "用药规则",
+    hint: "来自 HiBdMed 的过敏类别标准字典",
+    aliases: ["ALLERGY_CODE", "SD_ALLERGY", "GMLB", "过敏类别"],
+    dictionaryId: "rbmh.base.med.sdAllergy",
+  },
+  {
+    key: "fgAntiAppr",
+    label: "抗菌药物审批标志",
+    required: false,
+    group: "抗菌药物",
+    hint: "按新系统是否字典转换为0/1",
+    aliases: ["ANTI_APPROVAL", "FG_ANTI_APPR", "KJYPSP", "抗菌审批"],
+    dictionaryId: "sys.sd.yesOrNo",
+  },
+  {
+    key: "sdProdPlac",
+    label: "产地类别编码",
+    required: false,
+    group: "厂家商品",
+    hint: "按新系统国产/进口产地类别字典转换",
+    aliases: ["ORIGIN_TYPE", "SD_PROD_PLAC", "CDLB", "产地类别"],
+    dictionaryId: "rbmh.base.med.drugGrade",
+  },
+  {
+    key: "fgPois",
+    label: "毒麻药品标志",
+    required: false,
+    group: "监管属性",
+    hint: "按新系统是否字典转换为0/1",
+    aliases: ["POISON_FLAG", "FG_POIS", "DMBS", "毒麻标志"],
+    dictionaryId: "sys.sd.yesOrNo",
+  },
+  {
+    key: "fgAnti",
+    label: "抗菌药物标志",
+    required: false,
+    group: "抗菌药物",
+    hint: "按新系统是否字典转换为0/1",
+    aliases: ["ANTIBIOTIC_FLAG", "FG_ANTI", "KJYWBS", "抗菌标志"],
+    dictionaryId: "sys.sd.yesOrNo",
+  },
+  {
+    key: "fgTcd",
+    label: "中药饮片标志",
+    required: false,
+    group: "监管属性",
+    hint: "按新系统是否字典转换为0/1",
+    aliases: ["TCM_DECOCTION_FLAG", "FG_TCD", "ZYYPBS", "中药饮片"],
+    dictionaryId: "sys.sd.yesOrNo",
+  },
+  {
+    key: "fgSingle",
+    label: "允许单开标志",
+    required: false,
+    group: "用药规则",
+    hint: "按新系统是否字典转换为0/1",
+    aliases: ["SINGLE_FLAG", "FG_SINGLE", "YXDK", "允许单开"],
+    dictionaryId: "sys.sd.yesOrNo",
+  },
+  {
+    key: "fgRegister",
+    label: "注册证管理标志",
+    required: false,
+    group: "监管属性",
+    hint: "按新系统注册证管理字典转换",
+    aliases: ["REGISTER_FLAG", "FG_REGISTER", "ZCZGL", "需要注册"],
+    dictionaryId: "phis.ifNeedRegister",
   },
   {
     key: "limitAntiDay",
@@ -365,8 +451,15 @@ function statusMeta(status) {
       FAILED: ["失败", "danger"],
       PARTIAL: ["部分完成", "warning"],
       SKIPPED: ["已跳过", "muted"],
+      UNDONE: ["已撤销", "muted"],
+      UNDO_PARTIAL: ["部分撤销", "warning"],
     }[status] || [status || "未开始", "muted"]
   );
+}
+
+function diffValue(value) {
+  if (value === null || value === undefined || `${value}` === "") return "（空）";
+  return `${value}`;
 }
 
 function Stepper({ active }) {
@@ -388,7 +481,7 @@ function Stepper({ active }) {
   );
 }
 
-function Header({ runtime }) {
+function Header({ runtime, auth }) {
   return (
     <header className="topbar">
       <div className="brand">
@@ -411,7 +504,7 @@ function Header({ runtime }) {
       </div>
       <button className="user-menu">
         <UserCircle size={27} weight="fill" />
-        <span>实施人员</span>
+        <span>{auth ? `${auth.userName} · ${auth.roleName}` : "未登录"}</span>
       </button>
     </header>
   );
@@ -703,11 +796,25 @@ export function App() {
     isDesktop ? "tauri-rust" : "browser-preview",
   );
   const [step, setStep] = useState(0);
+  const [targetSystemUrl, setTargetSystemUrl] = useState(
+    initialTargetSystemUrl,
+  );
+  const [targetSystemProbe, setTargetSystemProbe] = useState(null);
+  const [loginTenantId, setLoginTenantId] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [targetAuth, setTargetAuth] = useState(null);
+  const [dictionaryCatalog, setDictionaryCatalog] = useState(null);
+  const [costMergeCatalog, setCostMergeCatalog] = useState(null);
+  const [costMergeMappings, setCostMergeMappings] = useState({});
+  const [migrationType, setMigrationType] = useState("MEDICINE_BASE");
   const [sourceMode, setSourceMode] = useState("file");
   const [sourceProfile, setSourceProfile] = useState(initialProfile);
+  const [legacyInspection, setLegacyInspection] = useState(null);
+  const [legacyScope, setLegacyScope] = useState("USED_ACTIVE");
   const [targetProfile, setTargetProfile] = useState(initialProfile);
   const [query, setQuery] = useState("SELECT * FROM T_DRUG_INFO");
   const [sourceName, setSourceName] = useState("尚未选择数据源");
+  const [sourceDescription, setSourceDescription] = useState("");
   const [rows, setRows] = useState([]);
   const [columns, setColumns] = useState([]);
   const [sourceKey, setSourceKey] = useState("");
@@ -716,11 +823,12 @@ export function App() {
   const [fieldIndex, setFieldIndex] = useState(0);
   const [expert, setExpert] = useState(false);
   const [allowCreateFactory, setAllowCreateFactory] = useState(false);
-  const [conflictStrategy, setConflictStrategy] = useState("REUSE");
+  const [conflictStrategy, setConflictStrategy] = useState("INCREMENTAL");
   const [batchDetail, setBatchDetail] = useState(null);
+  const [overwritePreview, setOverwritePreview] = useState(null);
+  const [selectedOverwriteRowIds, setSelectedOverwriteRowIds] = useState([]);
   const [tenantId, setTenantId] = useState("");
   const [operatorId, setOperatorId] = useState("");
-  const [organizationId, setOrganizationId] = useState("");
   const [activeResultTab, setActiveResultTab] = useState("rows");
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState(null);
@@ -740,6 +848,21 @@ export function App() {
   }, []);
 
   const currentField = targetFields[fieldIndex];
+  const dictionariesById = useMemo(
+    () =>
+      Object.fromEntries(
+        (dictionaryCatalog?.dictionaries || []).map((dictionary) => [
+          dictionary.dicId,
+          dictionary,
+        ]),
+      ),
+    [dictionaryCatalog],
+  );
+  const currentDictionary = currentField?.dictionaryId
+    ? dictionariesById[currentField.dictionaryId]
+    : null;
+  const articleTypeDictionary =
+    dictionariesById["rbmh.base.med.articleType"] || null;
   const mappedCount = targetFields.filter(
     (field) => mapping[field.key] || rules[field.key]?.defaultValue,
   ).length;
@@ -761,13 +884,82 @@ export function App() {
       "danger",
     );
 
-  function acceptData(data, name) {
+  async function probeTargetSystem() {
+    setBusy("target-system-probe");
+    setTargetSystemProbe(null);
+    setTargetAuth(null);
+    setDictionaryCatalog(null);
+    setCostMergeCatalog(null);
+    setCostMergeMappings({});
+    try {
+      const result = await command("probe_target_system", {
+        request: { baseUrl: targetSystemUrl },
+      });
+      setTargetSystemUrl(result.baseUrl);
+      setTargetSystemProbe(result);
+      notify(`${result.message} · ${result.latencyMs}ms`);
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function loginTargetSystem(event) {
+    event?.preventDefault();
+    if (!targetSystemProbe) return fail("请先验证新系统地址");
+    setBusy("target-system-login");
+    try {
+      const result = await command("login_target_system", {
+        request: {
+          baseUrl: targetSystemProbe.baseUrl,
+          tenantId: loginTenantId,
+          loginName: "system",
+          password: loginPassword,
+        },
+      });
+      const [catalog, costMerges] = await Promise.all([
+        command("load_target_dictionaries"),
+        command("load_medicine_cost_merges"),
+      ]);
+      const articleTypes = catalog.dictionaries.find(
+        (dictionary) => dictionary.dicId === "rbmh.base.med.articleType",
+      );
+      setDictionaryCatalog(catalog);
+      setCostMergeCatalog(costMerges);
+      setCostMergeMappings(
+        recommendCostMergeMappings(articleTypes?.items || [], costMerges.items),
+      );
+      setTargetAuth(result);
+      setTenantId(result.tenantId);
+      setOperatorId(result.userId);
+      setLoginPassword("");
+      notify(
+        `${result.message}；${catalog.message}；${costMerges.message}${catalog.warnings?.length ? `（${catalog.warnings.length} 个可选字典暂不可用）` : ""}`,
+      );
+    } catch (error) {
+      setTargetAuth(null);
+      setDictionaryCatalog(null);
+      setCostMergeCatalog(null);
+      setCostMergeMappings({});
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function acceptData(data, name, options = {}) {
     if (!data.length) return fail("文件中没有可识别的数据行");
     const detectedColumns = Object.keys(data[0]);
     setRows(data);
     setColumns(detectedColumns);
     setSourceName(name);
-    setSourceKey(detectedColumns[0] || "");
+    setSourceDescription(options.description || name);
+    setSourceKey(
+      options.sourceKey && detectedColumns.includes(options.sourceKey)
+        ? options.sourceKey
+        : detectedColumns[0] || "",
+    );
     const auto = {};
     targetFields.forEach((field) => {
       const best = detectedColumns
@@ -776,7 +968,7 @@ export function App() {
       if (best?.score >= 55) auto[field.key] = best.column;
     });
     setMapping(auto);
-    setStep(1);
+    setStep(3);
     notify(`已读取 ${data.length} 行、${detectedColumns.length} 个字段`);
   }
 
@@ -801,9 +993,12 @@ export function App() {
       const preview = await command("preview_source", {
         request: { connection: sourceProfile, query, limit: 500 },
       });
+      if (preview.truncated)
+        return fail("自定义查询结果超过500行，请收窄范围或使用 PHIS27 自动模板");
       acceptData(
         preview.rows,
         `${databaseKinds[sourceProfile.kind]?.label || sourceProfile.kind} · ${sourceProfile.database} · 自定义只读查询`,
+        { description: query },
       );
       notify(`${checked.message}，已预览 ${preview.rows.length} 行`);
     } catch (error) {
@@ -827,9 +1022,66 @@ export function App() {
     }
   }
 
+  async function inspectPhis27Source() {
+    setBusy("phis27-inspect");
+    setLegacyInspection(null);
+    try {
+      const checked = await command("test_database_connection", {
+        profile: sourceProfile,
+      });
+      const inspection = await command("inspect_phis27_source", {
+        profile: sourceProfile,
+      });
+      setLegacyInspection(inspection);
+      const recommended = inspection.scopes?.find((scope) => scope.recommended);
+      if (recommended) setLegacyScope(recommended.id);
+      if (!inspection.detected) return fail(inspection.message);
+      notify(`${checked.message}；${inspection.message}`);
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function loadPhis27Medicine() {
+    if (!legacyInspection?.detected) return fail("请先识别 PHIS27 数据结构");
+    const selected = legacyInspection.scopes.find(
+      (scope) => scope.id === legacyScope,
+    );
+    setBusy("phis27-load");
+    try {
+      const preview = await command("load_phis27_medicine", {
+        request: {
+          connection: sourceProfile,
+          scope: legacyScope,
+          limit: 10000,
+        },
+      });
+      if (preview.truncated)
+        return fail("当前范围超过单批10,000行，请缩小范围后再读取");
+      setAllowCreateFactory(true);
+      acceptData(
+        preview.rows,
+        `PHIS27 · ${legacyInspection.schema} · ${selected?.label || legacyScope}`,
+        {
+          sourceKey: "SOURCE_KEY",
+          description: `PHIS27内置模板:${legacyScope}; schema=${legacyInspection.schema}`,
+        },
+      );
+      notify(
+        `已按安全模板读取 ${preview.rows.length} 行，来源主键使用 YPXH:YPCD`,
+      );
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
   function beginMapping() {
     setFieldIndex(0);
-    setStep(2);
+    setStep(4);
   }
 
   function fieldRulePreview(field) {
@@ -845,6 +1097,37 @@ export function App() {
       valueMappings: parseValueMappings(rule.valueMappingsText).mappings,
     });
     return `样例：${original} → ${converted ?? "空值"}`;
+  }
+
+  function dictionaryForField(field) {
+    return field?.dictionaryId ? dictionariesById[field.dictionaryId] : null;
+  }
+
+  function autoMapDictionary(field) {
+    const dictionary = dictionaryForField(field);
+    const sourceField = mapping[field.key];
+    if (!dictionary || !sourceField) {
+      return fail("请先为该目标字段选择老系统来源字段");
+    }
+    const additions = buildDictionaryValueMappings(
+      rows.map((row) => row[sourceField]),
+      dictionary.items,
+    );
+    const count = Object.keys(additions).length;
+    if (!count) {
+      return fail("没有找到可安全自动匹配的字典名称或编码，请人工确认");
+    }
+    setRules((current) => ({
+      ...current,
+      [field.key]: {
+        ...current[field.key],
+        valueMappingsText: mergeValueMappingText(
+          current[field.key]?.valueMappingsText,
+          additions,
+        ),
+      },
+    }));
+    notify(`已为“${field.label}”生成 ${count} 条目标字典映射`);
   }
 
   async function prepareBatch() {
@@ -884,15 +1167,18 @@ export function App() {
           batchName: `${sourceName}-药品迁移`,
           sourceType: sourceMode === "database" ? "DATABASE" : "FILE",
           sourceName,
-          sourceDescription: query,
+          sourceDescription: sourceDescription || query,
           conflictStrategy,
           allowCreateFactory,
           idempotencyKey: objectId(),
           mappings,
+          costMergeMappings,
           rows: preparedRows,
         },
       });
       setBatchDetail(detail);
+      setOverwritePreview(null);
+      setSelectedOverwriteRowIds([]);
       notify(`校验完成：${detail.batch.validCount} 行可迁移`);
     } catch (error) {
       fail(error);
@@ -920,10 +1206,39 @@ export function App() {
     }
   }
 
+  async function previewOverwrite() {
+    if (!batchDetail) return;
+    setBusy("overwrite-preview");
+    try {
+      const preview = await command("preview_overwrite_batch", {
+        request: {
+          batchId: batchDetail.batch.batchId,
+          target: targetProfile,
+        },
+      });
+      setOverwritePreview(preview);
+      setSelectedOverwriteRowIds(
+        preview.rows
+          .filter((row) => row.action !== "UNCHANGED")
+          .map((row) => row.rowId),
+      );
+      notify(preview.message);
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function execute(failedOnly = false) {
     if (!batchDetail) return;
     if (!tenantId.trim() || !operatorId.trim())
       return fail("请填写新系统租户 ID 和操作人 ID");
+    const overwrite = batchDetail.batch.conflictStrategy === "OVERWRITE";
+    if (overwrite && !overwritePreview)
+      return fail("覆盖迁移必须先生成并确认目标字段差异");
+    if (overwrite && !selectedOverwriteRowIds.length)
+      return fail("请至少勾选一条需要执行的记录");
     setBusy(failedOnly ? "retry" : "execute");
     try {
       const detail = await command("execute_migration_batch", {
@@ -933,12 +1248,42 @@ export function App() {
           failedOnly,
           tenantId,
           operatorId,
-          organizationId,
+          organizationId: "",
+          selectedRowIds: overwrite ? selectedOverwriteRowIds : [],
+          overwritePreviewConfirmed: overwrite && Boolean(overwritePreview),
         },
       });
       setBatchDetail(detail);
-      setStep(4);
+      setStep(6);
       notify(failedOnly ? "失败行重试完成" : "迁移执行完成");
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function undoBatch() {
+    if (!batchDetail) return;
+    const confirmed = window.confirm(
+      "仅会删除本批次由工具新增、且尚未被后续数据引用的记录；复用数据不会删除。确认撤销？",
+    );
+    if (!confirmed) return;
+    setBusy("undo");
+    try {
+      const detail = await command("undo_migration_batch", {
+        request: {
+          batchId: batchDetail.batch.batchId,
+          target: targetProfile,
+        },
+      });
+      setBatchDetail(detail);
+      setActiveResultTab("audit");
+      notify(
+        detail.batch.status === "UNDONE"
+          ? "该批次新增数据已安全撤销"
+          : "撤销已完成；有后续引用的数据已保留，请查看审计日志",
+      );
     } catch (error) {
       fail(error);
     } finally {
@@ -948,13 +1293,267 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <Header runtime={runtime} />
+      <Header runtime={runtime} auth={targetAuth} />
       <Stepper active={step} />
       <main className="workspace">
         {step === 0 && (
+          <section className="screen access-screen">
+            <div className="screen-heading">
+              <span className="eyebrow">第 1 步 · 新系统身份确认</span>
+              <h1>先连接要迁入的新系统</h1>
+              <p>
+                地址可用、取得 system 租户管理员角色并成功建立 tk 登录会话后，才开放数据迁移功能。密码和 tk 仅在本次运行内存中使用。
+              </p>
+            </div>
+
+            <div className="access-grid">
+              <div className="access-card">
+                <div className="access-card__number">1</div>
+                <div className="access-card__body">
+                  <div className="section-title">
+                    <Plugs size={21} weight="duotone" />
+                    <div>
+                      <strong>验证新系统地址</strong>
+                      <small>检查服务是否可以从当前电脑访问</small>
+                    </div>
+                  </div>
+                  <div className="access-inline-form">
+                    <Field label="新系统访问地址" wide>
+                      <input
+                        value={targetSystemUrl}
+                        onChange={(event) => {
+                          setTargetSystemUrl(event.target.value);
+                          setTargetSystemProbe(null);
+                          setTargetAuth(null);
+                          setDictionaryCatalog(null);
+                          setCostMergeCatalog(null);
+                          setCostMergeMappings({});
+                        }}
+                        placeholder="http://服务器:端口/rbmh-phis"
+                        spellCheck="false"
+                      />
+                    </Field>
+                    <button
+                      className="button button--secondary"
+                      disabled={busy === "target-system-probe"}
+                      onClick={probeTargetSystem}
+                    >
+                      <Plugs size={19} />
+                      {busy === "target-system-probe"
+                        ? "正在验证…"
+                        : "验证地址"}
+                    </button>
+                  </div>
+                  {targetSystemProbe && (
+                    <div className="access-result access-result--success">
+                      <CheckCircle size={19} weight="fill" />
+                      <div>
+                        <strong>地址可用</strong>
+                        <span>
+                          HTTP {targetSystemProbe.statusCode} · {targetSystemProbe.latencyMs}ms
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {targetSystemUrl.trim().toLowerCase().startsWith("http://") && (
+                    <div className="access-result access-result--warning">
+                      <Warning size={19} weight="fill" />
+                      <div>
+                        <strong>当前使用内网 HTTP</strong>
+                        <span>MD5 仅符合登录接口协议，不等同于传输加密；正式环境建议启用 HTTPS。</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <form
+                className={`access-card ${!targetSystemProbe ? "access-card--locked" : ""}`}
+                onSubmit={loginTargetSystem}
+              >
+                <div className="access-card__number">2</div>
+                <div className="access-card__body">
+                  <div className="section-title">
+                    <LockKey size={21} weight="duotone" />
+                    <div>
+                      <strong>租户管理员认证与角色登录</strong>
+                      <small>依次调用 myRoles、myApps，仅允许 system 账号</small>
+                    </div>
+                  </div>
+                  <div className="auth-form-grid">
+                    <Field label="租户编码">
+                      <input
+                        value={loginTenantId}
+                        disabled={!targetSystemProbe || Boolean(targetAuth)}
+                        onChange={(event) => setLoginTenantId(event.target.value)}
+                        placeholder="例如 cszzyzh"
+                        autoComplete="organization"
+                      />
+                    </Field>
+                    <Field label="登录账号">
+                      <input value="system" disabled aria-label="登录账号" />
+                    </Field>
+                    <Field label="system 密码" wide>
+                      <div className="password-input">
+                        <LockKey size={17} />
+                        <input
+                          type="password"
+                          value={loginPassword}
+                          disabled={!targetSystemProbe || Boolean(targetAuth)}
+                          onChange={(event) => setLoginPassword(event.target.value)}
+                          placeholder="请输入 system 密码"
+                          autoComplete="current-password"
+                        />
+                      </div>
+                    </Field>
+                  </div>
+                  {!targetAuth ? (
+                    <button
+                      className="button button--primary button--wide"
+                      type="submit"
+                      disabled={
+                        !targetSystemProbe || busy === "target-system-login"
+                      }
+                    >
+                      <ShieldCheck size={19} />
+                      {busy === "target-system-login"
+                        ? "正在认证…"
+                        : "认证并建立 tk 登录会话"}
+                    </button>
+                  ) : (
+                    <div className="access-result access-result--success auth-result">
+                      <ShieldCheck size={20} weight="fill" />
+                      <div>
+                        <strong>
+                          {targetAuth.tenantName || targetAuth.tenantId}
+                        </strong>
+                        <span>
+                          {targetAuth.userName} · {targetAuth.roleName} · {targetAuth.roleCd}
+                        </span>
+                        {dictionaryCatalog && (
+                          <span>
+                            已同步 {dictionaryCatalog.dictionaries.length} 个药品标准字典
+                            {dictionaryCatalog.warnings?.length
+                              ? ` · ${dictionaryCatalog.warnings.length} 个可选字典待处理`
+                              : ""}
+                          </span>
+                        )}
+                        {costMergeCatalog && (
+                          <span>已同步 {costMergeCatalog.items.length} 个费用归并项目</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </form>
+            </div>
+
+            <div className="security-banner">
+              <ShieldCheck size={20} weight="fill" />
+              <div>
+                <strong>双重门禁</strong>
+                <span>
+                  前端固定 system，桌面后端会再次检查账号、租户、角色编码、启用状态和 tk 下发结果，后续服务请求自动携带 Cookie。
+                </span>
+              </div>
+            </div>
+            <div className="screen-actions screen-actions--end">
+              <button
+                className="button button--primary"
+                disabled={!targetAuth}
+                onClick={() => setStep(1)}
+              >
+                认证完成，选择迁移任务
+                <ArrowRight />
+              </button>
+            </div>
+          </section>
+        )}
+
+        {step === 1 && (
+          <section className="screen task-screen">
+            <div className="screen-heading screen-heading--row">
+              <div>
+                <span className="eyebrow">第 2 步 · 迁移任务</span>
+                <h1>这次要迁移什么？</h1>
+                <p>两类任务相互独立，库存初始化必须建立在药品基础信息已经同步的前提下。</p>
+              </div>
+              <div className="source-summary">
+                <ShieldCheck size={24} />
+                <div>
+                  <small>已认证新系统</small>
+                  <strong>
+                    {targetAuth?.tenantName || targetAuth?.tenantId} · system
+                  </strong>
+                </div>
+              </div>
+            </div>
+            <div className="task-grid">
+              <button
+                className={`task-card ${migrationType === "MEDICINE_BASE" ? "task-card--selected" : ""}`}
+                onClick={() => setMigrationType("MEDICINE_BASE")}
+              >
+                <span className="task-card__icon">
+                  <FirstAidKit size={28} weight="duotone" />
+                </span>
+                <span className="task-card__copy">
+                  <small>任务 A · 可用</small>
+                  <strong>药品基础信息同步</strong>
+                  <p>
+                    同步通用药品、单位、别名、生产厂家和药品商品信息，为后续机构库存初始化建立主键对照。
+                  </p>
+                  <em>全局数据 · 支持预校验、幂等复用和失败重试</em>
+                </span>
+                <span className="task-card__check">
+                  {migrationType === "MEDICINE_BASE" && (
+                    <Check size={17} weight="bold" />
+                  )}
+                </span>
+              </button>
+              <button className="task-card task-card--disabled" disabled>
+                <span className="task-card__icon">
+                  <Database size={28} weight="duotone" />
+                </span>
+                <span className="task-card__copy">
+                  <small>任务 B · 下一轮接入</small>
+                  <strong>机构库房初始化</strong>
+                  <p>
+                    选择具体机构、药库或药房，在基础药品匹配完整后按批次同步库存数量、价格、批号和效期。
+                  </p>
+                  <em>机构数据 · 需要库房映射和库存初始化防重锁</em>
+                </span>
+                <span className="task-card__badge">前置能力建设中</span>
+              </button>
+            </div>
+            <div className="prerequisite-note">
+              <Info size={19} />
+              <span>
+                当前先完成药品基础信息同步闭环。机构库房初始化将在目标库存表结构和机构、库房接口明确后开放。
+              </span>
+            </div>
+            <div className="screen-actions">
+              <button
+                className="button button--secondary"
+                onClick={() => setStep(0)}
+              >
+                <ArrowLeft />
+                返回认证
+              </button>
+              <button
+                className="button button--primary"
+                onClick={() => setStep(2)}
+              >
+                进入药品基础信息同步
+                <ArrowRight />
+              </button>
+            </div>
+          </section>
+        )}
+
+        {step === 2 && (
           <section className="screen source-screen">
             <div className="screen-heading">
-              <span className="eyebrow">第 1 步 · 数据来源</span>
+              <span className="eyebrow">第 3 步 · 数据来源</span>
               <h1>三方数据从哪里来？</h1>
               <p>
                 可以直接连接老数据库，也可以导入 CSV / JSON
@@ -1000,11 +1599,120 @@ export function App() {
               <div className="source-db-layout">
                 <ConnectionForm
                   value={sourceProfile}
-                  onChange={setSourceProfile}
+                  onChange={(next) => {
+                    setSourceProfile(next);
+                    setLegacyInspection(null);
+                  }}
                   title="老系统只读连接"
                   drivers={databaseDrivers}
                   driverPacks={driverPacks}
                 />
+                {sourceProfile.kind === "oracle" && (
+                  <div className="legacy-adapter">
+                    <div className="legacy-adapter__heading">
+                      <div>
+                        <span className="eyebrow">内置适配器</span>
+                        <strong>自动识别 Bsoft PHIS27 药品数据</strong>
+                        <small>
+                          自动核对核心表、统计数据范围，并生成只读多表组合查询。
+                        </small>
+                      </div>
+                      <button
+                        className="button button--secondary"
+                        disabled={busy === "phis27-inspect"}
+                        onClick={inspectPhis27Source}
+                      >
+                        <ListMagnifyingGlass size={19} />
+                        {busy === "phis27-inspect"
+                          ? "正在识别…"
+                          : "识别 PHIS27"}
+                      </button>
+                    </div>
+                    {legacyInspection && (
+                      <div className="legacy-inspection">
+                        <div
+                          className={`access-result ${legacyInspection.detected ? "access-result--success" : "access-result--warning"}`}
+                        >
+                          {legacyInspection.detected ? (
+                            <CheckCircle size={19} weight="fill" />
+                          ) : (
+                            <Warning size={19} weight="fill" />
+                          )}
+                          <div>
+                            <strong>{legacyInspection.message}</strong>
+                            <span>
+                              Schema {legacyInspection.schema} · 已核对 {legacyInspection.checkedTables.length} 张表
+                            </span>
+                          </div>
+                        </div>
+                        {legacyInspection.detected && (
+                          <>
+                            <div className="legacy-stats">
+                              {[
+                                ["通用药品", legacyInspection.totalMedicines],
+                                ["机构配置", legacyInspection.configuredMedicines],
+                                ["在用药品", legacyInspection.activeConfiguredMedicines],
+                                ["厂家商品", legacyInspection.productRows],
+                                ["有库存药品", legacyInspection.stockMedicines],
+                              ].map(([label, value]) => (
+                                <div key={label}>
+                                  <span>{label}</span>
+                                  <strong>{value}</strong>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="legacy-scopes">
+                              {legacyInspection.scopes.map((scope) => (
+                                <label
+                                  className={`legacy-scope ${legacyScope === scope.id ? "legacy-scope--selected" : ""}`}
+                                  key={scope.id}
+                                >
+                                  <input
+                                    type="radio"
+                                    name="legacy-scope"
+                                    checked={legacyScope === scope.id}
+                                    onChange={() => setLegacyScope(scope.id)}
+                                  />
+                                  <span>
+                                    <strong>
+                                      {scope.label}
+                                      {scope.recommended && <em>推荐</em>}
+                                    </strong>
+                                    <small>{scope.description}</small>
+                                  </span>
+                                  <b>
+                                    {scope.medicineCount} 种 / 约 {scope.estimatedRows} 行
+                                  </b>
+                                </label>
+                              ))}
+                            </div>
+                            <div className="legacy-warnings">
+                              {legacyInspection.warnings.map((warning) => (
+                                <span key={warning}>
+                                  <Warning size={15} />
+                                  {warning}
+                                </span>
+                              ))}
+                            </div>
+                            <button
+                              className="button button--primary button--wide"
+                              disabled={busy === "phis27-load"}
+                              onClick={loadPhis27Medicine}
+                            >
+                              <Rows size={19} />
+                              {busy === "phis27-load"
+                                ? "正在读取标准数据…"
+                                : "按选定范围读取标准药品数据"}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="custom-query-divider">
+                  <span>或使用自定义只读 SQL</span>
+                </div>
                 <Field label="读取数据的 SQL" wide>
                   <textarea
                     value={query}
@@ -1048,11 +1756,11 @@ export function App() {
           </section>
         )}
 
-        {step === 1 && (
+        {step === 3 && (
           <section className="screen">
             <div className="screen-heading screen-heading--row">
               <div>
-                <span className="eyebrow">第 2 步 · 识别数据</span>
+                <span className="eyebrow">第 4 步 · 识别数据</span>
                 <h1>确认要迁移的数据范围</h1>
                 <p>
                   系统已读取数据。请选择能代表三方记录唯一性的字段，它只用于追溯，不会作为新表主键。
@@ -1118,7 +1826,7 @@ export function App() {
             <div className="screen-actions">
               <button
                 className="button button--secondary"
-                onClick={() => setStep(0)}
+                onClick={() => setStep(2)}
               >
                 <ArrowLeft />
                 重新选择
@@ -1131,7 +1839,7 @@ export function App() {
           </section>
         )}
 
-        {step === 2 && (
+        {step === 4 && (
           <section className="screen mapping-screen">
             <div className="mapping-top">
               <div className="mapping-progress">
@@ -1168,6 +1876,35 @@ export function App() {
               </h1>
               <p>{currentField.hint}</p>
             </div>
+            {currentDictionary && (
+              <div className="dictionary-guide">
+                <div>
+                  <strong>新系统标准字典</strong>
+                  <code>{currentDictionary.dicId}</code>
+                  <span>{currentDictionary.items.length} 个可用值</span>
+                </div>
+                <div className="dictionary-guide__items">
+                  {currentDictionary.items.slice(0, 12).map((item) => (
+                    <span key={item.id || dictionaryItemValue(item)}>
+                      <b>{dictionaryItemValue(item)}</b>
+                      {item.text || item.na}
+                    </span>
+                  ))}
+                  {currentDictionary.items.length > 12 && (
+                    <em>另有 {currentDictionary.items.length - 12} 项</em>
+                  )}
+                </div>
+                <button
+                  className="button button--secondary"
+                  type="button"
+                  disabled={!mapping[currentField.key]}
+                  onClick={() => autoMapDictionary(currentField)}
+                >
+                  <LinkSimple size={17} />
+                  按名称/编码自动生成转换
+                </button>
+              </div>
+            )}
             <div className="suggestion-heading">
               <span>智能推荐</span>
               <small>基于字段名和常用医院数据结构</small>
@@ -1246,7 +1983,7 @@ export function App() {
               <button
                 className="button button--secondary"
                 onClick={() =>
-                  fieldIndex ? setFieldIndex(fieldIndex - 1) : setStep(1)
+                  fieldIndex ? setFieldIndex(fieldIndex - 1) : setStep(3)
                 }
               >
                 <ArrowLeft />
@@ -1269,7 +2006,7 @@ export function App() {
                   onClick={() => {
                     if (fieldIndex < targetFields.length - 1)
                       setFieldIndex(fieldIndex + 1);
-                    else setStep(3);
+                    else setStep(5);
                   }}
                 >
                   {fieldIndex < targetFields.length - 1
@@ -1282,16 +2019,56 @@ export function App() {
           </section>
         )}
 
-        {step === 3 && (
+        {step === 5 && (
           <section className="screen">
             <div className="screen-heading">
-              <span className="eyebrow">第 4 步 · 校验与修正</span>
+              <span className="eyebrow">第 6 步 · 校验与修正</span>
               <h1>先试迁移，再决定是否正式写入</h1>
               <p>
                 此阶段只把原始数据、转换结果和问题写入本地暂存库，不会修改新系统业务表。
               </p>
             </div>
             <div className="rules-layout">
+              <div className="rules-card cost-merge-card">
+                <div className="section-title">
+                  <LinkSimple size={21} />
+                  <div>
+                    <strong>药品类型 → 费用归并</strong>
+                    <small>
+                      费用归并不是标准字典；系统已按药品类型生成推荐值，执行前可逐项确认
+                    </small>
+                  </div>
+                </div>
+                <div className="cost-merge-grid">
+                  {(articleTypeDictionary?.items || []).map((article) => {
+                    const articleKey = dictionaryItemValue(article);
+                    return (
+                      <label key={articleKey}>
+                        <span>
+                          <b>{articleKey}</b>
+                          {article.text || article.na}
+                        </span>
+                        <select
+                          value={costMergeMappings[articleKey] || ""}
+                          onChange={(event) =>
+                            setCostMergeMappings((current) => ({
+                              ...current,
+                              [articleKey]: event.target.value,
+                            }))
+                          }
+                        >
+                          <option value="">未设置，相关药品将校验失败</option>
+                          {(costMergeCatalog?.items || []).map((cost) => (
+                            <option value={cost.key} key={cost.key}>
+                              {cost.text} · {cost.key}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
               <div className="rules-card">
                 <div className="section-title">
                   <Gear size={21} />
@@ -1304,8 +2081,8 @@ export function App() {
                   <span>
                     <strong>目标重复时</strong>
                     <small>
-                      基础药品按“通用名 + 类型 + 规格 + 可见范围”复用；商品优先按货品码，
-                      再按“厂家 + 商品名 + 销售规格”判重
+                      增量模式会跳过来源未变化的数据；检测到来源已变化时阻止静默覆盖。
+                      新数据仍按药品及商品业务键判重
                     </small>
                   </span>
                   <select
@@ -1314,10 +2091,17 @@ export function App() {
                       setConflictStrategy(event.target.value)
                     }
                   >
-                    <option value="REUSE">复用并幂等跳过（推荐）</option>
+                    <option value="INCREMENTAL">新增增量迁移（推荐）</option>
                     <option value="FAIL">发现重复即报错</option>
+                    <option value="OVERWRITE">覆盖迁移（保存原值，可撤销）</option>
                   </select>
                 </label>
+                {conflictStrategy === "OVERWRITE" && (
+                  <div className="strategy-warning">
+                    仅覆盖本工具台账确认管理的药品和商品；共享厂家、包装单位不会直接改写。
+                    修改前字段值会进入审计快照，撤销时自动恢复。
+                  </div>
+                )}
                 <label className="option-row">
                   <span>
                     <strong>未匹配到生产厂家</strong>
@@ -1385,19 +2169,45 @@ export function App() {
                           <option value="LOWER">转小写</option>
                           <option value="DATE_YYYY_MM_DD">日期转 YYYY-MM-DD</option>
                         </select>
-                        <input
-                          placeholder="缺失时使用默认值"
-                          value={rules[field.key]?.defaultValue || ""}
-                          onChange={(event) =>
-                            setRules((current) => ({
-                              ...current,
-                              [field.key]: {
-                                ...current[field.key],
-                                defaultValue: event.target.value,
-                              },
-                            }))
-                          }
-                        />
+                        {dictionaryForField(field) ? (
+                          <select
+                            aria-label={`${field.label}缺失时默认值`}
+                            value={rules[field.key]?.defaultValue || ""}
+                            onChange={(event) =>
+                              setRules((current) => ({
+                                ...current,
+                                [field.key]: {
+                                  ...current[field.key],
+                                  defaultValue: event.target.value,
+                                },
+                              }))
+                            }
+                          >
+                            <option value="">缺失时不设置默认值</option>
+                            {dictionaryForField(field).items.map((item) => (
+                              <option
+                                value={dictionaryItemValue(item)}
+                                key={item.id || dictionaryItemValue(item)}
+                              >
+                                {dictionaryItemValue(item)} · {item.text || item.na}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            placeholder="缺失时使用默认值"
+                            value={rules[field.key]?.defaultValue || ""}
+                            onChange={(event) =>
+                              setRules((current) => ({
+                                ...current,
+                                [field.key]: {
+                                  ...current[field.key],
+                                  defaultValue: event.target.value,
+                                },
+                              }))
+                            }
+                          />
+                        )}
                         <details className="value-mapping-editor">
                           <summary>
                             <span>字段值映射（旧值 → 新值）</span>
@@ -1410,6 +2220,21 @@ export function App() {
                             </small>
                           </summary>
                           <div>
+                            {dictionaryForField(field) && (
+                              <div className="dictionary-editor-head">
+                                <span>
+                                  目标字典：{field.dictionaryId} ·{" "}
+                                  {dictionaryForField(field).items.length} 项
+                                </span>
+                                <button
+                                  type="button"
+                                  className="button button--ghost"
+                                  onClick={() => autoMapDictionary(field)}
+                                >
+                                  自动匹配当前来源值
+                                </button>
+                              </div>
+                            )}
                             <textarea
                               rows={4}
                               placeholder={"西药 = 1\n中成药 = 2\n停用 = 0"}
@@ -1491,7 +2316,7 @@ export function App() {
             <div className="screen-actions">
               <button
                 className="button button--secondary"
-                onClick={() => setStep(2)}
+                onClick={() => setStep(4)}
               >
                 <ArrowLeft />
                 返回映射
@@ -1508,7 +2333,7 @@ export function App() {
                 <button
                   className="button button--primary"
                   disabled={busy === "prepare"}
-                  onClick={batchDetail ? () => setStep(4) : prepareBatch}
+                  onClick={batchDetail ? () => setStep(6) : prepareBatch}
                 >
                   {busy === "prepare"
                     ? "正在校验…"
@@ -1522,11 +2347,11 @@ export function App() {
           </section>
         )}
 
-        {step === 4 && (
+        {step === 6 && (
           <section className="screen">
             <div className="screen-heading screen-heading--row">
               <div>
-                <span className="eyebrow">第 5 步 · 执行与审计</span>
+                <span className="eyebrow">第 7 步 · 执行与审计</span>
                 <h1>确认目标库，正式写入药品表</h1>
                 <p>
                   每行使用独立事务。失败行不会影响成功行，可修正后单独重试。
@@ -1542,11 +2367,17 @@ export function App() {
             </div>
             <SummaryCards batch={batchDetail?.batch} />
             {batchDetail &&
-              !["SUCCESS", "PARTIAL"].includes(batchDetail.batch.status) && (
+              !["SUCCESS", "PARTIAL", "UNDONE", "UNDO_PARTIAL"].includes(
+                batchDetail.batch.status,
+              ) && (
                 <div className="target-card">
                   <ConnectionForm
                     value={targetProfile}
-                    onChange={setTargetProfile}
+                    onChange={(profile) => {
+                      setTargetProfile(profile);
+                      setOverwritePreview(null);
+                      setSelectedOverwriteRowIds([]);
+                    }}
                     title="新系统目标数据库"
                     drivers={databaseDrivers}
                     driverPacks={driverPacks}
@@ -1555,24 +2386,15 @@ export function App() {
                     <Field label="租户 ID">
                       <input
                         value={tenantId}
-                        onChange={(event) => setTenantId(event.target.value)}
-                        placeholder="hi_bd_* 表的 id_tet"
+                        disabled
+                        title="来自已认证的新系统租户"
                       />
                     </Field>
                     <Field label="操作人 ID">
                       <input
                         value={operatorId}
-                        onChange={(event) => setOperatorId(event.target.value)}
-                        placeholder="写入 insert_user 与审计"
-                      />
-                    </Field>
-                    <Field label="机构 ID（私有药品时）">
-                      <input
-                        value={organizationId}
-                        onChange={(event) =>
-                          setOrganizationId(event.target.value)
-                        }
-                        placeholder="可选"
+                        disabled
+                        title="来自已认证的 system 用户"
                       />
                     </Field>
                   </div>
@@ -1585,21 +2407,137 @@ export function App() {
                       <Plugs />
                       {busy === "target-test" ? "测试中…" : "测试目标库连接"}
                     </button>
+                    {batchDetail.batch.conflictStrategy === "OVERWRITE" && (
+                      <button
+                        className="button button--secondary"
+                        disabled={busy === "overwrite-preview"}
+                        onClick={previewOverwrite}
+                      >
+                        <ListMagnifyingGlass />
+                        {busy === "overwrite-preview"
+                          ? "正在读取差异…"
+                          : overwritePreview
+                            ? "重新读取覆盖差异"
+                            : "读取并确认覆盖差异"}
+                      </button>
+                    )}
                     <button
                       className="button button--danger"
                       disabled={
-                        busy === "execute" || !batchDetail.batch.validCount
+                        busy === "execute" ||
+                        !batchDetail.batch.validCount ||
+                        (batchDetail.batch.conflictStrategy === "OVERWRITE" &&
+                          (!overwritePreview ||
+                            !selectedOverwriteRowIds.length))
                       }
                       onClick={() => execute(false)}
                     >
                       <Play weight="fill" />
                       {busy === "execute"
                         ? "正在逐行写入…"
-                        : `正式迁移 ${batchDetail.batch.validCount} 行`}
+                        : batchDetail.batch.conflictStrategy === "OVERWRITE"
+                          ? `执行已确认的 ${selectedOverwriteRowIds.length} 行`
+                          : `正式迁移 ${batchDetail.batch.validCount} 行`}
                     </button>
                   </div>
                 </div>
-              )}{" "}
+              )}
+            {overwritePreview &&
+              batchDetail?.batch.conflictStrategy === "OVERWRITE" &&
+              !["SUCCESS", "UNDONE", "UNDO_PARTIAL"].includes(
+                batchDetail.batch.status,
+              ) && (
+                <div className="overwrite-preview-card">
+                  <div className="overwrite-preview-heading">
+                    <div>
+                      <span className="eyebrow">覆盖前确认</span>
+                      <h2>逐条核对目标库字段变化</h2>
+                      <p>{overwritePreview.message}</p>
+                    </div>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={
+                          selectedOverwriteRowIds.length > 0 &&
+                          selectedOverwriteRowIds.length ===
+                            overwritePreview.rows.filter(
+                              (row) => row.action !== "UNCHANGED",
+                            ).length
+                        }
+                        onChange={(event) =>
+                          setSelectedOverwriteRowIds(
+                            event.target.checked
+                              ? overwritePreview.rows
+                                  .filter(
+                                    (row) => row.action !== "UNCHANGED",
+                                  )
+                                  .map((row) => row.rowId)
+                              : [],
+                          )
+                        }
+                      />
+                      全选有变化记录
+                    </label>
+                  </div>
+                  <div className="overwrite-preview-list">
+                    {overwritePreview.rows.map((row) => {
+                      const selected = selectedOverwriteRowIds.includes(
+                        row.rowId,
+                      );
+                      return (
+                        <article
+                          key={row.rowId}
+                          className={selected ? "selected" : ""}
+                        >
+                          <header>
+                            <label>
+                              <input
+                                type="checkbox"
+                                disabled={row.action === "UNCHANGED"}
+                                checked={selected}
+                                onChange={(event) =>
+                                  setSelectedOverwriteRowIds((current) =>
+                                    event.target.checked
+                                      ? [...new Set([...current, row.rowId])]
+                                      : current.filter((id) => id !== row.rowId),
+                                  )
+                                }
+                              />
+                              <strong>
+                                #{row.rowNo} · {row.sourceKey}
+                              </strong>
+                            </label>
+                            <span
+                              className={`diff-action diff-action--${row.action.toLowerCase()}`}
+                            >
+                              {row.action === "INSERT"
+                                ? "新增"
+                                : row.action === "UPDATE"
+                                  ? `覆盖 ${row.changes.length} 项`
+                                  : "无变化"}
+                            </span>
+                          </header>
+                          <p>{row.message}</p>
+                          {row.changes.length > 0 && (
+                            <div className="field-diff-list">
+                              {row.changes.map((change) => (
+                                <div
+                                  key={`${change.table}.${change.column}`}
+                                >
+                                  <strong>{change.label}</strong>
+                                  <code>{diffValue(change.before)}</code>
+                                  <ArrowRight />
+                                  <code>{diffValue(change.after)}</code>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             {batchDetail && (
               <div className="result-panel">
                 <div className="result-tabs">
@@ -1619,10 +2557,27 @@ export function App() {
                   {batchDetail.batch.failCount > 0 && (
                     <button
                       className="retry-button"
-                      disabled={busy === "retry"}
+                      disabled={
+                        busy === "retry" ||
+                        ["UNDONE", "UNDO_PARTIAL"].includes(
+                          batchDetail.batch.status,
+                        )
+                      }
                       onClick={() => execute(true)}
                     >
                       {busy === "retry" ? "重试中…" : "仅重试失败行"}
+                    </button>
+                  )}
+                  {["SUCCESS", "PARTIAL"].includes(
+                    batchDetail.batch.status,
+                  ) && (
+                    <button
+                      className="undo-button"
+                      disabled={busy === "undo"}
+                      onClick={undoBatch}
+                    >
+                      <ArrowCounterClockwise />
+                      {busy === "undo" ? "撤销中…" : "撤销本批次新增数据"}
                     </button>
                   )}
                 </div>
@@ -1750,7 +2705,7 @@ export function App() {
                 className="button button--primary"
                 onClick={() => {
                   setExpert(false);
-                  setStep(3);
+                  setStep(5);
                 }}
               >
                 保存并进入校验

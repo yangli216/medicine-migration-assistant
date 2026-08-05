@@ -42,7 +42,6 @@ const ALLOWED_TARGETS: &[&str] = &[
     "fgTcd",
     "fgSingle",
     "fgRegister",
-    "fgPri",
     "naFac",
     "idFac",
     "naMedPro",
@@ -76,7 +75,7 @@ pub fn target_fields() -> Vec<TargetField> {
             true,
             "药品基本信息",
             "dictionary",
-            "1西药、2中成药、3草药、4保健品、5耗材、9其他",
+            "以当前租户 rbmh.base.med.articleType 实时字典为准",
         ),
         field(
             "idCstmg",
@@ -169,18 +168,18 @@ pub fn target_fields() -> Vec<TargetField> {
         field(
             "unitSale",
             "零售包装单位",
-            true,
+            false,
             "包装与价格",
             "text",
-            "例如盒、瓶、支",
+            "存在商品信息时必填，例如盒、瓶、支",
         ),
         field(
             "unitSaleFactor",
             "包装系数",
-            true,
+            false,
             "包装与价格",
             "integer",
-            "零售包装单位相对制剂单位的正整数倍数",
+            "存在商品信息时必填；零售包装单位相对制剂单位的正整数倍数",
         ),
         field(
             "specSale",
@@ -193,18 +192,18 @@ pub fn target_fields() -> Vec<TargetField> {
         field(
             "pricePur",
             "进货价格",
-            true,
+            false,
             "包装与价格",
             "decimal",
-            "允许为0，不允许负数",
+            "存在商品信息时必填；允许为0，不允许负数",
         ),
         field(
             "priceSale",
             "零售价格",
-            true,
+            false,
             "包装与价格",
             "decimal",
-            "允许为0，不允许负数",
+            "存在商品信息时必填；允许为0，不允许负数",
         ),
         field(
             "cdAppr",
@@ -449,14 +448,6 @@ pub fn target_fields() -> Vec<TargetField> {
             "0否、1是",
         ),
         field(
-            "fgPri",
-            "机构私有标志",
-            false,
-            "可见范围",
-            "boolean01",
-            "1时仅当前机构可见",
-        ),
-        field(
             "sdPer",
             "加成类型",
             false,
@@ -498,6 +489,9 @@ fn field(
         group: group.into(),
         value_type: value_type.into(),
         description: description.into(),
+        dictionary_id: crate::target_dictionary::dictionary_id_for(key)
+            .unwrap_or_default()
+            .into(),
     }
 }
 
@@ -534,6 +528,22 @@ pub fn normalize(source: &Map<String, Value>, mappings: &[FieldMapping]) -> Map<
     target
 }
 
+pub fn apply_cost_merge_mapping(
+    target: &mut Map<String, Value>,
+    cost_merge_mappings: &Map<String, Value>,
+) {
+    if !target.get("idCstmg").map(is_blank).unwrap_or(true) {
+        return;
+    }
+    let med_type = target.get("sdMed").map(value_text).unwrap_or_default();
+    if let Some(cost_merge_id) = cost_merge_mappings.get(&med_type) {
+        let value = value_text(cost_merge_id);
+        if !value.is_empty() {
+            target.insert("idCstmg".into(), Value::String(value));
+        }
+    }
+}
+
 pub fn validate(data: &Map<String, Value>) -> Vec<String> {
     let mut errors = Vec::new();
     for (key, label) in [
@@ -542,10 +552,6 @@ pub fn validate(data: &Map<String, Value>) -> Vec<String> {
         ("idCstmg", "费用归并主键"),
         ("sdDose", "剂型编码"),
         ("unitPre", "制剂单位"),
-        ("unitSale", "零售包装单位"),
-        ("unitSaleFactor", "包装系数"),
-        ("pricePur", "进货价格"),
-        ("priceSale", "零售价格"),
     ] {
         require(data, key, label, &mut errors);
     }
@@ -563,8 +569,18 @@ pub fn validate(data: &Map<String, Value>) -> Vec<String> {
         require(data, "dftUsage", "默认给药方法编码", &mut errors);
         require(data, "dftFreq", "默认频次编码", &mut errors);
     }
-    if blank_at(data, "idFac") && blank_at(data, "naFac") {
-        errors.push("生产厂家主键或名称至少填写一项".into());
+    if has_product_data(data) {
+        for (key, label) in [
+            ("unitSale", "零售包装单位"),
+            ("unitSaleFactor", "包装系数"),
+            ("pricePur", "进货价格"),
+            ("priceSale", "零售价格"),
+        ] {
+            require(data, key, label, &mut errors);
+        }
+        if blank_at(data, "idFac") && blank_at(data, "naFac") {
+            errors.push("生产厂家主键或名称至少填写一项".into());
+        }
     }
     positive_number(data, "unitSaleFactor", "包装系数", false, &mut errors);
     positive_number(data, "pricePur", "进货价格", true, &mut errors);
@@ -584,7 +600,6 @@ pub fn validate(data: &Map<String, Value>) -> Vec<String> {
         ("fgTcd", "中药饮片标志"),
         ("fgSingle", "单品标志"),
         ("fgRegister", "注册证管理标志"),
-        ("fgPri", "机构私有标志"),
         ("fgCollPur", "集采标志"),
         ("fgImport", "进口药品标志"),
     ] {
@@ -608,6 +623,24 @@ pub fn validate(data: &Map<String, Value>) -> Vec<String> {
         max_length(data, key, label, max, &mut errors);
     }
     errors
+}
+
+pub fn has_product_data(data: &Map<String, Value>) -> bool {
+    [
+        "idFac",
+        "naFac",
+        "naMedPro",
+        "unitSale",
+        "unitSaleFactor",
+        "specSale",
+        "priceSale",
+        "pricePur",
+        "cdAppr",
+        "cdBar",
+        "cdMedPro",
+    ]
+    .iter()
+    .any(|key| !blank_at(data, key))
 }
 
 fn validate_reference_id(
@@ -795,7 +828,7 @@ fn is_blank(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize, target_fields, validate, ALLOWED_TARGETS};
+    use super::{apply_cost_merge_mapping, normalize, target_fields, validate, ALLOWED_TARGETS};
     use crate::model::FieldMapping;
     use serde_json::{json, Map, Value};
 
@@ -810,6 +843,20 @@ mod tests {
         assert_eq!(
             normalize(&source, &[mapping]).get("sdMed"),
             Some(&Value::String("1".into()))
+        );
+    }
+
+    #[test]
+    fn cost_merge_is_derived_from_normalized_medicine_type() {
+        let mut target = json!({ "sdMed": "1" }).as_object().unwrap().clone();
+        let mappings = json!({ "1": "63aa8b1b3c6f491981ba4221" })
+            .as_object()
+            .unwrap()
+            .clone();
+        apply_cost_merge_mapping(&mut target, &mappings);
+        assert_eq!(
+            target.get("idCstmg"),
+            Some(&Value::String("63aa8b1b3c6f491981ba4221".into()))
         );
     }
 
@@ -861,7 +908,32 @@ mod tests {
         let data = Map::new();
         let errors = validate(&data);
         assert!(errors.iter().any(|item| item.contains("医疗物品通用名")));
-        assert!(errors.iter().any(|item| item.contains("生产厂家")));
+        assert!(!errors.iter().any(|item| item.contains("生产厂家")));
+
+        let product = json!({
+            "naMed":"测试药品","sdMed":"5","idCstmg":"66aa10244f0d4826ac110001",
+            "sdDose":"1","unitPre":"个","naMedPro":"测试商品"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let product_errors = validate(&product);
+        assert!(product_errors.iter().any(|item| item.contains("生产厂家")));
+        assert!(product_errors
+            .iter()
+            .any(|item| item.contains("零售包装单位")));
+    }
+
+    #[test]
+    fn base_medicine_without_product_is_valid() {
+        let data = json!({
+            "naMed":"测试耗材","sdMed":"5","idCstmg":"66aa10244f0d4826ac110001",
+            "sdDose":"1","unitPre":"个"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(validate(&data).is_empty());
     }
 
     #[test]

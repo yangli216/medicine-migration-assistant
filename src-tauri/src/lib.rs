@@ -2,20 +2,56 @@ mod batch;
 mod datasource;
 mod driver_pack;
 mod id;
+mod legacy_phis27;
 mod local_store;
 mod model;
 mod normalize;
 mod odbc;
+mod overwrite;
 mod target;
 mod target_contract;
+mod target_dictionary;
 mod target_odbc;
+mod target_reference;
+mod target_system;
 
 use local_store::LocalStore;
 use model::{
     BatchDetail, ConnectionCheck, ConnectionProfile, ExecuteBatchRequest, MigrationBatch,
-    PrepareBatchRequest, SourcePreview, SourcePreviewRequest, TargetField, TargetReadiness,
+    OverwritePreview, PrepareBatchRequest, PreviewOverwriteRequest, SourcePreview,
+    SourcePreviewRequest, TargetField, TargetReadiness, UndoBatchRequest,
 };
 use tauri::{Manager, State};
+
+#[tauri::command]
+async fn probe_target_system(
+    client: State<'_, target_system::TargetSystemClient>,
+    request: target_system::TargetSystemProbeRequest,
+) -> Result<target_system::TargetSystemProbe, String> {
+    target_system::probe(&client, request).await
+}
+
+#[tauri::command]
+async fn login_target_system(
+    client: State<'_, target_system::TargetSystemClient>,
+    request: target_system::TargetSystemLoginRequest,
+) -> Result<target_system::TargetSystemLogin, String> {
+    target_system::login(&client, request).await
+}
+
+#[tauri::command]
+async fn load_target_dictionaries(
+    client: State<'_, target_system::TargetSystemClient>,
+) -> Result<target_dictionary::TargetDictionaryCatalog, String> {
+    target_dictionary::load(&client).await
+}
+
+#[tauri::command]
+async fn load_medicine_cost_merges(
+    client: State<'_, target_system::TargetSystemClient>,
+) -> Result<target_reference::MedicineCostMergeCatalog, String> {
+    target_reference::load_medicine_cost_merges(&client).await
+}
 
 #[tauri::command]
 fn app_health() -> serde_json::Value {
@@ -69,19 +105,68 @@ async fn preview_source(request: SourcePreviewRequest) -> Result<SourcePreview, 
 }
 
 #[tauri::command]
+async fn inspect_phis27_source(
+    profile: ConnectionProfile,
+) -> Result<legacy_phis27::Phis27Inspection, String> {
+    tauri::async_runtime::spawn_blocking(move || legacy_phis27::inspect(&profile))
+        .await
+        .map_err(|error| format!("PHIS27 识别任务异常：{error}"))?
+}
+
+#[tauri::command]
+async fn load_phis27_medicine(
+    request: legacy_phis27::LoadPhis27Request,
+) -> Result<SourcePreview, String> {
+    tauri::async_runtime::spawn_blocking(move || legacy_phis27::load(&request))
+        .await
+        .map_err(|error| format!("PHIS27 数据读取任务异常：{error}"))?
+}
+
+#[tauri::command]
 fn prepare_migration_batch(
     store: State<'_, LocalStore>,
+    client: State<'_, target_system::TargetSystemClient>,
     request: PrepareBatchRequest,
 ) -> Result<BatchDetail, String> {
-    batch::prepare_batch(&store, request)
+    let (tenant_id, _) = client.execution_identity()?;
+    let dictionary_values = client.dictionary_values()?;
+    target_dictionary::ensure_required_loaded(&dictionary_values)?;
+    batch::prepare_batch(&store, request, &dictionary_values, &tenant_id)
 }
 
 #[tauri::command]
 async fn execute_migration_batch(
     store: State<'_, LocalStore>,
-    request: ExecuteBatchRequest,
+    client: State<'_, target_system::TargetSystemClient>,
+    mut request: ExecuteBatchRequest,
 ) -> Result<BatchDetail, String> {
+    let (tenant_id, operator_id) = client.execution_identity()?;
+    // Base medicine data is tenant-wide: identity comes exclusively from the authenticated
+    // system session, and organization-private scope is deliberately disabled for this task.
+    request.tenant_id = tenant_id;
+    request.operator_id = operator_id;
+    request.organization_id.clear();
     target::execute_batch(&store, request).await
+}
+
+#[tauri::command]
+async fn preview_overwrite_batch(
+    store: State<'_, LocalStore>,
+    client: State<'_, target_system::TargetSystemClient>,
+    request: PreviewOverwriteRequest,
+) -> Result<OverwritePreview, String> {
+    let (tenant_id, operator_id) = client.execution_identity()?;
+    target::preview_overwrite(&store, request, &tenant_id, &operator_id).await
+}
+
+#[tauri::command]
+async fn undo_migration_batch(
+    store: State<'_, LocalStore>,
+    client: State<'_, target_system::TargetSystemClient>,
+    request: UndoBatchRequest,
+) -> Result<BatchDetail, String> {
+    let (tenant_id, operator_id) = client.execution_identity()?;
+    target::undo_batch(&store, request, &tenant_id, &operator_id).await
 }
 
 #[tauri::command]
@@ -147,6 +232,7 @@ pub fn run() {
             let store = LocalStore::open(&app_data_dir.join("medicine-migration.sqlite"))
                 .map_err(std::io::Error::other)?;
             app.manage(store);
+            app.manage(target_system::TargetSystemClient::new().map_err(std::io::Error::other)?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -159,10 +245,18 @@ pub fn run() {
             inspect_target_schema,
             list_source_tables,
             preview_source,
+            inspect_phis27_source,
+            load_phis27_medicine,
             prepare_migration_batch,
+            preview_overwrite_batch,
             execute_migration_batch,
+            undo_migration_batch,
             load_migration_batch,
-            list_recent_batches
+            list_recent_batches,
+            probe_target_system,
+            login_target_system,
+            load_target_dictionaries,
+            load_medicine_cost_merges
         ])
         .run(tauri::generate_context!())
         .expect("failed to run medicine migration assistant");

@@ -29,6 +29,9 @@ sqlx-mysql = { version = "0.8.6", default-features = false, features = ["chrono"
 rust_decimal = "1"
 base64 = "0.22"
 sha2 = "0.10"
+md-5 = "0.10.6"
+reqwest = { version = "0.13.4", default-features = false, features = ["cookies", "json", "native-tls", "query"] }
+futures-util = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 odbc-api = { version = "29.0.0", default-features = false, features = ["odbc_version_3_80"] }

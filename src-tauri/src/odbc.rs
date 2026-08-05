@@ -88,7 +88,7 @@ pub fn preview_source(
     limit: u32,
 ) -> Result<SourcePreview, String> {
     let started = Instant::now();
-    let row_limit = limit.clamp(1, 1000) as usize;
+    let row_limit = limit.clamp(1, 10_000) as usize;
     with_connection(profile, |connection| {
         let mut cursor = connection
             .execute(query, (), Some(QUERY_TIMEOUT_SECONDS))
@@ -380,6 +380,39 @@ pub fn query_optional_string(
         .map(|bytes| String::from_utf8_lossy(bytes).into_owned()))
 }
 
+pub fn query_optional_row_strings(
+    connection: &Connection<'_>,
+    statement: &str,
+    values: Vec<String>,
+) -> Result<Option<Vec<Option<String>>>, String> {
+    let parameters = values
+        .into_iter()
+        .map(IntoParameter::into_parameter)
+        .collect::<Vec<_>>();
+    let Some(mut cursor) = connection
+        .execute(statement, &parameters[..], Some(QUERY_TIMEOUT_SECONDS))
+        .map_err(odbc_error)?
+    else {
+        return Ok(None);
+    };
+    let column_count = cursor.num_result_cols().map_err(odbc_error)? as usize;
+    let mut buffer =
+        TextRowSet::for_cursor(1, &mut cursor, Some(MAX_CELL_BYTES)).map_err(odbc_error)?;
+    let mut row_cursor = cursor.bind_buffer(&mut buffer).map_err(odbc_error)?;
+    let Some(batch) = row_cursor.fetch().map_err(odbc_error)? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        (0..column_count)
+            .map(|index| {
+                batch
+                    .at(index, 0)
+                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+            })
+            .collect(),
+    ))
+}
+
 pub fn build_connection_string(profile: &ConnectionProfile) -> Result<String, String> {
     if !profile.connection_string.trim().is_empty() {
         return Ok(expand_connection_template(
@@ -463,7 +496,7 @@ fn odbc_error(error: impl std::fmt::Display) -> String {
 mod tests {
     use super::{
         build_connection_string, inspect_target_schema, is_odbc_kind, preview_source,
-        test_connection, validate_driver_registration,
+        query_optional_row_strings, test_connection, validate_driver_registration, with_connection,
     };
     use crate::model::ConnectionProfile;
 
@@ -539,5 +572,38 @@ mod tests {
             chinese.rows[0].get("CN").and_then(|value| value.as_str()),
             Some("当归")
         );
+        with_connection(&oracle, |connection| {
+            let values = query_optional_row_strings(
+                connection,
+                "SELECT 'snapshot',CAST(NULL AS VARCHAR2(10)) FROM DUAL",
+                Vec::new(),
+            )?
+            .ok_or_else(|| "Oracle 多字段快照查询没有返回数据".to_string())?;
+            assert_eq!(values, vec![Some("snapshot".into()), None]);
+            Ok(())
+        })
+        .expect("Oracle field snapshot query");
+        if std::env::var("ORACLE_EXPECT_EMPTY").as_deref() == Ok("1") {
+            for table in [
+                "hi_bd_med",
+                "hi_bd_med_alias",
+                "hi_bd_med_unit",
+                "hi_bd_fac",
+                "hi_bd_med_pro",
+            ] {
+                let count = preview_source(
+                    &oracle,
+                    &format!("SELECT COUNT(*) AS ROW_COUNT FROM {table}"),
+                    1,
+                )
+                .unwrap_or_else(|error| panic!("count {table}: {error}"));
+                let value = count.rows[0]
+                    .get("ROW_COUNT")
+                    .map(crate::normalize::value_text)
+                    .unwrap_or_default();
+                println!("empty target table {table} rows={value}");
+                assert_eq!(value, "0", "target table {table} is not empty");
+            }
+        }
     }
 }

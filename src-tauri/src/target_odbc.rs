@@ -1,15 +1,26 @@
 use crate::id::new_object_id;
 use crate::local_store::LocalStore;
-use crate::model::{BatchDetail, ExecuteBatchRequest, MigrationRow};
+use crate::model::{
+    BatchDetail, ExecuteBatchRequest, MigrationRow, OverwritePreview, OverwriteRowPreview,
+    PreviewOverwriteRequest, UndoBatchRequest,
+};
 use crate::normalize::value_text;
 use crate::odbc::{
-    configure_target_session, execute_strings, query_optional_string, with_connection,
+    configure_target_session, execute_strings, query_optional_row_strings, query_optional_string,
+    with_connection,
+};
+use crate::overwrite::{medicine_patch, product_patch, restore_patch, ColumnPatch};
+use crate::target::{
+    audit_overwrite_preview, audit_undo_failure, audit_undo_start, build_field_diffs, finish_undo,
+    summarize_overwrite_preview, target_identity, validate_overwrite_execution_preview,
+    validate_undo_request, RestoreTarget, UndoEvent, UndoTarget,
 };
 use crate::target_contract::validate_execution_context;
 use chrono::Utc;
 use odbc_api::Connection;
 use rust_decimal::Decimal;
 use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 
 #[derive(Debug)]
 struct WriteEvent {
@@ -30,6 +41,86 @@ struct WriteOutcome {
     events: Vec<WriteEvent>,
 }
 
+pub fn preview_overwrite(
+    store: &LocalStore,
+    request: PreviewOverwriteRequest,
+    tenant_id: &str,
+    operator_id: &str,
+) -> Result<OverwritePreview, String> {
+    let detail = store.load_batch(&request.batch_id)?;
+    if detail.batch.conflict_strategy != "OVERWRITE" {
+        return Err("当前批次不是覆盖迁移批次".into());
+    }
+    let rows = with_connection(&request.target, |connection| {
+        configure_target_session(connection, &request.target)?;
+        crate::odbc::inspect_target_schema(&request.target)?;
+        let mut rows = Vec::new();
+        for row in detail.rows.iter().filter(|row| row.status == "VALIDATED") {
+            if row.id_med.is_empty() {
+                rows.push(OverwriteRowPreview {
+                    row_id: row.row_id.clone(),
+                    row_no: row.row_no,
+                    source_key: row.source_key.clone(),
+                    action: "INSERT".into(),
+                    changes: Vec::new(),
+                    message: "新来源记录，将按普通新增迁移执行".into(),
+                });
+                continue;
+            }
+            let mut changes = Vec::new();
+            let med_patch = medicine_patch(&row.normalized_data);
+            let before = read_odbc_patch_snapshot(
+                connection,
+                "hi_bd_med",
+                "id_med",
+                &row.id_med,
+                tenant_id,
+                &med_patch,
+                false,
+            )?;
+            changes.extend(build_field_diffs("hi_bd_med", &med_patch, &before));
+            if !row.id_med_pro.is_empty() {
+                let product_patch = product_patch(
+                    &row.normalized_data,
+                    &row.id_med,
+                    &row.id_fac,
+                    &row.id_med_unit,
+                );
+                let before = read_odbc_patch_snapshot(
+                    connection,
+                    "hi_bd_med_pro",
+                    "id_med_pro",
+                    &row.id_med_pro,
+                    tenant_id,
+                    &product_patch,
+                    false,
+                )?;
+                changes.extend(build_field_diffs("hi_bd_med_pro", &product_patch, &before));
+            }
+            rows.push(OverwriteRowPreview {
+                row_id: row.row_id.clone(),
+                row_no: row.row_no,
+                source_key: row.source_key.clone(),
+                action: if changes.is_empty() {
+                    "UNCHANGED".into()
+                } else {
+                    "UPDATE".into()
+                },
+                message: if changes.is_empty() {
+                    "目标字段与本次迁移值一致，无需覆盖".into()
+                } else {
+                    format!("检测到 {} 个字段变化", changes.len())
+                },
+                changes,
+            });
+        }
+        Ok(rows)
+    })?;
+    let preview = summarize_overwrite_preview(&request.batch_id, rows)?;
+    audit_overwrite_preview(store, &preview, &request.target, operator_id)?;
+    Ok(preview)
+}
+
 pub fn execute_batch(
     store: &LocalStore,
     request: ExecuteBatchRequest,
@@ -38,6 +129,12 @@ pub fn execute_batch(
     if detail.batch.status == "RUNNING" {
         return Err("该迁移批次正在执行，请勿重复提交".into());
     }
+    validate_overwrite_execution_preview(&detail, &request)?;
+    let selected_rows = request
+        .selected_row_ids
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
     with_connection(&request.target, |connection| {
         configure_target_session(connection, &request.target)?;
         crate::odbc::inspect_target_schema(&request.target)?;
@@ -59,13 +156,41 @@ pub fn execute_batch(
             &request.batch_id,
             "RUNNING",
             Value::Null,
-            json!({"failedOnly":request.failed_only,"databaseKind":request.target.kind}),
+            json!({
+                "failedOnly":request.failed_only,
+                "selectedRowCount":request.selected_row_ids.len(),
+                "overwritePreviewConfirmed":request.overwrite_preview_confirmed,
+                "databaseKind":request.target.kind,
+                "targetIdentity":target_identity(&request.target)
+            }),
             "开始执行企业数据库迁移批次",
             &request.operator_id,
             &new_object_id(),
         )?;
 
         for mut row in detail.rows.clone() {
+            if !selected_rows.is_empty() && !selected_rows.contains(&row.row_id) {
+                if detail.batch.conflict_strategy == "OVERWRITE" && row.status == "VALIDATED" {
+                    row.status = "SKIPPED".into();
+                    row.error_message = "覆盖差异确认中未勾选（无变化或用户取消）".into();
+                    row.updated_at = Utc::now().to_rfc3339();
+                    store.update_row_result(&row)?;
+                    store.audit_event(
+                        &request.batch_id,
+                        &row.row_id,
+                        "SELECTION_SKIP",
+                        "migration_row",
+                        &row.row_id,
+                        "SKIPPED",
+                        Value::Object(row.normalized_data.clone()),
+                        Value::Null,
+                        &row.error_message,
+                        &request.operator_id,
+                        &new_object_id(),
+                    )?;
+                }
+                continue;
+            }
             let executable = if request.failed_only {
                 row.status == "FAILED"
             } else {
@@ -99,6 +224,30 @@ pub fn execute_batch(
                     row.error_message.clear();
                     row.updated_at = Utc::now().to_rfc3339();
                     store.update_row_result(&row)?;
+                    let write_manifest = Value::Array(
+                        outcome
+                            .events
+                            .iter()
+                            .map(|event| {
+                                json!({
+                                    "operation": event.operation,
+                                    "table": event.table,
+                                    "targetId": event.target_id,
+                                    "before": event.before,
+                                    "after": event.after
+                                })
+                            })
+                            .collect(),
+                    );
+                    store.record_source_link_upsert(
+                        &request.tenant_id,
+                        &detail.batch.source_type,
+                        &detail.batch.source_name,
+                        &row,
+                        write_manifest,
+                        &request.operator_id,
+                        &trace_id,
+                    )?;
                     for event in outcome.events {
                         store.audit_event(
                             &request.batch_id,
@@ -129,6 +278,199 @@ pub fn execute_batch(
     })?;
     finish_batch(store, &request.batch_id, &request.operator_id)?;
     store.load_batch(&request.batch_id)
+}
+
+pub fn undo_batch(
+    store: &LocalStore,
+    request: UndoBatchRequest,
+    tenant_id: &str,
+    operator_id: &str,
+) -> Result<BatchDetail, String> {
+    let detail = store.load_batch(&request.batch_id)?;
+    let plan = validate_undo_request(&detail, &request.target)?;
+    audit_undo_start(store, &request.batch_id, &request.target, operator_id)?;
+    let result = with_connection(&request.target, |connection| {
+        configure_target_session(connection, &request.target)?;
+        crate::odbc::inspect_target_schema(&request.target)?;
+        connection.set_autocommit(false).map_err(db_error)?;
+        let result = (|| {
+            let mut events = Vec::with_capacity(plan.restores.len() + plan.inserts.len());
+            for target in plan.restores {
+                events.push(restore_odbc_target(connection, target, tenant_id)?);
+            }
+            for target in plan.inserts {
+                events.push(undo_odbc_target(connection, target, tenant_id)?);
+            }
+            Ok::<_, String>(events)
+        })();
+        match result {
+            Ok(events) => {
+                if let Err(error) = connection.commit() {
+                    let _ = connection.rollback();
+                    let _ = connection.set_autocommit(true);
+                    return Err(db_error(error));
+                }
+                connection.set_autocommit(true).map_err(db_error)?;
+                Ok(events)
+            }
+            Err(error) => {
+                let rollback_error = connection.rollback().err().map(db_error);
+                let _ = connection.set_autocommit(true);
+                Err(rollback_error
+                    .map(|rollback| format!("{error}；回滚异常：{rollback}"))
+                    .unwrap_or(error))
+            }
+        }
+    });
+    match result {
+        Ok(events) => finish_undo(store, &request.batch_id, operator_id, events),
+        Err(error) => {
+            audit_undo_failure(store, &request.batch_id, operator_id, &error)?;
+            Err(error)
+        }
+    }
+}
+
+fn restore_odbc_target(
+    connection: &Connection<'_>,
+    target: RestoreTarget,
+    tenant_id: &str,
+) -> Result<UndoEvent, String> {
+    let primary_key = match target.table.as_str() {
+        "hi_bd_med" => "id_med",
+        "hi_bd_med_pro" => "id_med_pro",
+        _ => return Err("覆盖恢复清单包含未授权的目标表".into()),
+    };
+    let patch = restore_patch(&target.table, &target.before)?;
+    apply_odbc_patch(
+        connection,
+        &target.table,
+        primary_key,
+        &target.target_id,
+        tenant_id,
+        &patch,
+    )?;
+    Ok(UndoEvent {
+        target: UndoTarget {
+            row_id: target.row_id,
+            table: target.table,
+            target_id: target.target_id,
+            priority: target.priority,
+        },
+        operation: "UNDO_RESTORE",
+        result: "SUCCESS",
+        message: "已按字段级修改前快照恢复覆盖记录".into(),
+    })
+}
+
+fn undo_odbc_target(
+    connection: &Connection<'_>,
+    target: UndoTarget,
+    tenant_id: &str,
+) -> Result<UndoEvent, String> {
+    let (exists_sql, delete_sql) = match target.table.as_str() {
+        "hi_bd_med_pro" => (
+            "SELECT COUNT(*) FROM hi_bd_med_pro WHERE id_tet=? AND id_med_pro=?",
+            "DELETE FROM hi_bd_med_pro WHERE id_tet=? AND id_med_pro=?",
+        ),
+        "hi_bd_med_alias" => (
+            "SELECT COUNT(*) FROM hi_bd_med_alias WHERE id_tet=? AND id_med_alias=?",
+            "DELETE FROM hi_bd_med_alias WHERE id_tet=? AND id_med_alias=?",
+        ),
+        "hi_bd_med_unit" => (
+            "SELECT COUNT(*) FROM hi_bd_med_unit WHERE id_tet=? AND id_med_unit=?",
+            "DELETE FROM hi_bd_med_unit WHERE id_tet=? AND id_med_unit=?",
+        ),
+        "hi_bd_med" => (
+            "SELECT COUNT(*) FROM hi_bd_med WHERE id_tet=? AND id_med=?",
+            "DELETE FROM hi_bd_med WHERE id_tet=? AND id_med=?",
+        ),
+        "hi_bd_fac" => (
+            "SELECT COUNT(*) FROM hi_bd_fac WHERE id_tet=? AND id_fac=?",
+            "DELETE FROM hi_bd_fac WHERE id_tet=? AND id_fac=?",
+        ),
+        _ => return Err("撤销清单包含未授权的目标表".into()),
+    };
+    if odbc_count(connection, exists_sql, tenant_id, &target.target_id)? == 0 {
+        return Ok(UndoEvent {
+            target,
+            operation: "UNDO_ABSENT",
+            result: "SKIPPED",
+            message: "该条目标记录已不存在，未重复删除".into(),
+        });
+    }
+    let references = odbc_reference_count(connection, &target, tenant_id)?;
+    if references > 0 {
+        return Ok(UndoEvent {
+            target,
+            operation: "UNDO_RETAIN",
+            result: "SKIPPED",
+            message: format!("检测到{references}条后续引用，为保护业务数据已保留"),
+        });
+    }
+    execute_strings(
+        connection,
+        delete_sql,
+        vec![tenant_id.into(), target.target_id.clone()],
+    )?;
+    Ok(UndoEvent {
+        target,
+        operation: "UNDO_DELETE",
+        result: "SUCCESS",
+        message: "已删除本批次新增且未被后续引用的记录".into(),
+    })
+}
+
+fn odbc_reference_count(
+    connection: &Connection<'_>,
+    target: &UndoTarget,
+    tenant_id: &str,
+) -> Result<usize, String> {
+    let id = &target.target_id;
+    match target.table.as_str() {
+        "hi_bd_med_unit" => odbc_count(
+            connection,
+            "SELECT COUNT(*) FROM hi_bd_med_pro WHERE id_tet=? AND id_med_unit=?",
+            tenant_id,
+            id,
+        ),
+        "hi_bd_med" => Ok(odbc_count(
+            connection,
+            "SELECT COUNT(*) FROM hi_bd_med_pro WHERE id_tet=? AND id_med=?",
+            tenant_id,
+            id,
+        )? + odbc_count(
+            connection,
+            "SELECT COUNT(*) FROM hi_bd_med_alias WHERE id_tet=? AND id_med=?",
+            tenant_id,
+            id,
+        )? + odbc_count(
+            connection,
+            "SELECT COUNT(*) FROM hi_bd_med_unit WHERE id_tet=? AND id_med=?",
+            tenant_id,
+            id,
+        )?),
+        "hi_bd_fac" => odbc_count(
+            connection,
+            "SELECT COUNT(*) FROM hi_bd_med_pro WHERE id_tet=? AND id_fac=?",
+            tenant_id,
+            id,
+        ),
+        _ => Ok(0),
+    }
+}
+
+fn odbc_count(
+    connection: &Connection<'_>,
+    sql: &str,
+    tenant_id: &str,
+    target_id: &str,
+) -> Result<usize, String> {
+    query_optional_string(connection, sql, vec![tenant_id.into(), target_id.into()])?
+        .unwrap_or_default()
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| "目标数据库返回了无法识别的引用计数".to_string())
 }
 
 fn record_failure(
@@ -176,6 +518,17 @@ fn write_row(
     let spec = derived_spec(data);
     let fg_pri = defaulted(data, "fgPri", "0");
     validate_execution_context(tenant_id, operator_id, organization_id, fg_pri == "1")?;
+    if conflict_strategy.eq_ignore_ascii_case("OVERWRITE") && !row.id_med.is_empty() {
+        return overwrite_odbc_row(
+            connection,
+            row,
+            allow_create_factory,
+            tenant_id,
+            operator_id,
+            organization_id,
+            &now,
+        );
+    }
     let existing_med = if fg_pri == "1" {
         query_optional_string(
             connection,
@@ -293,6 +646,16 @@ fn write_row(
         &mut events,
     )?;
     let id_med_unit = ensure_unit(connection, &id_med, data, tenant_id, &mut events)?;
+    if !crate::normalize::has_product_data(data) {
+        return Ok(WriteOutcome {
+            status: "SUCCESS".into(),
+            id_med,
+            id_med_unit,
+            id_fac: String::new(),
+            id_med_pro: String::new(),
+            events,
+        });
+    }
     let id_fac = ensure_factory(
         connection,
         data,
@@ -434,6 +797,224 @@ fn write_row(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn overwrite_odbc_row(
+    connection: &Connection<'_>,
+    row: &MigrationRow,
+    allow_create_factory: bool,
+    tenant_id: &str,
+    operator_id: &str,
+    organization_id: &str,
+    now: &str,
+) -> Result<WriteOutcome, String> {
+    let data = &row.normalized_data;
+    let id_med = row.id_med.clone();
+    let name = text(data, "naMed");
+    let med_type = text(data, "sdMed");
+    let spec = derived_spec(data);
+    let fg_pri = defaulted(data, "fgPri", "0");
+    if let Some(duplicate) = query_optional_string(
+        connection,
+        "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND sd_med=? AND COALESCE(spec,'')=? AND id_med<>? AND fg_active='1'",
+        vec![tenant_id.into(), name.clone(), med_type, spec.clone(), id_med.clone()],
+    )? {
+        return Err(format!(
+            "覆盖后的药品业务键与目标药品{duplicate}冲突，请先处理重复数据"
+        ));
+    }
+    let mut events = Vec::new();
+    let med_patch = medicine_patch(data);
+    let (before, after) = apply_odbc_patch(
+        connection,
+        "hi_bd_med",
+        "id_med",
+        &id_med,
+        tenant_id,
+        &med_patch,
+    )?;
+    events.push(WriteEvent {
+        operation: "UPDATE",
+        table: "hi_bd_med",
+        target_id: id_med.clone(),
+        message: "覆盖药品基本信息，已保存字段级修改前快照".into(),
+        before,
+        after,
+    });
+    ensure_alias(
+        connection,
+        &id_med,
+        &name,
+        tenant_id,
+        &fg_pri,
+        organization_id,
+        &mut events,
+    )?;
+    let id_med_unit = ensure_unit(connection, &id_med, data, tenant_id, &mut events)?;
+    if row.id_med_pro.is_empty() {
+        return Ok(WriteOutcome {
+            status: "SUCCESS".into(),
+            id_med,
+            id_med_unit,
+            id_fac: String::new(),
+            id_med_pro: String::new(),
+            events,
+        });
+    }
+    let id_fac = ensure_factory(
+        connection,
+        data,
+        allow_create_factory,
+        tenant_id,
+        operator_id,
+        now,
+        &mut events,
+    )?;
+    ensure_no_odbc_product_conflict(connection, row, &id_fac, &name, &spec, tenant_id)?;
+    let product_patch = product_patch(data, &id_med, &id_fac, &id_med_unit);
+    let (before, after) = apply_odbc_patch(
+        connection,
+        "hi_bd_med_pro",
+        "id_med_pro",
+        &row.id_med_pro,
+        tenant_id,
+        &product_patch,
+    )?;
+    events.push(WriteEvent {
+        operation: "UPDATE",
+        table: "hi_bd_med_pro",
+        target_id: row.id_med_pro.clone(),
+        message: "覆盖药品商品信息，已保存字段级修改前快照".into(),
+        before,
+        after,
+    });
+    Ok(WriteOutcome {
+        status: "SUCCESS".into(),
+        id_med,
+        id_med_unit,
+        id_fac,
+        id_med_pro: row.id_med_pro.clone(),
+        events,
+    })
+}
+
+fn ensure_no_odbc_product_conflict(
+    connection: &Connection<'_>,
+    row: &MigrationRow,
+    id_fac: &str,
+    base_name: &str,
+    base_spec: &str,
+    tenant_id: &str,
+) -> Result<(), String> {
+    let data = &row.normalized_data;
+    let external_code = text(data, "cdMedPro");
+    if !external_code.is_empty() {
+        if let Some(id) = query_optional_string(
+            connection,
+            "SELECT id_med_pro FROM hi_bd_med_pro WHERE id_tet=? AND cd_med_pro=? AND id_med_pro<>? AND fg_active='1'",
+            vec![tenant_id.into(), external_code, row.id_med_pro.clone()],
+        )? {
+            return Err(format!("覆盖后的三方货品码已被目标商品{id}使用"));
+        }
+    }
+    let product_name = defaulted(data, "naMedPro", base_name);
+    let sale_spec = derived_sale_spec(data, base_spec);
+    if let Some(id) = query_optional_string(
+        connection,
+        "SELECT id_med_pro FROM hi_bd_med_pro WHERE id_tet=? AND id_fac=? AND na_med_pro=? AND COALESCE(spec_sale,'')=? AND id_med_pro<>? AND fg_active='1'",
+        vec![tenant_id.into(), id_fac.into(), product_name, sale_spec, row.id_med_pro.clone()],
+    )? {
+        return Err(format!("覆盖后的厂家、商品名和销售规格与目标商品{id}冲突"));
+    }
+    Ok(())
+}
+
+fn apply_odbc_patch(
+    connection: &Connection<'_>,
+    table: &str,
+    primary_key: &str,
+    target_id: &str,
+    tenant_id: &str,
+    patch: &[ColumnPatch],
+) -> Result<(Value, Value), String> {
+    let existing = read_odbc_patch_snapshot(
+        connection,
+        table,
+        primary_key,
+        target_id,
+        tenant_id,
+        patch,
+        true,
+    )?;
+    let mut before = Map::new();
+    let mut after = Map::new();
+    for (item, value) in patch.iter().zip(existing) {
+        before.insert(
+            item.column.into(),
+            value.map(Value::String).unwrap_or(Value::Null),
+        );
+        after.insert(
+            item.column.into(),
+            item.value.clone().map(Value::String).unwrap_or(Value::Null),
+        );
+    }
+    let assignments = patch
+        .iter()
+        .map(|item| {
+            if item.value.is_some() {
+                format!("{}=?", item.column)
+            } else {
+                format!("{}=NULL", item.column)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut values = patch
+        .iter()
+        .filter_map(|item| item.value.clone())
+        .collect::<Vec<_>>();
+    values.push(tenant_id.into());
+    values.push(target_id.into());
+    execute_strings(
+        connection,
+        &format!("UPDATE {table} SET {assignments} WHERE id_tet=? AND {primary_key}=?"),
+        values,
+    )?;
+    Ok((Value::Object(before), Value::Object(after)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_odbc_patch_snapshot(
+    connection: &Connection<'_>,
+    table: &str,
+    primary_key: &str,
+    target_id: &str,
+    tenant_id: &str,
+    patch: &[ColumnPatch],
+    for_update: bool,
+) -> Result<Vec<Option<String>>, String> {
+    if patch.is_empty() {
+        return Err("覆盖字段清单为空".into());
+    }
+    let columns = patch
+        .iter()
+        .map(|item| item.column)
+        .collect::<Vec<_>>()
+        .join(",");
+    let lock = if for_update { " FOR UPDATE" } else { "" };
+    let select_sql =
+        format!("SELECT {columns} FROM {table} WHERE id_tet=? AND {primary_key}=?{lock}");
+    let existing = query_optional_row_strings(
+        connection,
+        &select_sql,
+        vec![tenant_id.into(), target_id.into()],
+    )?
+    .ok_or_else(|| format!("覆盖目标不存在或不属于当前租户：{table}/{target_id}"))?;
+    if existing.len() != patch.len() {
+        return Err("覆盖快照字段数量与更新清单不一致".into());
+    }
+    Ok(existing)
+}
+
 fn ensure_alias(
     connection: &Connection<'_>,
     id_med: &str,
@@ -483,8 +1064,12 @@ fn ensure_unit(
     tenant_id: &str,
     events: &mut Vec<WriteEvent>,
 ) -> Result<String, String> {
-    let unit = text(data, "unitSale");
-    let factor = integer(data, "unitSaleFactor")?;
+    let unit = defaulted(data, "unitSale", &text(data, "unitPre"));
+    let factor = if text(data, "unitSaleFactor").is_empty() {
+        "1".to_string()
+    } else {
+        integer(data, "unitSaleFactor")?
+    };
     let exists = query_optional_string(
         connection,
         "SELECT id_med_unit FROM hi_bd_med_unit WHERE id_tet=? AND id_med=? AND na_unit=? AND unit_factor=?",

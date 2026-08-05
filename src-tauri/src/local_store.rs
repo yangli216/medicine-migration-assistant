@@ -2,12 +2,50 @@ use crate::id::new_object_id;
 use crate::model::{BatchDetail, MigrationAudit, MigrationBatch, MigrationRow};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::path::Path;
 use std::sync::Mutex;
 
 pub struct LocalStore {
     connection: Mutex<Connection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceLinkSnapshot {
+    pub link_id: String,
+    pub tenant_id: String,
+    pub source_type: String,
+    pub source_name: String,
+    pub source_key: String,
+    pub source_hash: String,
+    pub batch_id: String,
+    pub row_id: String,
+    pub id_med: String,
+    pub id_med_unit: String,
+    pub id_fac: String,
+    pub id_med_pro: String,
+    pub write_manifest: Value,
+    pub active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl SourceLinkSnapshot {
+    pub fn manages(&self, table: &str, target_id: &str) -> bool {
+        self.write_manifest
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|event| {
+                matches!(
+                    event.get("operation").and_then(Value::as_str),
+                    Some("INSERT" | "UPDATE")
+                ) && event.get("table").and_then(Value::as_str) == Some(table)
+                    && event.get("targetId").and_then(Value::as_str) == Some(target_id)
+            })
+    }
 }
 
 impl LocalStore {
@@ -24,7 +62,7 @@ impl LocalStore {
                     source_type TEXT NOT NULL,
                     source_name TEXT NOT NULL,
                     source_description TEXT NOT NULL DEFAULT '',
-                    conflict_strategy TEXT NOT NULL DEFAULT 'REUSE',
+                    conflict_strategy TEXT NOT NULL DEFAULT 'INCREMENTAL',
                     allow_create_factory INTEGER NOT NULL DEFAULT 0,
                     idempotency_key TEXT NOT NULL DEFAULT '',
                     mapping_json TEXT NOT NULL,
@@ -78,6 +116,26 @@ impl LocalStore {
                     FOREIGN KEY(batch_id) REFERENCES migration_batch(batch_id)
                 );
                 CREATE INDEX IF NOT EXISTS ix_mig_audit_batch_time ON migration_audit(batch_id, operated_at DESC);
+                CREATE TABLE IF NOT EXISTS migration_source_link (
+                    link_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_name TEXT NOT NULL,
+                    source_key TEXT NOT NULL,
+                    source_hash TEXT NOT NULL,
+                    batch_id TEXT NOT NULL,
+                    row_id TEXT NOT NULL,
+                    id_med TEXT NOT NULL DEFAULT '',
+                    id_med_unit TEXT NOT NULL DEFAULT '',
+                    id_fac TEXT NOT NULL DEFAULT '',
+                    id_med_pro TEXT NOT NULL DEFAULT '',
+                    write_manifest_json TEXT NOT NULL DEFAULT '[]',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(tenant_id,source_type,source_name,source_key)
+                );
+                CREATE INDEX IF NOT EXISTS ix_mig_link_batch ON migration_source_link(batch_id);
                 "#,
             )
             .map_err(|error| error.to_string())?;
@@ -102,6 +160,190 @@ impl LocalStore {
             )
             .optional()
             .map_err(|error| error.to_string())
+    }
+
+    pub fn find_source_link(
+        &self,
+        tenant_id: &str,
+        source_type: &str,
+        source_name: &str,
+        source_key: &str,
+    ) -> Result<Option<SourceLinkSnapshot>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        connection
+            .query_row(
+                r#"SELECT link_id,tenant_id,source_type,source_name,source_key,source_hash,
+                   batch_id,row_id,id_med,id_med_unit,id_fac,id_med_pro,write_manifest_json,
+                   active,created_at,updated_at FROM migration_source_link
+                   WHERE tenant_id=?1 AND source_type=?2 AND source_name=?3 AND source_key=?4
+                     AND active=1"#,
+                params![tenant_id, source_type, source_name, source_key],
+                |row| {
+                    let manifest: String = row.get(12)?;
+                    Ok(SourceLinkSnapshot {
+                        link_id: row.get(0)?,
+                        tenant_id: row.get(1)?,
+                        source_type: row.get(2)?,
+                        source_name: row.get(3)?,
+                        source_key: row.get(4)?,
+                        source_hash: row.get(5)?,
+                        batch_id: row.get(6)?,
+                        row_id: row.get(7)?,
+                        id_med: row.get(8)?,
+                        id_med_unit: row.get(9)?,
+                        id_fac: row.get(10)?,
+                        id_med_pro: row.get(11)?,
+                        write_manifest: serde_json::from_str(&manifest).unwrap_or(Value::Null),
+                        active: row.get::<_, i32>(13)? != 0,
+                        created_at: row.get(14)?,
+                        updated_at: row.get(15)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn restore_source_link(&self, snapshot: &SourceLinkSnapshot) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        connection
+            .execute(
+                r#"INSERT INTO migration_source_link(
+                    link_id,tenant_id,source_type,source_name,source_key,source_hash,batch_id,row_id,
+                    id_med,id_med_unit,id_fac,id_med_pro,write_manifest_json,active,created_at,updated_at
+                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                ON CONFLICT(tenant_id,source_type,source_name,source_key) DO UPDATE SET
+                    link_id=excluded.link_id,source_hash=excluded.source_hash,
+                    batch_id=excluded.batch_id,row_id=excluded.row_id,id_med=excluded.id_med,
+                    id_med_unit=excluded.id_med_unit,id_fac=excluded.id_fac,
+                    id_med_pro=excluded.id_med_pro,write_manifest_json=excluded.write_manifest_json,
+                    active=excluded.active,created_at=excluded.created_at,updated_at=excluded.updated_at"#,
+                params![
+                    snapshot.link_id,
+                    snapshot.tenant_id,
+                    snapshot.source_type,
+                    snapshot.source_name,
+                    snapshot.source_key,
+                    snapshot.source_hash,
+                    snapshot.batch_id,
+                    snapshot.row_id,
+                    snapshot.id_med,
+                    snapshot.id_med_unit,
+                    snapshot.id_fac,
+                    snapshot.id_med_pro,
+                    snapshot.write_manifest.to_string(),
+                    snapshot.active as i32,
+                    snapshot.created_at,
+                    snapshot.updated_at
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn upsert_source_link(
+        &self,
+        tenant_id: &str,
+        source_type: &str,
+        source_name: &str,
+        row: &MigrationRow,
+        write_manifest: Value,
+    ) -> Result<(), String> {
+        let now = Utc::now().to_rfc3339();
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        connection
+            .execute(
+                r#"INSERT INTO migration_source_link(
+                    link_id,tenant_id,source_type,source_name,source_key,source_hash,batch_id,row_id,
+                    id_med,id_med_unit,id_fac,id_med_pro,write_manifest_json,active,created_at,updated_at
+                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,1,?14,?14)
+                ON CONFLICT(tenant_id,source_type,source_name,source_key) DO UPDATE SET
+                    source_hash=excluded.source_hash,batch_id=excluded.batch_id,row_id=excluded.row_id,
+                    id_med=excluded.id_med,id_med_unit=excluded.id_med_unit,id_fac=excluded.id_fac,
+                    id_med_pro=excluded.id_med_pro,write_manifest_json=excluded.write_manifest_json,
+                    active=1,updated_at=excluded.updated_at"#,
+                params![
+                    new_object_id(),
+                    tenant_id,
+                    source_type,
+                    source_name,
+                    row.source_key,
+                    row.source_hash,
+                    row.batch_id,
+                    row.row_id,
+                    row.id_med,
+                    row.id_med_unit,
+                    row.id_fac,
+                    row.id_med_pro,
+                    write_manifest.to_string(),
+                    now
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_source_link_upsert(
+        &self,
+        tenant_id: &str,
+        source_type: &str,
+        source_name: &str,
+        row: &MigrationRow,
+        write_manifest: Value,
+        operator_id: &str,
+        trace_id: &str,
+    ) -> Result<(), String> {
+        let previous =
+            self.find_source_link(tenant_id, source_type, source_name, &row.source_key)?;
+        let before = previous
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or(Value::Null);
+        self.upsert_source_link(
+            tenant_id,
+            source_type,
+            source_name,
+            row,
+            write_manifest.clone(),
+        )?;
+        self.audit_event(
+            &row.batch_id,
+            &row.row_id,
+            "SOURCE_LINK_UPSERT",
+            "migration_source_link",
+            &row.source_key,
+            "SUCCESS",
+            before,
+            serde_json::json!({
+                "tenantId":tenant_id,
+                "sourceType":source_type,
+                "sourceName":source_name,
+                "sourceKey":row.source_key,
+                "sourceHash":row.source_hash,
+                "batchId":row.batch_id,
+                "rowId":row.row_id,
+                "idMed":row.id_med,
+                "idMedUnit":row.id_med_unit,
+                "idFac":row.id_fac,
+                "idMedPro":row.id_med_pro,
+                "writeManifest":write_manifest
+            }),
+            "已更新来源主键与目标主键迁移台账",
+            operator_id,
+            trace_id,
+        )
     }
 
     pub fn insert_batch(&self, batch: &MigrationBatch, mapping_json: &str) -> Result<(), String> {
@@ -211,6 +453,40 @@ impl LocalStore {
                 skip_count=?6,updated_at=?7,finished_at=COALESCE(?8,finished_at) WHERE batch_id=?1"#,
             params![batch_id,status,valid,success,fail,skip,now,finished_at],
         ).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub fn update_batch_status(&self, batch_id: &str, status: &str) -> Result<(), String> {
+        let now = Utc::now().to_rfc3339();
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        connection
+            .execute(
+                "UPDATE migration_batch SET status=?2,updated_at=?3,finished_at=?3 WHERE batch_id=?1",
+                params![batch_id, status, now],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub fn deactivate_source_link_for_row(
+        &self,
+        batch_id: &str,
+        row_id: &str,
+    ) -> Result<(), String> {
+        let now = Utc::now().to_rfc3339();
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        connection
+            .execute(
+                "UPDATE migration_source_link SET active=0,updated_at=?3 WHERE batch_id=?1 AND row_id=?2",
+                params![batch_id, row_id, now],
+            )
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -394,4 +670,39 @@ fn parse_map(json: &str) -> Map<String, Value> {
         .ok()
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SourceLinkSnapshot;
+    use serde_json::json;
+
+    #[test]
+    fn source_link_only_treats_insert_and_continuous_update_as_tool_managed() {
+        let mut link = SourceLinkSnapshot {
+            link_id: "link".into(),
+            tenant_id: "tenant".into(),
+            source_type: "PHIS27".into(),
+            source_name: "source".into(),
+            source_key: "1".into(),
+            source_hash: "hash".into(),
+            batch_id: "batch".into(),
+            row_id: "row".into(),
+            id_med: "med".into(),
+            id_med_unit: "unit".into(),
+            id_fac: "fac".into(),
+            id_med_pro: "product".into(),
+            write_manifest: json!([
+                {"operation":"INSERT","table":"hi_bd_med","targetId":"med"},
+                {"operation":"REUSE","table":"hi_bd_fac","targetId":"fac"}
+            ]),
+            active: true,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        };
+        assert!(link.manages("hi_bd_med", "med"));
+        assert!(!link.manages("hi_bd_fac", "fac"));
+        link.write_manifest = json!([{"operation":"UPDATE","table":"hi_bd_med","targetId":"med"}]);
+        assert!(link.manages("hi_bd_med", "med"));
+    }
 }

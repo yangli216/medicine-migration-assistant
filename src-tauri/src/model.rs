@@ -83,11 +83,13 @@ pub struct PrepareBatchRequest {
     pub idempotency_key: String,
     #[serde(default)]
     pub mappings: Vec<FieldMapping>,
+    #[serde(default)]
+    pub cost_merge_mappings: Map<String, Value>,
     pub rows: Vec<Map<String, Value>>,
 }
 
 fn default_conflict_strategy() -> String {
-    "REUSE".to_string()
+    "INCREMENTAL".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +103,57 @@ pub struct ExecuteBatchRequest {
     pub operator_id: String,
     #[serde(default)]
     pub organization_id: String,
+    #[serde(default)]
+    pub selected_row_ids: Vec<String>,
+    #[serde(default)]
+    pub overwrite_preview_confirmed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoBatchRequest {
+    pub batch_id: String,
+    pub target: ConnectionProfile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewOverwriteRequest {
+    pub batch_id: String,
+    pub target: ConnectionProfile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverwriteFieldDiff {
+    pub table: String,
+    pub column: String,
+    pub label: String,
+    pub before: Value,
+    pub after: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverwriteRowPreview {
+    pub row_id: String,
+    pub row_no: usize,
+    pub source_key: String,
+    pub action: String,
+    pub changes: Vec<OverwriteFieldDiff>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverwritePreview {
+    pub batch_id: String,
+    pub rows: Vec<OverwriteRowPreview>,
+    pub insert_count: usize,
+    pub update_count: usize,
+    pub unchanged_count: usize,
+    pub changed_field_count: usize,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +234,8 @@ pub struct TargetField {
     pub group: String,
     pub value_type: String,
     pub description: String,
+    #[serde(default)]
+    pub dictionary_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
