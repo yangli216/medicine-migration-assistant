@@ -228,6 +228,12 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /load_migration_batch/);
   assert.match(appSource, /筛选迁移任务/);
   assert.match(appSource, /筛选迁移状态/);
+  assert.match(appSource, /机构库存首次盘点/);
+  assert.match(appSource, /history-batch-card__top/);
+  assert.match(appSource, /history-batch-card__meta/);
+  assert.match(appSource, /history-batch-card__source/);
+  assert.match(appSource, /history-batch-card__results/);
+  assert.match(appSource, /title=\{batch\.batchName\}/);
   assert.match(appSource, /批次概览/);
   assert.match(appSource, /迁移明细 \$\{detail\.rows\.length\}/);
   assert.match(appSource, /审计日志 \$\{detail\.audits\.length\}/);

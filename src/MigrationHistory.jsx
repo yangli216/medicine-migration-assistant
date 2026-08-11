@@ -51,6 +51,48 @@ export function formatLocalDateTime(value) {
   }).format(date);
 }
 
+function formatHistoryListDate(value) {
+  if (!value) return "时间未知";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function historyBatchTitle(sourceType = "") {
+  if (sourceType === "PHIS27_INVENTORY") return "机构库存首次盘点";
+  if (sourceType === "PHIS27") return "药品基础数据迁移";
+  return migrationTaskLabel(sourceType);
+}
+
+function historyBatchScope(batch) {
+  const text = `${batch.batchName || ""} ${batch.sourceDescription || ""}`;
+  if (batch.sourceType === "PHIS27_INVENTORY") {
+    const organizationCount = text.match(/(\d+)\s*个?机构/);
+    return organizationCount
+      ? `${organizationCount[1]} 个机构`
+      : "机构库存";
+  }
+  if (/全部通用药品/.test(text)) return "全部通用药品";
+  if (/机构全部配置药品/.test(text)) return "机构全部配置药品";
+  if (/机构在用药品/.test(text)) return "机构在用药品";
+  return batch.sourceType === "PHIS27" ? "药品主数据" : "迁移批次";
+}
+
+function historyBatchSource(batch) {
+  const parts = `${batch.sourceName || ""}`
+    .split("·")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length > 1 && /二系列phis/i.test(parts[0])) parts.shift();
+  return parts.join(" · ") || "未记录数据源";
+}
+
 export function diffValue(value) {
   if (value === null || value === undefined || `${value}` === "") return "（空）";
   return `${value}`;
@@ -222,7 +264,9 @@ export function MigrationHistory({
               />
             </div>
             <div className="history-library__count">
-              共 {batches.length} 个批次，当前显示 {filteredBatches.length} 个
+              <span>迁移批次</span>
+              <strong>{filteredBatches.length}</strong>
+              <small>/ {batches.length}</small>
             </div>
             <div className="history-batch-list">
               {filteredBatches.map((batch) => (
@@ -233,23 +277,55 @@ export function MigrationHistory({
                   }
                   onClick={() => onSelect(batch.batchId)}
                   key={batch.batchId}
+                  title={batch.batchName}
+                  aria-label={`${historyBatchTitle(batch.sourceType)}，${statusMeta(batch.status)[0]}，${formatLocalDateTime(batch.createdAt)}`}
                 >
-                  <div className="history-batch-list__title">
-                    <strong>{batch.batchName}</strong>
+                  <div className="history-batch-card__top">
+                    <strong>{historyBatchTitle(batch.sourceType)}</strong>
                     <span
                       className={`status-pill status-pill--${statusMeta(batch.status)[1]}`}
                     >
                       {statusMeta(batch.status)[0]}
                     </span>
                   </div>
-                  <span>{migrationTaskLabel(batch.sourceType)}</span>
-                  <small>{formatLocalDateTime(batch.createdAt)}</small>
-                  <div className="history-batch-list__counts">
-                    <em>总计 {batch.totalCount}</em>
-                    <em>成功 {batch.successCount}</em>
-                    <em className={batch.failCount ? "danger" : ""}>
-                      失败 {batch.failCount}
-                    </em>
+                  <div className="history-batch-card__meta">
+                    <time dateTime={batch.createdAt || undefined}>
+                      {formatHistoryListDate(batch.createdAt)}
+                    </time>
+                    <span>{historyBatchScope(batch)}</span>
+                  </div>
+                  <p className="history-batch-card__source">
+                    {historyBatchSource(batch)}
+                  </p>
+                  <div className="history-batch-card__results">
+                    <span>
+                      <em>总数</em>
+                      <b>{batch.totalCount}</b>
+                    </span>
+                    {batch.validCount > 0 && (
+                      <span className="ready">
+                        <em>待执行</em>
+                        <b>{batch.validCount}</b>
+                      </span>
+                    )}
+                    {batch.successCount > 0 && (
+                      <span className="success">
+                        <em>成功</em>
+                        <b>{batch.successCount}</b>
+                      </span>
+                    )}
+                    {batch.failCount > 0 && (
+                      <span className="danger">
+                        <em>失败</em>
+                        <b>{batch.failCount}</b>
+                      </span>
+                    )}
+                    {batch.skipCount > 0 && (
+                      <span>
+                        <em>跳过</em>
+                        <b>{batch.skipCount}</b>
+                      </span>
+                    )}
                   </div>
                 </button>
               ))}

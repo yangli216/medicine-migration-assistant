@@ -3143,7 +3143,7 @@ button:disabled {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: 340px minmax(0, 1fr);
+  grid-template-columns: 372px minmax(0, 1fr);
 }
 .history-library {
   min-width: 0;
@@ -3151,7 +3151,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 12px;
+  padding: 14px;
   border-right: 1px solid var(--line);
   background: #f7fbfb;
 }
@@ -3187,8 +3187,24 @@ button:disabled {
   font-size: 11px;
 }
 .history-library__count {
-  padding: 9px 2px 7px;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 12px 2px 8px;
   color: #7b898f;
+  font-size: 10px;
+}
+.history-library__count span {
+  margin-right: auto;
+  color: #526b6b;
+  font-size: 11px;
+  font-weight: 700;
+}
+.history-library__count strong {
+  color: var(--teal-700);
+  font-size: 14px;
+}
+.history-library__count small {
   font-size: 10px;
 }
 .history-batch-list {
@@ -3197,7 +3213,8 @@ button:disabled {
   min-height: 0;
   display: grid;
   align-content: start;
-  gap: 7px;
+  gap: 10px;
+  padding-right: 3px;
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -3205,11 +3222,11 @@ button:disabled {
   width: 100%;
   min-width: 0;
   display: grid;
-  gap: 4px;
+  gap: 7px;
   overflow: hidden;
-  padding: 10px;
+  padding: 12px 13px;
   border: 1px solid #dce7e7;
-  border-radius: 8px;
+  border-radius: 10px;
   background: #fff;
   color: #344c5f;
   text-align: left;
@@ -3221,59 +3238,105 @@ button:disabled {
 .history-batch-list > button.active {
   border-color: #8fcac3;
   background: #e9f7f4;
-  box-shadow: inset 3px 0 #2b9a90;
+  box-shadow: inset 4px 0 #2b9a90, 0 3px 10px rgba(23, 98, 91, 0.08);
 }
-.history-batch-list__title {
+.history-batch-list > button:focus-visible {
+  outline: 2px solid #58b6ad;
+  outline-offset: 2px;
+}
+.history-batch-card__top {
   width: 100%;
   min-width: 0;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 7px;
+  gap: 10px;
 }
-.history-batch-list__title strong {
+.history-batch-card__top strong {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  color: #213d50;
+  font-size: 13px;
+  line-height: 1.35;
 }
-.history-batch-list__title .status-pill {
+.history-batch-card__top .status-pill {
   flex: 0 0 auto;
-  max-width: 88px;
+  max-width: 94px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.history-batch-list > button > span,
-.history-batch-list > button > small {
-  display: block;
+.history-batch-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   width: 100%;
   min-width: 0;
-  overflow: hidden;
-  color: #6f818d;
+  color: #718188;
   font-size: 10px;
+}
+.history-batch-card__meta time {
+  color: #536c76;
+  font-weight: 650;
+}
+.history-batch-card__meta span::before {
+  content: "";
+  display: inline-block;
+  width: 3px;
+  height: 3px;
+  margin: 0 7px 2px 0;
+  border-radius: 99px;
+  background: #9ab4b2;
+}
+.history-batch-card__source {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: #647985;
+  font-size: 10px;
+  line-height: 1.45;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.history-batch-list__counts {
+.history-batch-card__results {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
-  gap: 10px;
-  padding-top: 5px;
+  gap: 6px;
+  padding-top: 7px;
   border-top: 1px solid #e5eeed;
 }
-.history-batch-list__counts em {
-  white-space: nowrap;
-  color: #58706f;
+.history-batch-card__results span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: #f1f5f5;
+  color: #566d72;
+}
+.history-batch-card__results em {
   font-size: 10px;
   font-style: normal;
 }
-.history-batch-list__counts em.danger {
+.history-batch-card__results b {
+  font-size: 11px;
+}
+.history-batch-card__results span.ready {
+  background: #eaf7f4;
+  color: #167d72;
+}
+.history-batch-card__results span.success {
+  background: #e9f7f1;
+  color: #167a62;
+}
+.history-batch-card__results span.danger {
+  background: #fff0ef;
   color: #c45149;
-  font-weight: 700;
 }
 .history-library__empty,
 .history-detail__empty {
@@ -5237,7 +5300,7 @@ button:disabled {
     grid-template-columns: 260px minmax(0, 1fr);
   }
   .migration-history__body {
-    grid-template-columns: 300px minmax(0, 1fr);
+    grid-template-columns: 340px minmax(0, 1fr);
   }
   .history-row-list > div {
     grid-template-columns: 65px 105px 78px minmax(190px, 1fr);
