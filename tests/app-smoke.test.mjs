@@ -12,6 +12,19 @@ test("main React flow compiles as JSX", async () => {
   assert.match(result.code, /function App\(/);
 });
 
+test("database connection summaries import their status icon", async () => {
+  const source = await readFile(
+    new URL("../src/DatabaseConnections.jsx", import.meta.url),
+    "utf8",
+  );
+  const phosphorImport = source.match(
+    /import\s*\{([\s\S]*?)\}\s*from\s*["']@phosphor-icons\/react["']/,
+  )?.[1];
+  assert.ok(phosphorImport, "missing Phosphor icon import block");
+  assert.match(phosphorImport, /\bCheckCircle\b/);
+  assert.match(source, /<CheckCircle\b/);
+});
+
 test("all dropdowns use the searchable combobox and medicine previews use business labels", async () => {
   const uiSourceFiles = [
     "App.jsx",
