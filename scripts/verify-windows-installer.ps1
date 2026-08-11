@@ -72,7 +72,7 @@ if ($machine -ne 0x8664) {
 }
 
 $oracleDriverName = "Oracle in instantclient_19_31_bsoft_migration"
-$oracleDirectory = Join-Path $installRoot "resources/oracle/instantclient_19_31_bsoft_migration"
+$oracleDirectory = Join-Path $installRoot "oracle/instantclient_19_31_bsoft_migration"
 $oracleRequiredFiles = @(
   "BASIC_LICENSE",
   "ODBC_LICENSE",

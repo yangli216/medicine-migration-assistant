@@ -97,6 +97,7 @@ test("Oracle Windows x64 使用固定校验值准备并自动登记内置驱动"
   assert.match(hooks, /NSIS_HOOK_POSTINSTALL/);
   assert.match(hooks, /SetRegView 64/);
   assert.match(hooks, /WriteRegStr HKLM/);
+  assert.match(hooks, /\$INSTDIR\\oracle\\instantclient_19_31_bsoft_migration/);
   assert.match(hooks, /sqora32\.dll/);
   assert.match(hooks, /NSIS_HOOK_PREUNINSTALL/);
   assert.match(hooks, /DeleteRegKey HKLM/);

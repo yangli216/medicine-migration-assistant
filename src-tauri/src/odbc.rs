@@ -269,7 +269,6 @@ fn bundled_oracle_runtime_directory() -> Option<PathBuf> {
         if let Some(application_directory) = executable.parent() {
             candidates.push(
                 application_directory
-                    .join("resources")
                     .join("oracle")
                     .join(ORACLE_WINDOWS_BUNDLE_DIRECTORY),
             );
