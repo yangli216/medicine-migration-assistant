@@ -4,7 +4,7 @@ use odbc_api::{
     buffers::{Indicator, TextRowSet},
     escape_attribute_value,
     parameter::VarCharBox,
-    Connection, ConnectionOptions, Cursor, Environment, IntoParameter, ResultSetMetadata,
+    Connection, ConnectionOptions, Cursor, Environment, ResultSetMetadata,
 };
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
@@ -474,11 +474,14 @@ pub fn query_rows_strings(
 /// raising `SIGABRT`. Keep the logical value empty while providing a one-byte
 /// backing buffer so every driver sees a regular `VARCHAR(1)` parameter.
 fn stable_string_parameter(value: String) -> VarCharBox {
-    if value.is_empty() {
-        VarCharBox::from_buffer(Box::new([0]), Indicator::Length(0))
+    let bytes = value.into_bytes();
+    let logical_length = bytes.len();
+    let buffer = if bytes.is_empty() {
+        vec![0].into_boxed_slice()
     } else {
-        value.into_parameter()
-    }
+        bytes.into_boxed_slice()
+    };
+    VarCharBox::from_buffer(buffer, Indicator::Length(logical_length))
 }
 
 pub fn build_connection_string(profile: &ConnectionProfile) -> Result<String, String> {
@@ -763,6 +766,18 @@ mod tests {
             parameter.data_type(),
             DataType::Varchar {
                 length: NonZeroUsize::new(1)
+            }
+        );
+    }
+
+    #[test]
+    fn non_empty_string_parameter_is_always_bound_as_utf8_varchar() {
+        let parameter = stable_string_parameter("阿莫西林".to_string());
+        assert_eq!(parameter.as_bytes(), Some("阿莫西林".as_bytes()));
+        assert_eq!(
+            parameter.data_type(),
+            DataType::Varchar {
+                length: NonZeroUsize::new("阿莫西林".len())
             }
         );
     }
