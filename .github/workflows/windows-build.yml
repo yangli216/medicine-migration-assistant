@@ -47,6 +47,10 @@ jobs:
       - name: Verify bundled Oracle driver
         run: npm run verify:oracle-driver
 
+      - name: Smoke-test Oracle registration tools
+        shell: pwsh
+        run: scripts/verify-oracle-windows-driver-tools.ps1
+
       - name: Run frontend tests
         run: npm test
 

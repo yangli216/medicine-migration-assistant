@@ -108,6 +108,7 @@ test("Windows 发布流程执行驱动检查并产出 NSIS 安装包", async () 
   assert.match(workflow, /runs-on:\s*windows-latest/);
   assert.match(workflow, /npm run prepare:oracle-driver/);
   assert.match(workflow, /npm run verify:oracle-driver/);
+  assert.match(workflow, /verify-oracle-windows-driver-tools\.ps1/);
   assert.match(workflow, /npm run test:drivers/);
   assert.match(workflow, /bundle\/nsis\/\*\.exe/);
   assert.match(workflow, /if-no-files-found:\s*error/);

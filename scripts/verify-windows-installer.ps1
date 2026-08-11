@@ -29,12 +29,32 @@ function Get-PeMachine([string]$Path) {
 }
 
 $installRoot = Join-Path $env:RUNNER_TEMP "medicine-migration-install-acceptance"
+$hookMarker = Join-Path $env:RUNNER_TEMP "medicine-migration-oracle-hook.txt"
 if (Test-Path $installRoot) {
   Remove-Item $installRoot -Recurse -Force
 }
+Remove-Item $hookMarker -Force -ErrorAction SilentlyContinue
 New-Item $installRoot -ItemType Directory | Out-Null
 
-$installerProcess = Start-Process -FilePath $InstallerPath -ArgumentList "/S", "/D=$installRoot" -PassThru -Wait
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = [Security.Principal.WindowsPrincipal]::new($identity)
+$isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+Write-Host "开始静默安装；Windows 管理员权限：$isAdministrator"
+if (-not $isAdministrator) {
+  throw "perMachine 安装与 Oracle ODBC 登记验收需要管理员权限"
+}
+$installerProcess = Start-Process -FilePath $InstallerPath -ArgumentList "/S", "/D=$installRoot" -PassThru
+if (-not $installerProcess.WaitForExit(180000)) {
+  $phase = if (Test-Path $hookMarker) {
+    "已进入 Oracle ODBC 登记钩子"
+  } elseif (Test-Path $installRoot) {
+    "尚未进入 Oracle ODBC 登记钩子，安装目录已创建"
+  } else {
+    "尚未创建安装目录"
+  }
+  Stop-Process -Id $installerProcess.Id -Force -ErrorAction SilentlyContinue
+  throw "NSIS 静默安装超过 180 秒（$phase）"
+}
 if ($installerProcess.ExitCode -ne 0) {
   throw "NSIS 静默安装失败，退出码 $($installerProcess.ExitCode)"
 }
