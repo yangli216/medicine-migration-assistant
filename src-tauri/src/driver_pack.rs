@@ -13,6 +13,9 @@ struct DriverPackDefinition {
     delivery: String,
     license_note: String,
     official_url: String,
+    protocol: String,
+    install_guide: String,
+    platform_priority: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -27,6 +30,9 @@ pub struct DriverPackStatus {
     delivery: String,
     license_note: String,
     official_url: String,
+    protocol: String,
+    install_guide: String,
+    platform_priority: Vec<String>,
     state: String,
     detected_driver: Option<String>,
     platform: String,
@@ -68,6 +74,9 @@ pub fn list(installed_drivers: &[String]) -> Result<Vec<DriverPackStatus>, Strin
                 delivery: definition.delivery,
                 license_note: definition.license_note,
                 official_url: definition.official_url,
+                protocol: definition.protocol,
+                install_guide: definition.install_guide,
+                platform_priority: definition.platform_priority,
                 state: state.to_string(),
                 detected_driver: detected_driver.cloned(),
                 platform: std::env::consts::OS.to_string(),
@@ -88,32 +97,57 @@ mod tests {
             .iter()
             .find(|pack| pack.database_kind == "oracle")
             .expect("oracle pack");
-        assert_eq!(oracle.version, "19c · 按操作系统架构");
+        assert_eq!(oracle.version, "19c/23ai · 64 位");
         assert_eq!(oracle.default_port, 1521);
         assert_eq!(oracle.state, "profile-ready");
     }
 
     #[test]
     fn installed_driver_is_detected_case_insensitively() {
-        let packs = list(&["KINGBASEES 8.6 ODBC Driver".to_string()]).expect("driver manifest");
-        let kingbase = packs
+        let packs = list(&["dm8 odbc driver".to_string()]).expect("driver manifest");
+        let dameng = packs
             .iter()
-            .find(|pack| pack.database_kind == "kingbase")
-            .expect("kingbase pack");
-        assert_eq!(kingbase.state, "installed");
-        assert_eq!(
-            kingbase.detected_driver.as_deref(),
-            Some("KINGBASEES 8.6 ODBC Driver")
-        );
+            .find(|pack| pack.database_kind == "dameng")
+            .expect("dameng pack");
+        assert_eq!(dameng.state, "installed");
+        assert_eq!(dameng.detected_driver.as_deref(), Some("dm8 odbc driver"));
     }
 
     #[test]
-    fn bundled_oracle_driver_is_reported_as_bundled() {
+    fn installed_oracle_driver_is_reported_as_installed() {
         let packs = list(&["Oracle 19 ODBC driver".to_string()]).expect("driver manifest");
         let oracle = packs
             .iter()
             .find(|pack| pack.database_kind == "oracle")
             .expect("oracle pack");
-        assert_eq!(oracle.state, "bundled");
+        assert_eq!(oracle.state, "installed");
+    }
+
+    #[test]
+    fn common_pg_protocol_and_domestic_database_profiles_are_present() {
+        let packs = list(&[]).expect("driver manifest");
+        for kind in ["postgresql", "opengauss", "vastbase", "gbase8c"] {
+            let pack = packs
+                .iter()
+                .find(|pack| pack.database_kind == kind)
+                .unwrap_or_else(|| panic!("missing {kind}"));
+            assert_eq!(pack.delivery, "bundled");
+            assert_eq!(pack.protocol, "postgresql-wire");
+            assert_eq!(pack.state, "bundled");
+        }
+        for kind in ["gbase8a", "gbase8s"] {
+            assert!(packs.iter().any(|pack| pack.database_kind == kind));
+        }
+    }
+
+    #[test]
+    fn windows_is_the_first_packaging_priority() {
+        for pack in list(&[]).expect("driver manifest") {
+            assert_eq!(
+                pack.platform_priority.first().map(String::as_str),
+                Some("windows-x64")
+            );
+            assert!(!pack.install_guide.trim().is_empty());
+        }
     }
 }

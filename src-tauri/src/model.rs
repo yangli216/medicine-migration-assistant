@@ -45,8 +45,61 @@ fn default_preview_limit() -> u32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SourceDictionaryItem {
+    pub key: String,
+    pub text: String,
+    #[serde(default)]
+    pub properties: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceDictionaryMetadata {
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    #[serde(default)]
+    pub entry: String,
+    #[serde(default)]
+    pub key_field: String,
+    #[serde(default)]
+    pub text_field: String,
+    #[serde(default)]
+    pub property_fields: Vec<String>,
+    #[serde(default)]
+    pub load_status: String,
+    #[serde(default)]
+    pub load_message: String,
+    #[serde(default)]
+    pub items: Vec<SourceDictionaryItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceColumnMetadata {
+    pub name: String,
+    #[serde(default)]
+    pub comment: String,
+    #[serde(default)]
+    pub source_table: String,
+    #[serde(default)]
+    pub source_column: String,
+    #[serde(default = "default_true")]
+    pub mapping_eligible: bool,
+    #[serde(default)]
+    pub source_dictionary: Option<SourceDictionaryMetadata>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SourcePreview {
     pub columns: Vec<String>,
+    #[serde(default)]
+    pub column_metadata: Vec<SourceColumnMetadata>,
     pub rows: Vec<Map<String, Value>>,
     pub truncated: bool,
     pub elapsed_ms: u128,

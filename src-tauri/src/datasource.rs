@@ -1,5 +1,6 @@
 use crate::model::{ConnectionCheck, ConnectionProfile, SourcePreview, SourcePreviewRequest};
 use crate::odbc;
+use crate::pg_protocol;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
@@ -36,6 +37,9 @@ pub async fn connect_mysql(profile: &ConnectionProfile) -> Result<MySqlPool, Str
 }
 
 pub async fn test_connection(profile: &ConnectionProfile) -> Result<ConnectionCheck, String> {
+    if pg_protocol::uses_native_connection(profile) {
+        return pg_protocol::test_connection(profile).await;
+    }
     if odbc::is_odbc_kind(&profile.kind) {
         let profile = profile.clone();
         return tauri::async_runtime::spawn_blocking(move || odbc::test_connection(&profile))
@@ -58,6 +62,9 @@ pub async fn test_connection(profile: &ConnectionProfile) -> Result<ConnectionCh
 }
 
 pub async fn list_tables(profile: &ConnectionProfile) -> Result<Vec<String>, String> {
+    if pg_protocol::uses_native_connection(profile) {
+        return pg_protocol::list_tables(profile).await;
+    }
     if odbc::is_odbc_kind(&profile.kind) {
         let profile = profile.clone();
         return tauri::async_runtime::spawn_blocking(move || odbc::list_tables(&profile))
@@ -78,6 +85,10 @@ pub async fn list_tables(profile: &ConnectionProfile) -> Result<Vec<String>, Str
 
 pub async fn preview_source(request: &SourcePreviewRequest) -> Result<SourcePreview, String> {
     validate_select_query(&request.query)?;
+    if pg_protocol::uses_native_connection(&request.connection) {
+        return pg_protocol::preview_source(&request.connection, &request.query, request.limit)
+            .await;
+    }
     if odbc::is_odbc_kind(&request.connection.kind) {
         let profile = request.connection.clone();
         let source_query = request.query.trim().trim_end_matches(';').to_string();
@@ -120,6 +131,7 @@ pub async fn preview_source(request: &SourcePreviewRequest) -> Result<SourcePrev
         .collect::<Result<Vec<_>, _>>()?;
     Ok(SourcePreview {
         columns,
+        column_metadata: Vec::new(),
         rows,
         truncated,
         elapsed_ms: started.elapsed().as_millis(),

@@ -11,6 +11,9 @@
     "desktop:build": "tauri build",
     "preview": "vite preview",
     "test": "node --test tests/transforms.test.mjs tests/dictionary.test.mjs tests/app-smoke.test.mjs",
+    "test:drivers": "node --test tests/driver-delivery.test.mjs",
+    "verify:macos": "scripts/verify-macos-release.sh",
+    "verify:windows": "powershell -ExecutionPolicy Bypass -File scripts/verify-windows-installer.ps1",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },
   "dependencies": {

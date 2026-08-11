@@ -1,5 +1,40 @@
-const TRUE_VALUES = new Set(["1", "true", "yes", "是", "y", "on", "启用", "有"]);
-const FALSE_VALUES = new Set(["0", "false", "no", "否", "n", "off", "停用", "无"]);
+const TRUE_VALUES = new Set([
+  "1",
+  "true",
+  "yes",
+  "是",
+  "y",
+  "on",
+  "启用",
+  "有",
+  "需要",
+  "需",
+  "有效",
+  "正常",
+  "rx",
+  "处方药",
+  "处方药品",
+]);
+const FALSE_VALUES = new Set([
+  "0",
+  "2",
+  "false",
+  "no",
+  "否",
+  "n",
+  "off",
+  "停用",
+  "无",
+  "不需要",
+  "无需",
+  "无效",
+  "otc",
+  "非处方药",
+  "非处方药品",
+]);
+
+export const EMPTY_VALUE_MAPPING_SOURCE = "<空值>";
+export const IGNORE_VALUE_MAPPING_TARGET = "<忽略>";
 
 export function parseValueMappings(text = "") {
   const mappings = {};
@@ -27,21 +62,32 @@ export function parseValueMappings(text = "") {
       invalidLines.push(index + 1);
       return;
     }
-    mappings[source] = target;
+    mappings[source] = target === IGNORE_VALUE_MAPPING_TARGET ? null : target;
   });
   return { mappings, invalidLines };
 }
 
 export function applyFieldRule(value, rule = {}) {
   let next = value;
-  if (isBlank(next) && `${rule.defaultValue ?? ""}`.trim()) {
-    next = rule.defaultValue;
+  let usedEmptyMapping = false;
+  const mappings = rule.valueMappings || {};
+  if (isBlank(next)) {
+    if (
+      Object.prototype.hasOwnProperty.call(
+        mappings,
+        EMPTY_VALUE_MAPPING_SOURCE,
+      )
+    ) {
+      next = mappings[EMPTY_VALUE_MAPPING_SOURCE];
+      usedEmptyMapping = true;
+    } else if (`${rule.defaultValue ?? ""}`.trim()) {
+      next = rule.defaultValue;
+    }
   }
   if (isBlank(next)) return null;
 
   const text = valueText(next);
-  const mappings = rule.valueMappings || {};
-  if (Object.prototype.hasOwnProperty.call(mappings, text)) {
+  if (!usedEmptyMapping && Object.prototype.hasOwnProperty.call(mappings, text)) {
     next = mappings[text];
   } else if (rule.valueMappingCaseInsensitive) {
     const normalized = text.toLocaleLowerCase();
@@ -76,8 +122,17 @@ export function transformValue(value, operation = "TRIM") {
     }
     case "BOOLEAN_01": {
       const normalized = text.toLocaleLowerCase();
-      if (TRUE_VALUES.has(normalized)) return "1";
-      if (FALSE_VALUES.has(normalized)) return "0";
+      if (
+        FALSE_VALUES.has(normalized) ||
+        normalized.includes("非处方") ||
+        normalized.includes("otc")
+      )
+        return "0";
+      if (
+        TRUE_VALUES.has(normalized) ||
+        (normalized.includes("处方") && !normalized.includes("非处方"))
+      )
+        return "1";
       return text;
     }
     case "DATE_YYYY_MM_DD":

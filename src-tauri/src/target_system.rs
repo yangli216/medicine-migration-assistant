@@ -10,6 +10,7 @@ use std::{
 
 const ROLE_PATH: &str = "logon/myRoles";
 const APP_PATH: &str = "logon/myApps";
+const ORGANIZATION_PATH: &str = "api/bbp.organization/findByTenantId";
 const REQUIRED_LOGIN_NAME: &str = "system";
 const REQUIRED_ROLE_CODE: &str = "tenantSystem";
 
@@ -205,6 +206,40 @@ pub struct TargetSystemLogin {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetOrganization {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub cd: String,
+    #[serde(default)]
+    pub org_id: String,
+    #[serde(default)]
+    pub tenant_id: String,
+    #[serde(default)]
+    pub org_type: String,
+    #[serde(default)]
+    pub org_type_text: String,
+    #[serde(default)]
+    pub full_name: String,
+    #[serde(default)]
+    pub parent: String,
+    #[serde(default)]
+    pub parent_text: String,
+    #[serde(default)]
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetOrganizationCatalog {
+    pub organizations: Vec<TargetOrganization>,
+    pub message: String,
+}
+
 pub async fn probe(
     state: &TargetSystemClient,
     request: TargetSystemProbeRequest,
@@ -289,6 +324,70 @@ pub async fn login(
     establish_application_session(&client, &base_url, &login.authorization_id).await?;
     state.authorize(client, &login)?;
     Ok(login)
+}
+
+pub async fn load_organizations(
+    state: &TargetSystemClient,
+) -> Result<TargetOrganizationCatalog, String> {
+    let (tenant_id, _) = state.execution_identity()?;
+    let (client, base_url) = state.authenticated_http()?;
+    let endpoint = endpoint_url(&base_url, ORGANIZATION_PATH)?;
+    let response = client
+        .post(endpoint)
+        .json(&[tenant_id.as_str()])
+        .send()
+        .await
+        .map_err(|error| format!("新系统机构服务请求失败：{error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("新系统机构服务返回 HTTP {}", status.as_u16()));
+    }
+    let payload: Value = response
+        .json()
+        .await
+        .map_err(|_| "新系统机构服务返回内容不是有效 JSON".to_string())?;
+    let items = organization_items(&payload)?;
+    let mut organizations = serde_json::from_value::<Vec<TargetOrganization>>(items.clone())
+        .map_err(|_| "新系统机构服务返回的机构字段格式不兼容".to_string())?;
+    organizations.retain(|item| {
+        item.active
+            && !item.id.trim().is_empty()
+            && (item.tenant_id.trim().is_empty() || item.tenant_id == tenant_id)
+    });
+    organizations.sort_by(|left, right| {
+        left.cd
+            .cmp(&right.cd)
+            .then(left.name.cmp(&right.name))
+            .then(left.id.cmp(&right.id))
+    });
+    if organizations.is_empty() {
+        return Err("新系统机构服务没有返回当前租户的有效机构".into());
+    }
+    Ok(TargetOrganizationCatalog {
+        message: format!("已从新系统服务读取 {} 个有效机构", organizations.len()),
+        organizations,
+    })
+}
+
+fn organization_items(payload: &Value) -> Result<&Value, String> {
+    if payload.is_array() {
+        return Ok(payload);
+    }
+    if response_code(payload) != 0 && response_code(payload) != 200 {
+        return Err(format!(
+            "新系统机构服务返回失败：{}",
+            response_message(payload).unwrap_or("未返回失败原因")
+        ));
+    }
+    let body = payload
+        .get("body")
+        .ok_or_else(|| "新系统机构服务未返回机构清单".to_string())?;
+    if body.is_array() {
+        return Ok(body);
+    }
+    body.get("items")
+        .filter(|items| items.is_array())
+        .ok_or_else(|| "新系统机构服务返回的机构清单格式不兼容".to_string())
 }
 
 async fn establish_application_session(
@@ -476,7 +575,7 @@ fn connection_error(base_url: &Url, error: &reqwest::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        login, normalize_base_url, parse_login_response, password_digest,
+        login, normalize_base_url, organization_items, parse_login_response, password_digest,
         validate_application_login, validate_login_request, TargetSystemClient,
         TargetSystemLoginRequest,
     };
@@ -564,6 +663,27 @@ mod tests {
             validate_application_login(&json!({ "code": 500, "message": "failed" }), true)
                 .unwrap_err()
                 .contains("failed")
+        );
+    }
+
+    #[test]
+    fn organization_service_accepts_direct_and_wrapped_lists() {
+        let direct = json!([{"id":"org-1","name":"测试机构","active":true}]);
+        assert_eq!(
+            organization_items(&direct)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let wrapped = json!({
+            "code": 200,
+            "body": {"items": [{"id":"org-2","name":"分院","active":true}]}
+        });
+        assert_eq!(
+            organization_items(&wrapped).unwrap().as_array().unwrap()[0]["id"],
+            "org-2"
         );
     }
 

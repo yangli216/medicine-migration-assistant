@@ -1,0 +1,79 @@
+name: Build, sign and notarize macOS
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Require Apple signing and notarization credentials
+        shell: bash
+        run: |
+          for variable in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!variable:-}" ]]; then
+              echo "Missing required repository secret: $variable" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run release checks
+        run: |
+          npm test
+          npm run test:drivers
+          cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
+          cargo test --release --manifest-path src-tauri/Cargo.toml
+
+      - name: Build signed and notarized application
+        run: npm run desktop:build
+
+      - name: Verify signature, Gatekeeper and notarization ticket
+        env:
+          REQUIRE_NOTARIZATION: "1"
+        run: scripts/verify-macos-release.sh
+
+      - name: Upload macOS release and acceptance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: medicine-migration-assistant-macos-arm64
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app
+            artifacts/macos-release-acceptance.json

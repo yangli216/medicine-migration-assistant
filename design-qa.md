@@ -1,83 +1,50 @@
-# Design QA
+# Design QA — 迁移历史日志左侧列表
 
-## Comparison target
-
-- Source visual truth: `/Users/yangl/.codex/generated_images/019fc5df-924a-76d2-913a-44436dc6e468/exec-dab41673-dc55-4ff7-bfdb-5132afeb10c6.png`
-- Browser-rendered implementation: `/Users/yangl/.codex/.chatgpt-projects/g-p-69f1adb0b3708191ab2d7b1fa8819ad3/guided-migration-prototype/implementation-final.png`
-- Full-view combined comparison: `/Users/yangl/.codex/.chatgpt-projects/g-p-69f1adb0b3708191ab2d7b1fa8819ad3/guided-migration-prototype/design-comparison-final.png`
-- Focused stepper comparison: `/Users/yangl/.codex/.chatgpt-projects/g-p-69f1adb0b3708191ab2d7b1fa8819ad3/guided-migration-prototype/comparison-focus-stepper.png`
-- Focused mapping-workspace comparison: `/Users/yangl/.codex/.chatgpt-projects/g-p-69f1adb0b3708191ab2d7b1fa8819ad3/guided-migration-prototype/comparison-focus-workspace.png`
-- Additional interaction evidence: `/Users/yangl/.codex/.chatgpt-projects/g-p-69f1adb0b3708191ab2d7b1fa8819ad3/guided-migration-prototype/implementation-issue-dialog.png`
-- State: initial guided mapping screen with `DRUG_CODE` selected.
-
-## Viewport and normalization
-
-- Source pixels: 1487 × 1058.
-- Implementation pixels: 1440 × 1024.
-- CSS viewport: 1440 × 1024.
-- Device scale factor: 1.
-- Density normalization: source was proportionally normalized to 1440 × 1024 before side-by-side comparison; implementation was captured natively at 1440 × 1024.
-- Additional responsive check: 1280 × 800. The fixed primary action remained visible, with no horizontal overflow.
-
-## Browser verification
-
-- Local route opened successfully in the Codex in-app browser.
-- Primary interactions tested:
-  - select an alternate suggested source field;
-  - open and resolve the data-quality dialog;
-  - open and close professional mapping mode;
-  - confirm the current mapping and advance to the next core field;
-  - return to the prior field;
-  - verify progress and recommendation state updates.
-- Console errors and warnings checked after initial render and after interactions: none.
-- Layout check at 1440 × 1024: body and viewport both 1440 × 1024; fixed footer and primary controls remain visible; no page overflow.
-- Production build passed.
-- Sites packaging tests passed: 4/4.
+- Source visual truth: `/var/folders/tq/31b1_m3x7934pqwkcfc3qhcc0000gp/T/codex-clipboard-bdf2e743-c5ad-43e7-bc5a-d75abe0d7ad2.png`
+- Implementation screenshot: `/Users/yangl/ClaudeSpace/medicine-migration-assistant/history-layout-after.png`
+- Source pixels: 1324 × 866
+- Implementation pixels: 1324 × 866
+- CSS viewport: 1339 × 876; device pixel ratio: 1
+- Density normalization: browser content capture was aligned to the source at 1324 × 866, so no resampling was required.
+- State: history modal open, a batch selected, overview tab visible. The source contains 17 persisted desktop batches while the browser verification uses one generated preview batch; the compared component anatomy and selected state are equivalent.
 
 ## Full-view comparison evidence
 
-- Overall composition matches the selected direction: thin product header, five-step guided progress, large single-decision workspace, right-aligned completion indicator, intelligent suggestion rows, inline quality warning, preview table, and fixed action bar.
-- Major-region proportions, viewport fill, horizontal margins, workspace width, and footer placement are aligned with the source.
-- The implementation intentionally localizes the generated English product name to `数据迁移助手`; this is a product-copy adaptation, not visual drift.
+The modal frame, two-column hierarchy, compact healthcare palette, header, filters, selected-card treatment, detail summary cards, tabs, and overview table preserve the existing visual system shown in the source. The implementation intentionally changes only the left list's width containment. No new visual assets were introduced.
 
-## Focused comparison evidence
+## Focused region comparison evidence
 
-- Stepper: numbered nodes, completed check indicators, active teal step, connector spacing, and five-stage hierarchy now match the source anatomy.
-- Mapping workspace: heading hierarchy, source-table context, professional-mode control, three recommendation rows, selected-row treatment, warning strip, and preview density match the source closely.
-- Interaction state: the quality dialog uses the currently selected source field and no longer shows `DRUG_CODE`-specific guidance after a different suggestion is selected.
+The left library is the fidelity-critical region for this task. In the source, the list exposes a horizontal scrollbar at the bottom. In the implementation, the list reports `clientWidth = 315px` and `scrollWidth = 315px`; its selected card reports `clientWidth = 313px` and `scrollWidth = 313px`. Computed overflow is `overflow-x: hidden` and `overflow-y: auto`, so horizontal travel is removed while vertical browsing remains available. At the narrower desktop check, the list also reports equal client and scroll widths (`275px`).
 
 ## Required fidelity surfaces
 
-- Fonts and typography: uses PingFang SC with Microsoft YaHei and Noto Sans CJK SC fallbacks. Heading, body, metadata, and database-field hierarchy match the source. Remaining cross-renderer weight differences are minor.
-- Spacing and layout rhythm: frame size, 28 px outer margin, section sequence, table rhythm, border radii, and fixed footer align with the source. No actionable overflow remains.
-- Colors and visual tokens: pale-mint base, white work surface, navy text, teal primary/selected states, blue secondary confidence, and amber warning treatment match the source.
-- Image quality and asset fidelity: the source contains no photography or illustration. Product and action icons use Phosphor Icons rather than hand-drawn assets; rendering is sharp at device scale factor 1.
-- Copy and content: visible content uses realistic Chinese drug-migration data and preserves the selected screen's intent. Labels, samples, progress, and CTA wording fit without clipping.
+- Fonts and typography: existing Chinese system-font stack, sizes, weights, single-line title truncation, and small metadata hierarchy are preserved. Batch titles now have an explicit shrinkable flex track; status text remains on one line.
+- Spacing and layout rhythm: existing 340px/300px desktop sidebar tracks, 12px inset, 7px card gaps, radii, borders, and selected-state inset accent are unchanged. Only width containment and wrapping safeguards were added.
+- Colors and visual tokens: no color, border, shadow, or semantic status token changed.
+- Image quality and asset fidelity: the screen contains no task-specific raster assets; existing Phosphor icons remain unchanged.
+- Copy and content: no user-facing copy changed. The browser batch data differs from the persisted desktop screenshot only because the verification environment uses generated preview data.
 
 ## Findings
 
-- No actionable P0, P1, or P2 findings remain.
+No actionable P0, P1, or P2 findings remain.
 
 ## Comparison history
 
-1. Initial attempt was blocked because the in-app browser security policy could not be verified; no implementation screenshot was available.
-2. First successful browser comparison found three P2 issues: completed steps lost their numbered nodes, an extra field counter displaced the question hierarchy, and the page had 6 px of vertical overflow. Fixes: restored numbered nodes plus separate completion checks, removed the extra field counter while rebalancing heading spacing, and reduced shell bottom padding to fit the target viewport. Post-fix evidence: `implementation-02.png`, focused stepper comparison, and a 1440 × 1024 layout measurement with no overflow.
-3. Interaction testing found one P2 issue: selecting `YPDM` still opened `DRUG_CODE`-specific quality guidance. Fix: derived warning and dialog copy from the active suggestion and added a generic resolution state for alternate fields. Post-fix evidence: `implementation-issue-dialog.png` and successful dialog text verification for `YPDM`.
-4. Final comparison found no actionable P0/P1/P2 differences.
+- Earlier P2: the source screenshot showed a horizontal scrollbar in the left history list, indicating that list/card descendants could exceed the fixed sidebar width.
+- Fix: added zero-min-width constraints to the sidebar, filter grid, list, cards, title row, title text, metadata, and count row; constrained cards to the available width; hid horizontal overflow only on the list; allowed count chips to wrap; kept status pills non-shrinking and safely truncated.
+- Post-fix evidence: equal client/scroll widths at both 315px and 275px list widths, no browser console warnings or errors, successful search empty-state recovery, and successful batch selection/detail display.
 
 ## Implementation checklist
 
-- [x] Match the selected visual structure and hierarchy.
-- [x] Test the main guided mapping path.
-- [x] Test duplicate/quality issue handling.
-- [x] Test professional-mode escape hatch.
-- [x] Check console errors.
-- [x] Verify the target viewport and a smaller desktop viewport.
-- [x] Run production build and packaging checks.
+- [x] Remove the left list's horizontal scrolling.
+- [x] Preserve vertical scrolling.
+- [x] Keep long titles and statuses within the card width.
+- [x] Keep large count groups from widening cards.
+- [x] Verify search empty/recovery states and batch selection.
+- [x] Verify at the source-sized and narrower desktop viewports.
 
 ## Follow-up polish
 
-- [P3] The localized Chinese product title and standard medical-kit icon differ from the generated mock's English title and abstract cross mark; they are intentional product-fit substitutions.
-- [P3] Small helper and warning text may render one optical weight lighter than the generated image because the browser uses the local Chinese system font.
+None required for the requested scope.
 
 final result: passed

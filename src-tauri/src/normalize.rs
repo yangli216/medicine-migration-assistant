@@ -43,6 +43,8 @@ const ALLOWED_TARGETS: &[&str] = &[
     "fgSingle",
     "fgRegister",
     "naFac",
+    "naFacShort",
+    "pyFac",
     "idFac",
     "naMedPro",
     "unitSale",
@@ -58,6 +60,8 @@ const ALLOWED_TARGETS: &[&str] = &[
     "fgCollPur",
     "fgImport",
 ];
+
+const EMPTY_VALUE_MAPPING_SOURCE: &str = "<空值>";
 
 pub fn target_fields() -> Vec<TargetField> {
     vec![
@@ -139,7 +143,7 @@ pub fn target_fields() -> Vec<TargetField> {
             false,
             "用药规则",
             "dictionary",
-            "草药、耗材可不填",
+            "目标字段允许为空；来源有默认频次时按新系统频次字典映射",
         ),
         field(
             "idFac",
@@ -156,6 +160,22 @@ pub fn target_fields() -> Vec<TargetField> {
             "厂家与商品",
             "text",
             "厂家主键为空时用于精确匹配",
+        ),
+        field(
+            "naFacShort",
+            "生产厂家简称",
+            false,
+            "厂家与商品",
+            "text",
+            "新建厂家时写入 hi_bd_fac.na_fac_short",
+        ),
+        field(
+            "pyFac",
+            "生产厂家拼音码",
+            false,
+            "厂家与商品",
+            "text",
+            "新建厂家时写入 hi_bd_fac.py",
         ),
         field(
             "naMedPro",
@@ -226,9 +246,9 @@ pub fn target_fields() -> Vec<TargetField> {
             "fgMedRx",
             "处方药标志",
             false,
-            "标志",
-            "boolean01",
-            "0非处方、1处方",
+            "监管属性",
+            "dictionary",
+            "目标字典：1处方药、2非处方药",
         ),
         field(
             "fgCollPur",
@@ -505,6 +525,7 @@ pub fn normalize(source: &Map<String, Value>, mappings: &[FieldMapping]) -> Map<
             .collect();
     }
     let mut target = Map::new();
+    let mut explicitly_ignored = Vec::new();
     for mapping in mappings {
         if !allowed.contains(mapping.target_field.as_str()) {
             continue;
@@ -513,16 +534,33 @@ pub fn normalize(source: &Map<String, Value>, mappings: &[FieldMapping]) -> Map<
             .get(&mapping.source_field)
             .cloned()
             .unwrap_or(Value::Null);
-        if is_blank(&value) && !mapping.default_value.trim().is_empty() {
-            value = Value::String(mapping.default_value.clone());
+        let mut ignored = false;
+        if is_blank(&value) {
+            if let Some(mapped) = mapped_value(mapping, EMPTY_VALUE_MAPPING_SOURCE) {
+                value = mapped.clone();
+                ignored = mapped.is_null();
+            } else if !mapping.default_value.trim().is_empty() {
+                value = Value::String(mapping.default_value.clone());
+            }
+        } else {
+            let lookup = value_text(&value);
+            if let Some(mapped) = mapped_value(mapping, &lookup) {
+                value = mapped.clone();
+                ignored = mapped.is_null();
+            }
         }
-        let lookup = value_text(&value);
-        if let Some(mapped) = mapped_value(mapping, &lookup) {
-            value = mapped.clone();
+        if ignored && validation_ignore_allowed(&mapping.target_field) {
+            explicitly_ignored.push(Value::String(mapping.target_field.clone()));
         }
         target.insert(
             mapping.target_field.clone(),
             transform(value, &mapping.transform),
+        );
+    }
+    if !explicitly_ignored.is_empty() {
+        target.insert(
+            "_ignoredValidationFields".into(),
+            Value::Array(explicitly_ignored),
         );
     }
     target
@@ -567,7 +605,6 @@ pub fn validate(data: &Map<String, Value>) -> Vec<String> {
     }
     if med_type != "3" && med_type != "5" {
         require(data, "dftUsage", "默认给药方法编码", &mut errors);
-        require(data, "dftFreq", "默认频次编码", &mut errors);
     }
     if has_product_data(data) {
         for (key, label) in [
@@ -594,7 +631,6 @@ pub fn validate(data: &Map<String, Value>) -> Vec<String> {
         ("fgAntiAppr", "抗菌药物审批标志"),
         ("fgPois", "毒性药品标志"),
         ("fgAnti", "抗菌药物标志"),
-        ("fgMedRx", "处方药标志"),
         ("fgBasMed", "基本药物标志"),
         ("fgSkintest", "皮试标志"),
         ("fgTcd", "中药饮片标志"),
@@ -613,6 +649,8 @@ pub fn validate(data: &Map<String, Value>) -> Vec<String> {
         ("dftUsage", "默认给药方法编码", 64),
         ("dftFreq", "默认频次编码", 64),
         ("naFac", "生产厂家名称", 180),
+        ("naFacShort", "生产厂家简称", 32),
+        ("pyFac", "生产厂家拼音码", 64),
         ("naMedPro", "商品名", 180),
         ("unitSale", "零售包装单位", 64),
         ("specSale", "零售包装规格", 180),
@@ -629,6 +667,8 @@ pub fn has_product_data(data: &Map<String, Value>) -> bool {
     [
         "idFac",
         "naFac",
+        "naFacShort",
+        "pyFac",
         "naMedPro",
         "unitSale",
         "unitSaleFactor",
@@ -763,9 +803,47 @@ fn parse_integer(text: &str) -> Option<i64> {
 
 fn boolean_01(text: &str) -> Option<&'static str> {
     let normalized = text.trim().to_lowercase();
-    if ["1", "true", "yes", "是", "y", "on", "启用", "有"].contains(&normalized.as_str()) {
+    if [
+        "1",
+        "true",
+        "yes",
+        "是",
+        "y",
+        "on",
+        "启用",
+        "有",
+        "需要",
+        "需",
+        "有效",
+        "正常",
+        "rx",
+        "处方药",
+        "处方药品",
+    ]
+    .contains(&normalized.as_str())
+        || (normalized.contains("处方") && !normalized.contains("非处方"))
+    {
         Some("1")
-    } else if ["0", "false", "no", "否", "n", "off", "停用", "无"].contains(&normalized.as_str())
+    } else if [
+        "0",
+        "2",
+        "false",
+        "no",
+        "否",
+        "n",
+        "off",
+        "停用",
+        "无",
+        "不需要",
+        "无需",
+        "无效",
+        "otc",
+        "非处方药",
+        "非处方药品",
+    ]
+    .contains(&normalized.as_str())
+        || normalized.contains("非处方")
+        || normalized.contains("otc")
     {
         Some("0")
     } else {
@@ -783,9 +861,41 @@ fn normalize_date(text: &str) -> Option<String> {
 }
 
 fn require(data: &Map<String, Value>, key: &str, label: &str, errors: &mut Vec<String>) {
-    if blank_at(data, key) {
+    if blank_at(data, key) && !is_validation_ignored(data, key) {
         errors.push(format!("{}不能为空", label));
     }
+}
+
+fn validation_ignore_allowed(key: &str) -> bool {
+    matches!(
+        key,
+        "dftUsage"
+            | "dftFreq"
+            | "sdRound"
+            | "sdDps"
+            | "sdChrgitmLv"
+            | "sdAllergy"
+            | "sdStorage"
+            | "sdSpeMed"
+            | "fgMedRx"
+            | "fgAntiAppr"
+            | "sdProdPlac"
+            | "fgPois"
+            | "fgAnti"
+            | "fgTcd"
+            | "fgSingle"
+            | "fgRegister"
+            | "fgCollPur"
+            | "fgImport"
+    )
+}
+
+fn is_validation_ignored(data: &Map<String, Value>, key: &str) -> bool {
+    validation_ignore_allowed(key)
+        && data
+            .get("_ignoredValidationFields")
+            .and_then(Value::as_array)
+            .is_some_and(|fields| fields.iter().any(|field| field.as_str() == Some(key)))
 }
 
 fn positive_number(
@@ -828,7 +938,9 @@ fn is_blank(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_cost_merge_mapping, normalize, target_fields, validate, ALLOWED_TARGETS};
+    use super::{
+        apply_cost_merge_mapping, boolean_01, normalize, target_fields, validate, ALLOWED_TARGETS,
+    };
     use crate::model::FieldMapping;
     use serde_json::{json, Map, Value};
 
@@ -844,6 +956,22 @@ mod tests {
             normalize(&source, &[mapping]).get("sdMed"),
             Some(&Value::String("1".into()))
         );
+    }
+
+    #[test]
+    fn explicit_empty_dictionary_mapping_precedes_the_generic_default() {
+        for source_value in [Value::Null, Value::String("   ".into())] {
+            let source = Map::from_iter([("TYPE".into(), source_value)]);
+            let mapping: FieldMapping = serde_json::from_value(json!({
+                "sourceField":"TYPE","targetField":"sdMed","transform":"TRIM",
+                "defaultValue":"2","valueMappings":{"<空值>":"1"}
+            }))
+            .unwrap();
+            assert_eq!(
+                normalize(&source, &[mapping]).get("sdMed"),
+                Some(&Value::String("1".into()))
+            );
+        }
     }
 
     #[test]
@@ -937,6 +1065,79 @@ mod tests {
     }
 
     #[test]
+    fn regular_medicine_allows_blank_default_frequency() {
+        let data = json!({
+            "naMed":"测试药品","sdMed":"1","idCstmg":"66aa10244f0d4826ac110001",
+            "sdDose":"1","unitPre":"片","dose":"1","unitDose":"mg","dftUsage":"1"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let errors = validate(&data);
+        assert!(!errors.iter().any(|item| item.contains("默认频次")));
+    }
+
+    #[test]
+    fn explicitly_ignored_usage_is_left_blank_and_passes_conditional_validation() {
+        let source = json!({"USAGE_CODE":"9"}).as_object().unwrap().clone();
+        let mapping: FieldMapping = serde_json::from_value(json!({
+            "sourceField":"USAGE_CODE","targetField":"dftUsage","transform":"TRIM",
+            "valueMappings":{"9":null}
+        }))
+        .unwrap();
+        let mut normalized = normalize(&source, &[mapping]);
+        normalized.extend(
+            json!({
+                "naMed":"测试药品","sdMed":"1","idCstmg":"66aa10244f0d4826ac110001",
+                "sdDose":"1","unitPre":"片","dose":"1","unitDose":"mg"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        assert_eq!(normalized.get("dftUsage"), Some(&Value::Null));
+        assert!(validate(&normalized).is_empty());
+    }
+
+    #[test]
+    fn hard_required_identity_field_cannot_be_validation_ignored() {
+        let source = json!({"NAME":"9"}).as_object().unwrap().clone();
+        let mapping: FieldMapping = serde_json::from_value(json!({
+            "sourceField":"NAME","targetField":"naMed","transform":"TRIM",
+            "valueMappings":{"9":null}
+        }))
+        .unwrap();
+        let mut normalized = normalize(&source, &[mapping]);
+        normalized.extend(
+            json!({
+                "sdMed":"5","idCstmg":"66aa10244f0d4826ac110001",
+                "sdDose":"1","unitPre":"个"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        assert!(validate(&normalized)
+            .iter()
+            .any(|error| error.contains("医疗物品通用名")));
+    }
+
+    #[test]
+    fn boolean_transform_accepts_common_legacy_flag_conventions() {
+        for (source, expected) in [
+            ("2", "0"),
+            ("OTC", "0"),
+            ("非处方药品（OTC）", "0"),
+            ("不需要", "0"),
+            ("RX", "1"),
+            ("处方药品（RX）", "1"),
+            ("需要", "1"),
+        ] {
+            assert_eq!(boolean_01(source), Some(expected));
+        }
+    }
+
+    #[test]
     fn every_supported_write_field_is_visible_in_mapping_catalog() {
         let visible = target_fields()
             .into_iter()
@@ -955,7 +1156,7 @@ mod tests {
             "naMed":"测试药品","sdMed":"1","idCstmg":"bad-id","sdDose":"1",
             "unitPre":"片","dose":"1","unitDose":"mg","dftUsage":"1","dftFreq":"1",
             "naFac":"测试厂家","unitSale":"盒","unitSaleFactor":"10",
-            "pricePur":"0","priceSale":"0","fgMedRx":"是"
+            "pricePur":"0","priceSale":"0","fgMedRx":"2","fgAntiAppr":"是"
         })
         .as_object()
         .unwrap()

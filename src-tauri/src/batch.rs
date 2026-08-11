@@ -15,6 +15,7 @@ pub fn prepare_batch(
     dictionary_values: &HashMap<String, HashSet<String>>,
     tenant_id: &str,
 ) -> Result<BatchDetail, String> {
+    let is_phis27 = request.source_type.eq_ignore_ascii_case("PHIS27");
     if request.rows.is_empty() {
         return Err("没有可迁移的三方药品数据".into());
     }
@@ -35,16 +36,34 @@ pub fn prepare_batch(
     let mut skip_count = 0;
     for (index, source) in request.rows.iter().enumerate() {
         let mut normalized = normalize(source, &request.mappings);
+        if is_phis27 {
+            if let Some(source_factory_id) = source.get("SOURCE_FACTORY_ID") {
+                let source_factory_key = crate::normalize::value_text(source_factory_id);
+                if !source_factory_key.is_empty() {
+                    normalized.insert(
+                        "_sourceFactoryKey".into(),
+                        serde_json::Value::String(source_factory_key),
+                    );
+                }
+            }
+        }
         apply_cost_merge_mapping(&mut normalized, &request.cost_merge_mappings);
         let mut errors = validate(&normalized);
         errors.extend(crate::target_dictionary::validate_values(
             &normalized,
             dictionary_values,
         ));
-        if source_duplicate_count(source) > 1 {
-            errors.push(
-                "老库中存在相同通用名、物品类型和规格的不同 YPXH；为防止错误合并，请人工确认后再迁移"
-                    .into(),
+        if is_phis27 {
+            errors.extend(phis27_identity_errors(source, &normalized));
+        }
+        if is_phis27 && source_duplicate_count(source) > 1 {
+            normalized.insert(
+                "_baseMergeGroupSize".into(),
+                Value::String(source_duplicate_count(source).to_string()),
+            );
+            normalized.insert(
+                "_baseMergeKey".into(),
+                Value::String(phis27_base_merge_key(source)),
             );
         }
         let raw_json = Value::Object(source.clone()).to_string();
@@ -146,7 +165,7 @@ pub fn prepare_batch(
         },
         source_description: request.source_description,
         conflict_strategy: strategy,
-        allow_create_factory: request.allow_create_factory,
+        allow_create_factory: request.allow_create_factory || is_phis27,
         idempotency_key: request.idempotency_key,
         status: if valid_count > 0 || skip_count > 0 {
             "VALIDATED".into()
@@ -202,9 +221,85 @@ fn source_duplicate_count(source: &serde_json::Map<String, Value>) -> usize {
         .unwrap_or(0)
 }
 
+fn phis27_base_merge_key(source: &serde_json::Map<String, Value>) -> String {
+    ["DRUG_NAME", "SPEC", "PRE_UNIT"]
+        .iter()
+        .map(|key| {
+            source
+                .get(*key)
+                .map(crate::normalize::value_text)
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn phis27_identity_errors(
+    source: &serde_json::Map<String, Value>,
+    normalized: &serde_json::Map<String, Value>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let source_med_id = source
+        .get("SOURCE_MED_ID")
+        .map(crate::normalize::value_text)
+        .unwrap_or_default();
+    let source_factory_id = source
+        .get("SOURCE_FACTORY_ID")
+        .map(crate::normalize::value_text)
+        .unwrap_or_default();
+    if source_med_id.is_empty() {
+        return vec!["二系列phis记录缺少 YPXH，无法建立来源药品对照".into()];
+    }
+    let expected = if source_factory_id.is_empty() {
+        format!("{source_med_id}:BASE")
+    } else {
+        format!("{source_med_id}:{source_factory_id}")
+    };
+    for (field, label) in [("SOURCE_KEY", "查询来源键"), ("_sourceKey", "批次来源键")] {
+        let actual = source
+            .get(field)
+            .map(crate::normalize::value_text)
+            .unwrap_or_default();
+        if actual != expected {
+            errors.push(format!(
+                "二系列phis{label}必须是 YPXH:YPCD；期望“{expected}”，实际“{actual}”"
+            ));
+        }
+    }
+    if source_factory_id.is_empty() {
+        return errors;
+    }
+    for (field, label) in [
+        ("SOURCE_MED_PRO_KEY", "商品来源键"),
+        ("CD_MED_PRO", "商品货品码"),
+    ] {
+        let actual = source
+            .get(field)
+            .map(crate::normalize::value_text)
+            .unwrap_or_default();
+        if actual != expected {
+            errors.push(format!(
+                "二系列phis{label}必须是 YPXH:YPCD；期望“{expected}”，实际“{actual}”"
+            ));
+        }
+    }
+    let normalized_key = normalized
+        .get("cdMedPro")
+        .map(crate::normalize::value_text)
+        .unwrap_or_default();
+    if normalized_key != expected {
+        errors.push(format!(
+            "二系列phis货品码必须映射为 YPXH:YPCD；期望“{expected}”，实际“{normalized_key}”"
+        ));
+    }
+    errors
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{prepare_batch, source_duplicate_count};
+    use super::{
+        phis27_base_merge_key, phis27_identity_errors, prepare_batch, source_duplicate_count,
+    };
     use crate::local_store::LocalStore;
     use crate::model::{MigrationBatch, MigrationRow, PrepareBatchRequest};
     use serde_json::json;
@@ -227,12 +322,121 @@ mod tests {
     }
 
     #[test]
+    fn phis27_base_merge_key_uses_name_spec_and_minimum_unit() {
+        let source = json!({
+            "DRUG_NAME":"阿莫西林胶囊",
+            "SPEC":"0.25g*24粒",
+            "PRE_UNIT":"粒",
+            "DRUG_TYPE":"1"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(phis27_base_merge_key(&source), "阿莫西林胶囊|0.25g*24粒|粒");
+    }
+
+    #[test]
+    fn phis27_duplicate_base_group_is_mergeable_and_audited() {
+        let store = LocalStore::open(Path::new(":memory:")).unwrap();
+        let source = json!({
+            "SOURCE_KEY":"1001:BASE",
+            "SOURCE_MED_ID":"1001",
+            "SOURCE_DUPLICATE_COUNT":"2",
+            "DRUG_NAME":"阿莫西林胶囊",
+            "SPEC":"0.25g*24粒",
+            "PRE_UNIT":"粒",
+            "_sourceKey":"1001:BASE",
+            "naMed":"阿莫西林胶囊",
+            "sdMed":"1",
+            "idCstmg":"63aa8b1b3c6f491981ba4221",
+            "unitPre":"粒",
+            "spec":"0.25g*24粒",
+            "dose":"0.25",
+            "unitDose":"g",
+            "sdDose":"1",
+            "dftUsage":"100"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let detail = prepare_batch(
+            &store,
+            PrepareBatchRequest {
+                batch_name: "auto-merge".into(),
+                source_type: "PHIS27".into(),
+                source_name: "source".into(),
+                source_description: String::new(),
+                conflict_strategy: "INCREMENTAL".into(),
+                allow_create_factory: false,
+                idempotency_key: "auto-merge-key".into(),
+                mappings: Vec::new(),
+                cost_merge_mappings: Map::new(),
+                rows: vec![source],
+            },
+            &HashMap::new(),
+            "tenant",
+        )
+        .unwrap();
+        assert_eq!(detail.rows[0].status, "VALIDATED");
+        assert_eq!(detail.rows[0].normalized_data["_baseMergeGroupSize"], "2");
+        assert_eq!(
+            detail.rows[0].normalized_data["_baseMergeKey"],
+            "阿莫西林胶囊|0.25g*24粒|粒"
+        );
+    }
+
+    #[test]
+    fn one_medicine_with_two_factories_keeps_two_product_identities() {
+        let first_source = json!({
+            "SOURCE_MED_ID":"1001","SOURCE_FACTORY_ID":"2001",
+            "SOURCE_KEY":"1001:2001","SOURCE_MED_PRO_KEY":"1001:2001",
+            "CD_MED_PRO":"1001:2001","_sourceKey":"1001:2001"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let second_source = json!({
+            "SOURCE_MED_ID":"1001","SOURCE_FACTORY_ID":"2002",
+            "SOURCE_KEY":"1001:2002","SOURCE_MED_PRO_KEY":"1001:2002",
+            "CD_MED_PRO":"1001:2002","_sourceKey":"1001:2002"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let first_normalized = json!({"cdMedPro":"1001:2001"}).as_object().unwrap().clone();
+        let second_normalized = json!({"cdMedPro":"1001:2002"}).as_object().unwrap().clone();
+        assert!(phis27_identity_errors(&first_source, &first_normalized).is_empty());
+        assert!(phis27_identity_errors(&second_source, &second_normalized).is_empty());
+        assert_eq!(
+            first_source["SOURCE_MED_ID"],
+            second_source["SOURCE_MED_ID"]
+        );
+        assert_ne!(first_source["SOURCE_KEY"], second_source["SOURCE_KEY"]);
+        assert_ne!(first_normalized["cdMedPro"], second_normalized["cdMedPro"]);
+    }
+
+    #[test]
+    fn yplsh_cannot_replace_the_composite_product_identity() {
+        let source = json!({
+            "SOURCE_MED_ID":"1001","SOURCE_FACTORY_ID":"2001",
+            "SOURCE_KEY":"1001:2001","SOURCE_MED_PRO_KEY":"1001:2001",
+            "CD_MED_PRO":"3001","SOURCE_PRODUCT_ID":"3001","_sourceKey":"1001:2001"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = json!({"cdMedPro":"3001"}).as_object().unwrap().clone();
+        let errors = phis27_identity_errors(&source, &normalized);
+        assert!(errors.iter().any(|error| error.contains("1001:2001")));
+    }
+
+    #[test]
     fn overwrite_prepare_reuses_tool_managed_target_ids() {
         let store = LocalStore::open(Path::new(":memory:")).unwrap();
         let old_batch = MigrationBatch {
             batch_id: "old-batch".into(),
             batch_name: "old".into(),
-            source_type: "PHIS27".into(),
+            source_type: "DATABASE".into(),
             source_name: "source".into(),
             source_description: String::new(),
             conflict_strategy: "INCREMENTAL".into(),
@@ -271,7 +475,7 @@ mod tests {
         store
             .record_source_link_upsert(
                 "tenant",
-                "PHIS27",
+                "DATABASE",
                 "source",
                 &old_row,
                 json!([{
@@ -294,7 +498,7 @@ mod tests {
             &store,
             PrepareBatchRequest {
                 batch_name: "overwrite".into(),
-                source_type: "PHIS27".into(),
+                source_type: "DATABASE".into(),
                 source_name: "source".into(),
                 source_description: String::new(),
                 conflict_strategy: "OVERWRITE".into(),

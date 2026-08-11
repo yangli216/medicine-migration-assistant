@@ -1,0 +1,78 @@
+param(
+  [string]$InstallerPath = ""
+)
+
+$ErrorActionPreference = "Stop"
+$repoRoot = Split-Path -Parent $PSScriptRoot
+if (-not $InstallerPath) {
+  $candidate = Get-ChildItem "$repoRoot/src-tauri/target/release/bundle/nsis/*.exe" |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+  if (-not $candidate) {
+    throw "没有找到 NSIS 安装包"
+  }
+  $InstallerPath = $candidate.FullName
+}
+$InstallerPath = (Resolve-Path $InstallerPath).Path
+
+function Get-PeMachine([string]$Path) {
+  $stream = [System.IO.File]::OpenRead($Path)
+  try {
+    $reader = [System.IO.BinaryReader]::new($stream)
+    $stream.Position = 0x3c
+    $peOffset = $reader.ReadInt32()
+    $stream.Position = $peOffset + 4
+    return $reader.ReadUInt16()
+  } finally {
+    $stream.Dispose()
+  }
+}
+
+$installRoot = Join-Path $env:RUNNER_TEMP "medicine-migration-install-acceptance"
+if (Test-Path $installRoot) {
+  Remove-Item $installRoot -Recurse -Force
+}
+New-Item $installRoot -ItemType Directory | Out-Null
+
+$installerProcess = Start-Process -FilePath $InstallerPath -ArgumentList "/S", "/D=$installRoot" -PassThru -Wait
+if ($installerProcess.ExitCode -ne 0) {
+  throw "NSIS 静默安装失败，退出码 $($installerProcess.ExitCode)"
+}
+
+$application = Get-ChildItem $installRoot -Filter "*.exe" -Recurse |
+  Where-Object { $_.Name -notmatch "(?i)uninstall" } |
+  Select-Object -First 1
+if (-not $application) {
+  throw "安装完成后未找到应用程序 EXE"
+}
+
+$machine = Get-PeMachine $application.FullName
+if ($machine -ne 0x8664) {
+  throw ("应用程序不是 Windows x64 PE，Machine=0x{0:X4}" -f $machine)
+}
+
+$appProcess = Start-Process -FilePath $application.FullName -PassThru
+Start-Sleep -Seconds 8
+$launched = -not $appProcess.HasExited
+if (-not $launched -and $appProcess.ExitCode -ne 0) {
+  throw "安装后的桌面应用启动失败，退出码 $($appProcess.ExitCode)"
+}
+if ($launched) {
+  Stop-Process -Id $appProcess.Id -Force
+  $appProcess.WaitForExit()
+}
+
+$signature = Get-AuthenticodeSignature $application.FullName
+$reportDirectory = Join-Path $repoRoot "artifacts"
+New-Item $reportDirectory -ItemType Directory -Force | Out-Null
+$report = [ordered]@{
+  installer = $InstallerPath
+  installedExecutable = $application.FullName
+  architecture = "x86_64"
+  silentInstallExitCode = $installerProcess.ExitCode
+  applicationLaunchObserved = $launched
+  authenticodeStatus = $signature.Status.ToString()
+  verifiedAt = [DateTimeOffset]::UtcNow.ToString("O")
+}
+$report | ConvertTo-Json | Set-Content (Join-Path $reportDirectory "windows-install-acceptance.json") -Encoding UTF8
+$report | ConvertTo-Json

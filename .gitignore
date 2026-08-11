@@ -3,3 +3,7 @@ dist/
 src-tauri/target/
 .DS_Store
 *.log
+artifacts/
+.codex-audit/
+history-layout-after.png
+yarn.lock

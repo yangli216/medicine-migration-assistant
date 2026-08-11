@@ -22,6 +22,26 @@ use rust_decimal::Decimal;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 
+const HI_BD_MED_INSERT_SQL: &str = r#"INSERT INTO hi_bd_med(
+    id_med,na_med,sd_med,id_cstmg,unit_pre,spec,dose,unit_dose,sd_dose,sd_dose_unit,
+    sd_chrgitm_lv,sd_allergy,sd_anti_acl,fg_anti_appr,ddd,sd_bas_med,sd_spe_med,
+    limit_anti_day,sd_storage,sd_pharm,sd_value,sd_prod_plac,fg_pois,sd_pois,fg_anti,
+    sd_anti,sd_round,sd_dps,fg_med_rx,fg_bas_med,fg_skintest,sd_skintest,drip_rate,
+    dft_dose_once,dft_usage,dft_freq,fg_tcd,fg_single,fg_register,fg_active,fg_pri,
+    id_org_pri,id_tet,revision,insert_user,insert_time
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULLIF(?,''),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULLIF(?,''),?,?,?,CURRENT_TIMESTAMP)"#;
+
+const HI_BD_MED_PRO_INSERT_SQL: &str = r#"INSERT INTO hi_bd_med_pro(
+    id_med_pro,id_med,id_fac,id_med_unit,unit_sale,na_med_pro,spec_sale,price_sale,price_pur,
+    unit_sale_factor,cd_appr,cd_bar,cd_med_pro,id_tet,revision,insert_user,insert_time,
+    fg_active,fg_pri,id_org_pri,sd_per,per,fg_coll_pur,fg_import
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,?,?,NULLIF(?,''),?,NULLIF(?,''),?,?)"#;
+
+const HI_BD_FAC_INSERT_SQL: &str = r#"INSERT INTO hi_bd_fac(
+    id_fac,na_fac,na_fac_short,sd_prod_plac,py,wb,instr,fg_active,
+    id_tet,revision,insert_user,insert_time,sd_fac
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,?)"#;
+
 #[derive(Debug)]
 struct WriteEvent {
     operation: &'static str,
@@ -126,9 +146,6 @@ pub fn execute_batch(
     request: ExecuteBatchRequest,
 ) -> Result<BatchDetail, String> {
     let detail = store.load_batch(&request.batch_id)?;
-    if detail.batch.status == "RUNNING" {
-        return Err("该迁移批次正在执行，请勿重复提交".into());
-    }
     validate_overwrite_execution_preview(&detail, &request)?;
     let selected_rows = request
         .selected_row_ids
@@ -199,6 +216,24 @@ pub fn execute_batch(
             if !executable {
                 continue;
             }
+            if let Some(source_factory_key) = row
+                .normalized_data
+                .get("_sourceFactoryKey")
+                .map(value_text)
+                .filter(|value| !value.is_empty())
+            {
+                if let Some(target_id_fac) = store.find_factory_link(
+                    &request.tenant_id,
+                    &detail.batch.source_type,
+                    &detail.batch.source_name,
+                    &source_factory_key,
+                )? {
+                    row.normalized_data.insert(
+                        "_sourceFactoryTargetId".into(),
+                        Value::String(target_id_fac),
+                    );
+                }
+            }
             let trace_id = new_object_id();
             match write_row(
                 connection,
@@ -224,6 +259,23 @@ pub fn execute_batch(
                     row.error_message.clear();
                     row.updated_at = Utc::now().to_rfc3339();
                     store.update_row_result(&row)?;
+                    if let Some(source_factory_key) = row
+                        .normalized_data
+                        .get("_sourceFactoryKey")
+                        .map(value_text)
+                        .filter(|value| !value.is_empty())
+                    {
+                        store.record_factory_link_upsert(
+                            &request.tenant_id,
+                            &detail.batch.source_type,
+                            &detail.batch.source_name,
+                            &source_factory_key,
+                            &row.id_fac,
+                            &text(&row.normalized_data, "naFac"),
+                            &request.batch_id,
+                            &row.row_id,
+                        )?;
+                    }
                     let write_manifest = Value::Array(
                         outcome
                             .events
@@ -481,7 +533,7 @@ fn record_failure(
     trace_id: &str,
 ) -> Result<(), String> {
     row.status = "FAILED".into();
-    row.error_code = "WRITE_ERROR".into();
+    row.error_code = database_error_code(&error);
     row.error_message = limit(&error, 2000);
     row.retry_count += 1;
     row.updated_at = Utc::now().to_rfc3339();
@@ -490,7 +542,7 @@ fn record_failure(
         &request.batch_id,
         &row.row_id,
         "ROW_FAILED",
-        "migration_row",
+        failed_target_table(&error),
         &row.row_id,
         "FAILED",
         Value::Null,
@@ -511,11 +563,11 @@ fn write_row(
     organization_id: &str,
 ) -> Result<WriteOutcome, String> {
     let data = &row.normalized_data;
-    let now = Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
     let mut events = Vec::new();
     let name = text(data, "naMed");
     let med_type = text(data, "sdMed");
     let spec = derived_spec(data);
+    let unit_pre = text(data, "unitPre");
     let fg_pri = defaulted(data, "fgPri", "0");
     validate_execution_context(tenant_id, operator_id, organization_id, fg_pri == "1")?;
     if conflict_strategy.eq_ignore_ascii_case("OVERWRITE") && !row.id_med.is_empty() {
@@ -526,20 +578,19 @@ fn write_row(
             tenant_id,
             operator_id,
             organization_id,
-            &now,
         );
     }
     let existing_med = if fg_pri == "1" {
         query_optional_string(
             connection,
-            "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND sd_med=? AND COALESCE(spec,'')=? AND fg_active='1' AND ((fg_pri='1' AND id_org_pri=?) OR fg_pri='0' OR fg_pri IS NULL)",
-            vec![tenant_id.into(), name.clone(), med_type.clone(), spec.clone(), organization_id.into()],
+            "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND COALESCE(spec,'')=? AND COALESCE(unit_pre,'')=? AND fg_active='1' AND ((fg_pri='1' AND id_org_pri=?) OR fg_pri='0' OR fg_pri IS NULL)",
+            vec![tenant_id.into(), name.clone(), spec.clone(), unit_pre.clone(), organization_id.into()],
         )?
     } else {
         query_optional_string(
             connection,
-            "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND sd_med=? AND COALESCE(spec,'')=? AND fg_active='1' AND (fg_pri<>'1' OR fg_pri IS NULL)",
-            vec![tenant_id.into(), name.clone(), med_type.clone(), spec.clone()],
+            "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND COALESCE(spec,'')=? AND COALESCE(unit_pre,'')=? AND fg_active='1' AND (fg_pri<>'1' OR fg_pri IS NULL)",
+            vec![tenant_id.into(), name.clone(), spec.clone(), unit_pre.clone()],
         )?
     };
     let id_med = if let Some(id) = existing_med {
@@ -550,9 +601,9 @@ fn write_row(
             operation: "REUSE",
             table: "hi_bd_med",
             target_id: id.clone(),
-            message: "复用已存在的药品基本信息".into(),
-            before: json!({"idMed":id,"businessKey":{"naMed":name,"sdMed":med_type,"spec":spec}}),
-            after: json!({"idMed":id,"naMed":name,"spec":spec}),
+            message: "名称、规格、单位一致，自动合并并复用药品基本信息".into(),
+            before: json!({"idMed":id,"businessKey":{"naMed":name,"spec":spec,"unitPre":unit_pre}}),
+            after: json!({"idMed":id,"naMed":name,"spec":spec,"unitPre":unit_pre}),
         });
         id
     } else {
@@ -562,22 +613,17 @@ fn write_row(
         } else {
             text(data, "dftDoseOnce")
         };
-        execute_strings(
+        execute_target_strings(
             connection,
-            r#"INSERT INTO hi_bd_med(
-                id_med,na_med,sd_med,id_cstmg,unit_pre,spec,dose,unit_dose,sd_dose,sd_dose_unit,
-                sd_chrgitm_lv,sd_allergy,sd_anti_acl,fg_anti_appr,ddd,sd_bas_med,sd_spe_med,
-                limit_anti_day,sd_storage,sd_pharm,sd_value,sd_prod_plac,fg_pois,sd_pois,fg_anti,
-                sd_anti,sd_round,sd_dps,fg_med_rx,fg_bas_med,fg_skintest,sd_skintest,drip_rate,
-                dft_dose_once,dft_usage,dft_freq,fg_tcd,fg_single,fg_register,fg_active,fg_pri,
-                id_org_pri,id_tet,revision,insert_user,insert_time
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULLIF(?,''),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULLIF(?,''),?,?,?,?)"#,
+            "hi_bd_med",
+            "新增药品基本信息",
+            HI_BD_MED_INSERT_SQL,
             vec![
                 id.clone(),
                 name.clone(),
                 med_type.clone(),
                 text(data, "idCstmg"),
-                text(data, "unitPre"),
+                unit_pre.clone(),
                 spec.clone(),
                 text(data, "dose"),
                 text(data, "unitDose"),
@@ -601,7 +647,7 @@ fn write_row(
                 text(data, "sdAnti"),
                 text(data, "sdRound"),
                 text(data, "sdDps"),
-                defaulted(data, "fgMedRx", "0"),
+                defaulted(data, "fgMedRx", "2"),
                 defaulted(data, "fgBasMed", "0"),
                 defaulted(data, "fgSkintest", "0"),
                 text(data, "sdSkintest"),
@@ -622,7 +668,6 @@ fn write_row(
                 tenant_id.into(),
                 "0".into(),
                 operator_id.into(),
-                now.clone(),
             ],
         )?;
         events.push(WriteEvent {
@@ -662,7 +707,6 @@ fn write_row(
         allow_create_factory,
         tenant_id,
         operator_id,
-        &now,
         &mut events,
     )?;
     let product_name = defaulted(data, "naMedPro", &name);
@@ -741,13 +785,11 @@ fn write_row(
     }
 
     let id_med_pro = new_object_id();
-    execute_strings(
+    execute_target_strings(
         connection,
-        r#"INSERT INTO hi_bd_med_pro(
-            id_med_pro,id_med,id_fac,id_med_unit,unit_sale,na_med_pro,spec_sale,price_sale,price_pur,
-            unit_sale_factor,cd_appr,cd_bar,cd_med_pro,id_tet,revision,insert_user,insert_time,
-            fg_active,fg_pri,id_org_pri,sd_per,per,fg_coll_pur,fg_import
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULLIF(?,''),?,NULLIF(?,''),?,?)"#,
+        "hi_bd_med_pro",
+        "新增药品商品信息",
+        HI_BD_MED_PRO_INSERT_SQL,
         vec![
             id_med_pro.clone(),
             id_med.clone(),
@@ -765,7 +807,6 @@ fn write_row(
             tenant_id.into(),
             "0".into(),
             operator_id.into(),
-            now,
             "1".into(),
             fg_pri.clone(),
             if fg_pri == "1" {
@@ -805,21 +846,19 @@ fn overwrite_odbc_row(
     tenant_id: &str,
     operator_id: &str,
     organization_id: &str,
-    now: &str,
 ) -> Result<WriteOutcome, String> {
     let data = &row.normalized_data;
     let id_med = row.id_med.clone();
     let name = text(data, "naMed");
-    let med_type = text(data, "sdMed");
     let spec = derived_spec(data);
     let fg_pri = defaulted(data, "fgPri", "0");
     if let Some(duplicate) = query_optional_string(
         connection,
-        "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND sd_med=? AND COALESCE(spec,'')=? AND id_med<>? AND fg_active='1'",
-        vec![tenant_id.into(), name.clone(), med_type, spec.clone(), id_med.clone()],
+        "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND COALESCE(spec,'')=? AND COALESCE(unit_pre,'')=? AND id_med<>? AND fg_active='1'",
+        vec![tenant_id.into(), name.clone(), spec.clone(), text(data, "unitPre"), id_med.clone()],
     )? {
         return Err(format!(
-            "覆盖后的药品业务键与目标药品{duplicate}冲突，请先处理重复数据"
+            "覆盖后的药品名称、规格、单位与目标药品{duplicate}重复，请先处理重复数据"
         ));
     }
     let mut events = Vec::new();
@@ -866,7 +905,6 @@ fn overwrite_odbc_row(
         allow_create_factory,
         tenant_id,
         operator_id,
-        now,
         &mut events,
     )?;
     ensure_no_odbc_product_conflict(connection, row, &id_fac, &name, &spec, tenant_id)?;
@@ -974,8 +1012,10 @@ fn apply_odbc_patch(
         .collect::<Vec<_>>();
     values.push(tenant_id.into());
     values.push(target_id.into());
-    execute_strings(
+    execute_target_strings(
         connection,
+        table,
+        "覆盖目标字段",
         &format!("UPDATE {table} SET {assignments} WHERE id_tet=? AND {primary_key}=?"),
         values,
     )?;
@@ -1040,8 +1080,10 @@ fn ensure_alias(
         });
     } else {
         let id = new_object_id();
-        execute_strings(
+        execute_target_strings(
             connection,
+            "hi_bd_med_alias",
+            "新增药品主别名",
             "INSERT INTO hi_bd_med_alias(id_med_alias,id_med,na_alias,fg_main,py,wb,instr,id_tet,fg_active,fg_pri,id_org) VALUES (?,?,?,?,?,?,?,?,?,?,NULLIF(?,''))",
             vec![id.clone(), id_med.into(), name.into(), "1".into(), String::new(), String::new(), name.into(), tenant_id.into(), "1".into(), fg_pri.into(), if fg_pri == "1" { organization_id.into() } else { String::new() }],
         )?;
@@ -1087,8 +1129,10 @@ fn ensure_unit(
         return Ok(id);
     }
     let id = new_object_id();
-    execute_strings(
+    execute_target_strings(
         connection,
+        "hi_bd_med_unit",
+        "新增药品包装单位",
         "INSERT INTO hi_bd_med_unit(id_med_unit,id_med,na_unit,unit_factor,id_tet) VALUES (?,?,?,?,?)",
         vec![id.clone(), id_med.into(), unit.clone(), factor.clone(), tenant_id.into()],
     )?;
@@ -1109,7 +1153,6 @@ fn ensure_factory(
     allow_create: bool,
     tenant_id: &str,
     operator_id: &str,
-    now: &str,
     events: &mut Vec<WriteEvent>,
 ) -> Result<String, String> {
     let requested_id = text(data, "idFac");
@@ -1130,7 +1173,36 @@ fn ensure_factory(
         });
         return Ok(id);
     }
+    let source_factory_key = text(data, "_sourceFactoryKey");
+    let mapped_id = text(data, "_sourceFactoryTargetId");
+    if !mapped_id.is_empty() {
+        if let Some(id) = query_optional_string(
+            connection,
+            "SELECT id_fac FROM hi_bd_fac WHERE id_fac=? AND id_tet=? AND fg_active='1'",
+            vec![mapped_id, tenant_id.into()],
+        )? {
+            events.push(WriteEvent {
+                operation: "REUSE",
+                table: "hi_bd_fac",
+                target_id: id.clone(),
+                message: format!("按二系列phis厂家主键 YPCD={source_factory_key} 复用生产厂家"),
+                before: json!({"idFac":id,"sourceFactoryKey":source_factory_key}),
+                after: json!({"idFac":id}),
+            });
+            return Ok(id);
+        }
+    }
     let name = text(data, "naFac");
+    if name.is_empty() {
+        return Err(format!(
+            "二系列phis厂家 YPCD={} 未在 YK_CDDZ 中找到有效名称，无法迁移厂家基础数据",
+            if source_factory_key.is_empty() {
+                "未知"
+            } else {
+                &source_factory_key
+            }
+        ));
+    }
     if let Some(id) = query_optional_string(
         connection,
         "SELECT id_fac FROM hi_bd_fac WHERE id_tet=? AND na_fac=? AND fg_active='1'",
@@ -1152,23 +1224,25 @@ fn ensure_factory(
         ));
     }
     let id = new_object_id();
-    execute_strings(
+    let short_name = defaulted(data, "naFacShort", &limit(&name, 32));
+    let pinyin = text(data, "pyFac");
+    execute_target_strings(
         connection,
-        r#"INSERT INTO hi_bd_fac(id_fac,na_fac,na_fac_short,sd_prod_plac,py,wb,instr,fg_active,
-            id_tet,revision,insert_user,insert_time,sd_fac) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
+        "hi_bd_fac",
+        "新增生产厂家",
+        HI_BD_FAC_INSERT_SQL,
         vec![
             id.clone(),
             name.clone(),
-            limit(&name, 32),
+            limit(&short_name, 32),
             defaulted(data, "sdProdPlac", "1"),
-            String::new(),
+            pinyin.clone(),
             String::new(),
             name.clone(),
             "1".into(),
             tenant_id.into(),
             "0".into(),
             operator_id.into(),
-            now.into(),
             "1".into(),
         ],
     )?;
@@ -1176,9 +1250,13 @@ fn ensure_factory(
         operation: "INSERT",
         table: "hi_bd_fac",
         target_id: id.clone(),
-        message: "按迁移策略新增生产厂家".into(),
+        message: if source_factory_key.is_empty() {
+            "按迁移策略新增生产厂家".into()
+        } else {
+            format!("迁移二系列phis厂家基础数据（YPCD={source_factory_key}）")
+        },
         before: Value::Null,
-        after: json!({"idFac":id,"naFac":name}),
+        after: json!({"idFac":id,"naFac":name,"naFacShort":short_name,"py":pinyin,"sourceFactoryKey":source_factory_key}),
     });
     Ok(id)
 }
@@ -1297,6 +1375,85 @@ fn derived_sale_spec(data: &Map<String, Value>, base_spec: &str) -> String {
 fn db_error(error: impl std::fmt::Display) -> String {
     format!("目标数据库写入失败：{error}")
 }
+
+fn execute_target_strings(
+    connection: &Connection<'_>,
+    table: &str,
+    stage: &str,
+    statement: &str,
+    values: Vec<String>,
+) -> Result<(), String> {
+    execute_strings(connection, statement, values)
+        .map_err(|error| write_stage_error(table, stage, &error))
+}
+
+fn write_stage_error(table: &str, stage: &str, error: &str) -> String {
+    format!("目标表 {table} 在“{stage}”时写入失败：{error}")
+}
+
+fn database_error_code(error: &str) -> String {
+    error
+        .find("ORA-")
+        .and_then(|start| error.get(start..start + 9))
+        .filter(|code| {
+            code[4..]
+                .chars()
+                .all(|character| character.is_ascii_digit())
+        })
+        .unwrap_or("WRITE_ERROR")
+        .to_string()
+}
+
+fn failed_target_table(error: &str) -> &str {
+    [
+        "hi_bd_med_pro",
+        "hi_bd_med_alias",
+        "hi_bd_med_unit",
+        "hi_bd_med",
+        "hi_bd_fac",
+    ]
+    .into_iter()
+    .find(|table| error.contains(table))
+    .unwrap_or("migration_row")
+}
 fn limit(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        database_error_code, failed_target_table, write_stage_error, HI_BD_FAC_INSERT_SQL,
+        HI_BD_MED_INSERT_SQL, HI_BD_MED_PRO_INSERT_SQL,
+    };
+
+    #[test]
+    fn target_insert_timestamps_are_database_typed_expressions() {
+        for (statement, expected_parameters) in [
+            (HI_BD_MED_INSERT_SQL, 45),
+            (HI_BD_MED_PRO_INSERT_SQL, 23),
+            (HI_BD_FAC_INSERT_SQL, 12),
+        ] {
+            assert!(statement.contains("CURRENT_TIMESTAMP"));
+            assert_eq!(
+                statement
+                    .chars()
+                    .filter(|character| *character == '?')
+                    .count(),
+                expected_parameters
+            );
+            assert!(
+                !statement.contains("insert_time) VALUES")
+                    || statement.contains("CURRENT_TIMESTAMP")
+            );
+        }
+    }
+
+    #[test]
+    fn write_failure_carries_table_stage_and_oracle_code() {
+        let error = write_stage_error("hi_bd_med", "新增药品基本信息", "ORA-01843: invalid month");
+        assert_eq!(failed_target_table(&error), "hi_bd_med");
+        assert_eq!(database_error_code(&error), "ORA-01843");
+        assert!(error.contains("新增药品基本信息"));
+    }
 }

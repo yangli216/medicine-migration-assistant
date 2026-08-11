@@ -32,6 +32,49 @@ pub struct SourceLinkSnapshot {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryLocationMapping {
+    pub source_location_key: String,
+    pub source_kind: String,
+    pub source_location_name: String,
+    #[serde(default)]
+    pub source_organization_id: String,
+    #[serde(default)]
+    pub resolved_source_location_key: String,
+    pub target_id_sto: String,
+    pub target_name: String,
+    pub target_id_org: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryOrganizationMapping {
+    pub source_organization_id: String,
+    pub source_organization_name: String,
+    pub target_organization_id: String,
+    pub target_organization_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryLinkSnapshot {
+    pub tenant_id: String,
+    pub source_name: String,
+    pub source_stock_key: String,
+    pub target_identity: String,
+    pub source_hash: String,
+    pub batch_id: String,
+    pub row_id: String,
+    pub id_sto: String,
+    pub id_sto_med: String,
+    pub id_sto_inv: String,
+    pub id_inv_log: String,
+    pub active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 impl SourceLinkSnapshot {
     pub fn manages(&self, table: &str, target_id: &str) -> bool {
         self.write_manifest
@@ -136,12 +179,403 @@ impl LocalStore {
                     UNIQUE(tenant_id,source_type,source_name,source_key)
                 );
                 CREATE INDEX IF NOT EXISTS ix_mig_link_batch ON migration_source_link(batch_id);
+                CREATE TABLE IF NOT EXISTS migration_factory_link (
+                    tenant_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_name TEXT NOT NULL,
+                    source_factory_key TEXT NOT NULL,
+                    target_id_fac TEXT NOT NULL,
+                    source_factory_name TEXT NOT NULL DEFAULT '',
+                    batch_id TEXT NOT NULL DEFAULT '',
+                    row_id TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(tenant_id,source_type,source_name,source_factory_key)
+                );
+                CREATE INDEX IF NOT EXISTS ix_mig_factory_target
+                    ON migration_factory_link(tenant_id,target_id_fac);
+                CREATE TABLE IF NOT EXISTS migration_inventory_location_mapping (
+                    tenant_id TEXT NOT NULL,
+                    source_name TEXT NOT NULL,
+                    source_location_key TEXT NOT NULL,
+                    target_identity TEXT NOT NULL,
+                    source_kind TEXT NOT NULL DEFAULT '',
+                    source_location_name TEXT NOT NULL DEFAULT '',
+                    source_organization_id TEXT NOT NULL DEFAULT '',
+                    resolved_source_location_key TEXT NOT NULL DEFAULT '',
+                    target_id_sto TEXT NOT NULL,
+                    target_name TEXT NOT NULL DEFAULT '',
+                    target_id_org TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(tenant_id,source_name,source_location_key,target_identity)
+                );
+                CREATE INDEX IF NOT EXISTS ix_mig_inv_location_target
+                    ON migration_inventory_location_mapping(tenant_id,target_identity,target_id_sto);
+                CREATE TABLE IF NOT EXISTS migration_inventory_organization_mapping (
+                    tenant_id TEXT NOT NULL,
+                    source_name TEXT NOT NULL,
+                    source_organization_id TEXT NOT NULL,
+                    target_organization_id TEXT NOT NULL,
+                    source_organization_name TEXT NOT NULL DEFAULT '',
+                    target_organization_name TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(tenant_id,source_name,source_organization_id)
+                );
+                CREATE TABLE IF NOT EXISTS migration_inventory_link (
+                    tenant_id TEXT NOT NULL,
+                    source_name TEXT NOT NULL,
+                    source_stock_key TEXT NOT NULL,
+                    target_identity TEXT NOT NULL,
+                    source_hash TEXT NOT NULL,
+                    batch_id TEXT NOT NULL,
+                    row_id TEXT NOT NULL,
+                    id_sto TEXT NOT NULL,
+                    id_sto_med TEXT NOT NULL,
+                    id_sto_inv TEXT NOT NULL,
+                    id_inv_log TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(tenant_id,source_name,source_stock_key,target_identity)
+                );
+                CREATE INDEX IF NOT EXISTS ix_mig_inv_link_batch
+                    ON migration_inventory_link(batch_id);
+                CREATE TABLE IF NOT EXISTS app_setting (
+                    setting_key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                PRAGMA optimize;
                 "#,
             )
             .map_err(|error| error.to_string())?;
+        ensure_column(
+            &connection,
+            "migration_inventory_location_mapping",
+            "source_organization_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column(
+            &connection,
+            "migration_inventory_location_mapping",
+            "resolved_source_location_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
+    }
+
+    pub fn load_setting(&self, key: &str) -> Result<Option<Value>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        let value = connection
+            .query_row(
+                "SELECT value_json FROM app_setting WHERE setting_key=?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        value
+            .map(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
+            .transpose()
+    }
+
+    pub fn save_setting(&self, key: &str, value: &Value) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        connection
+            .execute(
+                r#"INSERT INTO app_setting(setting_key,value_json,updated_at)
+                   VALUES(?1,?2,?3)
+                   ON CONFLICT(setting_key) DO UPDATE SET
+                     value_json=excluded.value_json,
+                     updated_at=excluded.updated_at"#,
+                params![key, value.to_string(), Utc::now().to_rfc3339()],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn delete_setting(&self, key: &str) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        connection
+            .execute("DELETE FROM app_setting WHERE setting_key=?1", params![key])
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn save_inventory_location_mappings(
+        &self,
+        tenant_id: &str,
+        source_name: &str,
+        target_identity: &str,
+        mappings: &[InventoryLocationMapping],
+    ) -> Result<(), String> {
+        let now = Utc::now().to_rfc3339();
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        for mapping in mappings {
+            transaction
+                .execute(
+                    r#"INSERT INTO migration_inventory_location_mapping(
+                       tenant_id,source_name,source_location_key,target_identity,source_kind,
+                       source_location_name,source_organization_id,resolved_source_location_key,
+                       target_id_sto,target_name,target_id_org,updated_at
+                    ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+                    ON CONFLICT(tenant_id,source_name,source_location_key,target_identity) DO UPDATE SET
+                       source_kind=excluded.source_kind,source_location_name=excluded.source_location_name,
+                       source_organization_id=excluded.source_organization_id,
+                       resolved_source_location_key=excluded.resolved_source_location_key,
+                       target_id_sto=excluded.target_id_sto,target_name=excluded.target_name,
+                       target_id_org=excluded.target_id_org,updated_at=excluded.updated_at"#,
+                    params![
+                        tenant_id,
+                        source_name,
+                        mapping.source_location_key,
+                        target_identity,
+                        mapping.source_kind,
+                        mapping.source_location_name,
+                        mapping.source_organization_id,
+                        mapping.resolved_source_location_key,
+                        mapping.target_id_sto,
+                        mapping.target_name,
+                        mapping.target_id_org,
+                        now
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
+    pub fn save_inventory_organization_mappings(
+        &self,
+        tenant_id: &str,
+        source_name: &str,
+        mappings: &[InventoryOrganizationMapping],
+    ) -> Result<(), String> {
+        let now = Utc::now().to_rfc3339();
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        for mapping in mappings {
+            transaction
+                .execute(
+                    r#"INSERT INTO migration_inventory_organization_mapping(
+                       tenant_id,source_name,source_organization_id,target_organization_id,
+                       source_organization_name,target_organization_name,updated_at
+                    ) VALUES(?1,?2,?3,?4,?5,?6,?7)
+                    ON CONFLICT(tenant_id,source_name,source_organization_id) DO UPDATE SET
+                       target_organization_id=excluded.target_organization_id,
+                       source_organization_name=excluded.source_organization_name,
+                       target_organization_name=excluded.target_organization_name,
+                       updated_at=excluded.updated_at"#,
+                    params![
+                        tenant_id,
+                        source_name,
+                        mapping.source_organization_id,
+                        mapping.target_organization_id,
+                        mapping.source_organization_name,
+                        mapping.target_organization_name,
+                        now
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
+    pub fn load_inventory_organization_mappings(
+        &self,
+        tenant_id: &str,
+        source_name: &str,
+    ) -> Result<Vec<InventoryOrganizationMapping>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        let mut statement = connection
+            .prepare(
+                r#"SELECT source_organization_id,source_organization_name,
+                   target_organization_id,target_organization_name
+                   FROM migration_inventory_organization_mapping
+                   WHERE tenant_id=?1 AND source_name=?2 ORDER BY source_organization_id"#,
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![tenant_id, source_name], |row| {
+                Ok(InventoryOrganizationMapping {
+                    source_organization_id: row.get(0)?,
+                    source_organization_name: row.get(1)?,
+                    target_organization_id: row.get(2)?,
+                    target_organization_name: row.get(3)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn load_inventory_location_mappings(
+        &self,
+        tenant_id: &str,
+        source_name: &str,
+        target_identity: &str,
+    ) -> Result<Vec<InventoryLocationMapping>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        let mut statement = connection
+            .prepare(
+                r#"SELECT source_location_key,source_kind,source_location_name,
+                   source_organization_id,resolved_source_location_key,target_id_sto,
+                   target_name,target_id_org FROM migration_inventory_location_mapping
+                   WHERE tenant_id=?1 AND source_name=?2 AND target_identity=?3
+                   ORDER BY source_location_key"#,
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![tenant_id, source_name, target_identity], |row| {
+                Ok(InventoryLocationMapping {
+                    source_location_key: row.get(0)?,
+                    source_kind: row.get(1)?,
+                    source_location_name: row.get(2)?,
+                    source_organization_id: row.get(3)?,
+                    resolved_source_location_key: row.get(4)?,
+                    target_id_sto: row.get(5)?,
+                    target_name: row.get(6)?,
+                    target_id_org: row.get(7)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn find_inventory_link(
+        &self,
+        tenant_id: &str,
+        source_name: &str,
+        source_stock_key: &str,
+        target_identity: &str,
+    ) -> Result<Option<InventoryLinkSnapshot>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        connection
+            .query_row(
+                r#"SELECT tenant_id,source_name,source_stock_key,target_identity,source_hash,
+                   batch_id,row_id,id_sto,id_sto_med,id_sto_inv,id_inv_log,active,created_at,updated_at
+                   FROM migration_inventory_link
+                   WHERE tenant_id=?1 AND source_name=?2 AND source_stock_key=?3
+                     AND target_identity=?4 AND active=1"#,
+                params![tenant_id, source_name, source_stock_key, target_identity],
+                |row| {
+                    Ok(InventoryLinkSnapshot {
+                        tenant_id: row.get(0)?,
+                        source_name: row.get(1)?,
+                        source_stock_key: row.get(2)?,
+                        target_identity: row.get(3)?,
+                        source_hash: row.get(4)?,
+                        batch_id: row.get(5)?,
+                        row_id: row.get(6)?,
+                        id_sto: row.get(7)?,
+                        id_sto_med: row.get(8)?,
+                        id_sto_inv: row.get(9)?,
+                        id_inv_log: row.get(10)?,
+                        active: row.get::<_, i32>(11)? != 0,
+                        created_at: row.get(12)?,
+                        updated_at: row.get(13)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)]
+    pub fn record_inventory_link(
+        &self,
+        tenant_id: &str,
+        source_name: &str,
+        source_stock_key: &str,
+        target_identity: &str,
+        source_hash: &str,
+        batch_id: &str,
+        row_id: &str,
+        id_sto: &str,
+        id_sto_med: &str,
+        id_sto_inv: &str,
+        id_inv_log: &str,
+    ) -> Result<(), String> {
+        let now = Utc::now().to_rfc3339();
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        connection
+            .execute(
+                r#"INSERT INTO migration_inventory_link(
+                   tenant_id,source_name,source_stock_key,target_identity,source_hash,batch_id,row_id,
+                   id_sto,id_sto_med,id_sto_inv,id_inv_log,active,created_at,updated_at
+                ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,1,?12,?12)
+                ON CONFLICT(tenant_id,source_name,source_stock_key,target_identity) DO UPDATE SET
+                   source_hash=excluded.source_hash,batch_id=excluded.batch_id,row_id=excluded.row_id,
+                   id_sto=excluded.id_sto,id_sto_med=excluded.id_sto_med,
+                   id_sto_inv=excluded.id_sto_inv,id_inv_log=excluded.id_inv_log,
+                   active=1,updated_at=excluded.updated_at"#,
+                params![
+                    tenant_id,
+                    source_name,
+                    source_stock_key,
+                    target_identity,
+                    source_hash,
+                    batch_id,
+                    row_id,
+                    id_sto,
+                    id_sto_med,
+                    id_sto_inv,
+                    id_inv_log,
+                    now
+                ],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn deactivate_inventory_links_for_batch(&self, batch_id: &str) -> Result<usize, String> {
+        let now = Utc::now().to_rfc3339();
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        connection
+            .execute(
+                "UPDATE migration_inventory_link SET active=0,updated_at=?2 WHERE batch_id=?1 AND active=1",
+                params![batch_id, now],
+            )
+            .map_err(|error| error.to_string())
     }
 
     pub fn find_by_idempotency_key(&self, key: &str) -> Result<Option<String>, String> {
@@ -159,6 +593,79 @@ impl LocalStore {
                 |row| row.get(0),
             )
             .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn find_factory_link(
+        &self,
+        tenant_id: &str,
+        source_type: &str,
+        source_name: &str,
+        source_factory_key: &str,
+    ) -> Result<Option<String>, String> {
+        if source_factory_key.trim().is_empty() {
+            return Ok(None);
+        }
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        connection
+            .query_row(
+                r#"SELECT target_id_fac FROM migration_factory_link
+                   WHERE tenant_id=?1 AND source_type=?2 AND source_name=?3
+                     AND source_factory_key=?4"#,
+                params![tenant_id, source_type, source_name, source_factory_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_factory_link_upsert(
+        &self,
+        tenant_id: &str,
+        source_type: &str,
+        source_name: &str,
+        source_factory_key: &str,
+        target_id_fac: &str,
+        source_factory_name: &str,
+        batch_id: &str,
+        row_id: &str,
+    ) -> Result<(), String> {
+        if source_factory_key.trim().is_empty() || target_id_fac.trim().is_empty() {
+            return Ok(());
+        }
+        let now = Utc::now().to_rfc3339();
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        connection
+            .execute(
+                r#"INSERT INTO migration_factory_link(
+                    tenant_id,source_type,source_name,source_factory_key,target_id_fac,
+                    source_factory_name,batch_id,row_id,created_at,updated_at
+                ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)
+                ON CONFLICT(tenant_id,source_type,source_name,source_factory_key) DO UPDATE SET
+                    target_id_fac=excluded.target_id_fac,
+                    source_factory_name=excluded.source_factory_name,
+                    batch_id=excluded.batch_id,row_id=excluded.row_id,
+                    updated_at=excluded.updated_at"#,
+                params![
+                    tenant_id,
+                    source_type,
+                    source_name,
+                    source_factory_key,
+                    target_id_fac,
+                    source_factory_name,
+                    batch_id,
+                    row_id,
+                    now
+                ],
+            )
+            .map(|_| ())
             .map_err(|error| error.to_string())
     }
 
@@ -672,10 +1179,43 @@ fn parse_map(json: &str) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
+fn ensure_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), String> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| error.to_string())?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    if columns
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(column))
+    {
+        return Ok(());
+    }
+    connection
+        .execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::SourceLinkSnapshot;
-    use serde_json::json;
+    use super::{
+        InventoryLocationMapping, InventoryOrganizationMapping, LocalStore, SourceLinkSnapshot,
+    };
+    use crate::model::{MigrationBatch, MigrationRow};
+    use serde_json::{json, Map};
+    use std::path::Path;
 
     #[test]
     fn source_link_only_treats_insert_and_continuous_update_as_tool_managed() {
@@ -704,5 +1244,248 @@ mod tests {
         assert!(!link.manages("hi_bd_fac", "fac"));
         link.write_manifest = json!([{"operation":"UPDATE","table":"hi_bd_med","targetId":"med"}]);
         assert!(link.manages("hi_bd_med", "med"));
+    }
+
+    #[test]
+    fn legacy_factory_key_reuses_the_same_target_factory() {
+        let store = LocalStore::open(Path::new(":memory:")).unwrap();
+        store
+            .record_factory_link_upsert(
+                "tenant",
+                "PHIS27",
+                "legacy-instance",
+                "2001",
+                "66aa10244f0d4826ac110001",
+                "测试制药有限公司",
+                "batch-1",
+                "row-1",
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .find_factory_link("tenant", "PHIS27", "legacy-instance", "2001")
+                .unwrap()
+                .as_deref(),
+            Some("66aa10244f0d4826ac110001")
+        );
+        assert!(store
+            .find_factory_link("tenant", "PHIS27", "another-instance", "2001")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn composite_product_keys_map_one_medicine_to_distinct_products() {
+        let store = LocalStore::open(Path::new(":memory:")).unwrap();
+        let batch = MigrationBatch {
+            batch_id: "batch".into(),
+            batch_name: "二系列phis".into(),
+            source_type: "PHIS27".into(),
+            source_name: "二系列phis · source".into(),
+            source_description: String::new(),
+            conflict_strategy: "INCREMENTAL".into(),
+            allow_create_factory: true,
+            idempotency_key: "batch-key".into(),
+            status: "SUCCESS".into(),
+            total_count: 2,
+            valid_count: 0,
+            success_count: 2,
+            fail_count: 0,
+            skip_count: 0,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+            finished_at: Some("now".into()),
+        };
+        store.insert_batch(&batch, "{}").unwrap();
+        for (row_id, source_key, id_fac, id_med_pro) in [
+            ("row-1", "1001:2001", "fac-1", "product-1"),
+            ("row-2", "1001:2002", "fac-2", "product-2"),
+        ] {
+            let row = MigrationRow {
+                row_id: row_id.into(),
+                batch_id: batch.batch_id.clone(),
+                row_no: if row_id == "row-1" { 1 } else { 2 },
+                source_key: source_key.into(),
+                source_hash: format!("hash-{row_id}"),
+                status: "SUCCESS".into(),
+                raw_data: Map::new(),
+                normalized_data: Map::new(),
+                error_code: String::new(),
+                error_message: String::new(),
+                id_med: "shared-med".into(),
+                id_med_unit: "shared-unit".into(),
+                id_fac: id_fac.into(),
+                id_med_pro: id_med_pro.into(),
+                retry_count: 0,
+                updated_at: "now".into(),
+            };
+            store.insert_row(&row).unwrap();
+            store
+                .record_source_link_upsert(
+                    "tenant",
+                    "PHIS27",
+                    &batch.source_name,
+                    &row,
+                    json!([
+                        {"operation":"REUSE","table":"hi_bd_med","targetId":"shared-med"},
+                        {"operation":"INSERT","table":"hi_bd_med_pro","targetId":id_med_pro}
+                    ]),
+                    "operator",
+                    "trace",
+                )
+                .unwrap();
+        }
+        let first = store
+            .find_source_link("tenant", "PHIS27", &batch.source_name, "1001:2001")
+            .unwrap()
+            .unwrap();
+        let second = store
+            .find_source_link("tenant", "PHIS27", &batch.source_name, "1001:2002")
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.id_med, second.id_med);
+        assert_ne!(first.id_fac, second.id_fac);
+        assert_ne!(first.id_med_pro, second.id_med_pro);
+    }
+
+    #[test]
+    fn merged_legacy_medicines_keep_distinct_source_links_to_one_target_medicine() {
+        let store = LocalStore::open(Path::new(":memory:")).unwrap();
+        let batch = MigrationBatch {
+            batch_id: "merge-batch".into(),
+            batch_name: "二系列phis自动合并".into(),
+            source_type: "PHIS27".into(),
+            source_name: "二系列phis · source".into(),
+            source_description: String::new(),
+            conflict_strategy: "INCREMENTAL".into(),
+            allow_create_factory: true,
+            idempotency_key: "merge-batch-key".into(),
+            status: "SUCCESS".into(),
+            total_count: 2,
+            valid_count: 0,
+            success_count: 2,
+            fail_count: 0,
+            skip_count: 0,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+            finished_at: Some("now".into()),
+        };
+        store.insert_batch(&batch, "{}").unwrap();
+        for (row_no, source_key, product_id) in
+            [(1, "1001:2001", "product-1"), (2, "1002:2002", "product-2")]
+        {
+            let row = MigrationRow {
+                row_id: format!("merge-row-{row_no}"),
+                batch_id: batch.batch_id.clone(),
+                row_no,
+                source_key: source_key.into(),
+                source_hash: format!("merge-hash-{row_no}"),
+                status: "SUCCESS".into(),
+                raw_data: Map::new(),
+                normalized_data: Map::new(),
+                error_code: String::new(),
+                error_message: String::new(),
+                id_med: "shared-med".into(),
+                id_med_unit: "shared-unit".into(),
+                id_fac: format!("fac-{row_no}"),
+                id_med_pro: product_id.into(),
+                retry_count: 0,
+                updated_at: "now".into(),
+            };
+            store.insert_row(&row).unwrap();
+            store
+                .record_source_link_upsert(
+                    "tenant",
+                    "PHIS27",
+                    &batch.source_name,
+                    &row,
+                    json!([{"operation":"REUSE","table":"hi_bd_med","targetId":"shared-med"}]),
+                    "operator",
+                    "trace",
+                )
+                .unwrap();
+        }
+        let first = store
+            .find_source_link("tenant", "PHIS27", &batch.source_name, "1001:2001")
+            .unwrap()
+            .unwrap();
+        let second = store
+            .find_source_link("tenant", "PHIS27", &batch.source_name, "1002:2002")
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.id_med, "shared-med");
+        assert_eq!(first.id_med, second.id_med);
+        assert_ne!(first.source_key, second.source_key);
+        assert_ne!(first.id_med_pro, second.id_med_pro);
+    }
+
+    #[test]
+    fn inventory_location_mapping_is_isolated_by_target_database_identity() {
+        let store = LocalStore::open(Path::new(":memory:")).unwrap();
+        let mapping = InventoryLocationMapping {
+            source_location_key: "YK:420100001".into(),
+            source_kind: "WAREHOUSE".into(),
+            source_location_name: "中心药库".into(),
+            source_organization_id: "420100001".into(),
+            resolved_source_location_key: "YK:1".into(),
+            target_id_sto: "target-storage".into(),
+            target_name: "新系统中心药库".into(),
+            target_id_org: "target-org".into(),
+        };
+        store
+            .save_inventory_location_mappings(
+                "tenant",
+                "legacy-instance",
+                "target-a",
+                std::slice::from_ref(&mapping),
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .load_inventory_location_mappings("tenant", "legacy-instance", "target-a")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .load_inventory_location_mappings("tenant", "legacy-instance", "target-a")
+                .unwrap()[0]
+                .resolved_source_location_key,
+            "YK:1"
+        );
+        assert!(store
+            .load_inventory_location_mappings("tenant", "legacy-instance", "target-b")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn inventory_organization_mapping_is_restored_for_the_same_legacy_database() {
+        let store = LocalStore::open(Path::new(":memory:")).unwrap();
+        let mapping = InventoryOrganizationMapping {
+            source_organization_id: "330108001".into(),
+            source_organization_name: "老系统医院".into(),
+            target_organization_id: "5b7e12988ddd9446d42a03c8".into(),
+            target_organization_name: "新系统医院".into(),
+        };
+        store
+            .save_inventory_organization_mappings(
+                "tenant",
+                "legacy-instance",
+                std::slice::from_ref(&mapping),
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .load_inventory_organization_mappings("tenant", "legacy-instance")
+                .unwrap()[0]
+                .target_organization_id,
+            mapping.target_organization_id
+        );
+        assert!(store
+            .load_inventory_organization_mappings("tenant", "another-instance")
+            .unwrap()
+            .is_empty());
     }
 }

@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildDictionaryValueMappings,
+  buildPhis27PresetRules,
   findDictionaryItem,
   mergeValueMappingText,
+  replaceValueMappingText,
   recommendCostMergeMappings,
 } from "../src/dictionary.js";
 
@@ -50,5 +52,135 @@ test("builds only safe exact dictionary mappings and keeps manual rules", () => 
   assert.equal(
     mergeValueMappingText("旧西药 = 1", { 西药: "1", 旧西药: "2" }),
     "旧西药 = 1\n西药 = 1",
+  );
+});
+
+test("maps a legacy dictionary code through its semantic text", () => {
+  assert.deepEqual(
+    buildDictionaryValueMappings(
+      ["9"],
+      [{ key: "VACCINE", text: "疫苗" }],
+      [{ key: "9", text: "疫苗" }],
+    ),
+    { 9: "VACCINE" },
+  );
+});
+
+test("maps common legacy 1/2 and RX/OTC flags to target 1/0 semantics", () => {
+  const sourceItems = [
+    { key: "1", text: "处方药品（RX）" },
+    { key: "2", text: "非处方药品（OTC）" },
+  ];
+  const targetItems = [
+    { key: "1", text: "处方药" },
+    { key: "0", text: "非处方药" },
+  ];
+  assert.deepEqual(
+    buildDictionaryValueMappings(["1", "2"], targetItems, sourceItems),
+    { "2": "0" },
+  );
+});
+
+test("builds safe PHIS27 preset mappings for fixed and dynamic dictionaries", () => {
+  const mapping = {
+    fgMedRx: "RX_FLAG",
+    sdChrgitmLv: "INSURANCE_LEVEL",
+    sdAllergy: "ALLERGY_CODE",
+    sdStorage: "STORAGE_CODE",
+    sdRound: "ROUND_CODE",
+    dftUsage: "USAGE_CODE",
+    dftFreq: "FREQ_CODE",
+  };
+  const targetFields = [
+    ["sdChrgitmLv", "phis.medicareLevel"],
+    ["fgMedRx", "rbmh.base.med.prescriptiondrugIdentification"],
+    ["sdAllergy", "rbmh.base.med.sdAllergy"],
+    ["sdStorage", "phis.storageType"],
+    ["sdRound", "rbmh.base.med.roundingStrategy"],
+    ["dftUsage", "rbmh.base.med.usage"],
+    ["dftFreq", "rbmh.base.freq"],
+  ].map(([key, dictionaryId]) => ({ key, dictionaryId }));
+  const dictionariesById = {
+    "rbmh.base.med.prescriptiondrugIdentification": {
+      items: [{ key: "1", text: "处方药" }, { key: "2", text: "非处方药" }],
+    },
+    "phis.medicareLevel": {
+      items: [["01", "甲类"], ["02", "乙类"], ["03", "丙类"]].map(
+        ([key, text]) => ({ key, text }),
+      ),
+    },
+    "rbmh.base.med.sdAllergy": { items: [{ key: "1", text: "青霉素" }] },
+    "phis.storageType": { items: [{ key: "1", text: "常温" }] },
+    "rbmh.base.med.roundingStrategy": {
+      items: [["1", "每次发药数量取整"], ["2", "每天发药数量取整"], ["3", "不取整"]].map(
+        ([key, text]) => ({ key, text }),
+      ),
+    },
+    "rbmh.base.med.usage": {
+      items: [{ key: "100", text: "口服" }, { key: "402", text: "静脉滴注" }],
+    },
+    "rbmh.base.freq": { items: [{ key: "QD", text: "每日一次" }] },
+  };
+  const columnMetadata = {
+    USAGE_CODE: {
+      sourceDictionary: {
+        items: [
+          { key: "1", text: "口服", properties: { BZYF: "1" } },
+          { key: "2", text: "静滴", properties: { BZYF: "405" } },
+        ],
+      },
+    },
+    FREQ_CODE: { sourceDictionary: { items: [{ key: "qd", text: "每日一次" }] } },
+  };
+  const rules = buildPhis27PresetRules({
+    rows: [
+      {
+        RX_FLAG: "2",
+        INSURANCE_LEVEL: "1",
+        ALLERGY_CODE: "0",
+        STORAGE_CODE: "0",
+        ROUND_CODE: "0",
+        USAGE_CODE: "1",
+        FREQ_CODE: "qd",
+      },
+      { RX_FLAG: "1", USAGE_CODE: "2" },
+      { USAGE_CODE: "9" },
+    ],
+    mapping,
+    columnMetadata,
+    targetFields,
+    dictionariesById,
+    rules: {
+      fgMedRx: {
+        transform: "BOOLEAN_01",
+        valueMappingsText: "2 = 0",
+      },
+    },
+  });
+  assert.equal(rules.fgMedRx.transform, "TRIM");
+  assert.doesNotMatch(rules.fgMedRx.valueMappingsText, /2 = 0/);
+  assert.match(rules.sdChrgitmLv.valueMappingsText, /1 = 01/);
+  assert.match(rules.sdAllergy.valueMappingsText, /0 =\s*$/m);
+  assert.match(rules.sdStorage.valueMappingsText, /0 =\s*$/m);
+  assert.match(rules.sdRound.valueMappingsText, /0 = 1/);
+  assert.match(rules.dftUsage.valueMappingsText, /1 = 100/);
+  assert.match(rules.dftUsage.valueMappingsText, /2 = 402/);
+  assert.match(rules.dftUsage.valueMappingsText, /9 = <忽略>/);
+  assert.match(rules.dftFreq.valueMappingsText, /qd = QD/);
+});
+
+test("replaces or clears one visual dictionary mapping", () => {
+  assert.equal(
+    replaceValueMappingText("1 = A\n2 = B", "1", "C"),
+    "2 = B\n1 = C",
+  );
+  assert.equal(replaceValueMappingText("1 = A\n2 = B", "1", "1"), "2 = B");
+  assert.equal(
+    replaceValueMappingText("1 = A", null, "UNKNOWN"),
+    "1 = A\n<空值> = UNKNOWN",
+  );
+  assert.equal(
+    replaceValueMappingText("1 = A\n<空值> = UNKNOWN", "", ""),
+    "1 = A",
   );
 });

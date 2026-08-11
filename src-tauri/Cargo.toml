@@ -7,7 +7,9 @@ edition = "2021"
 
 [lib]
 name = "medicine_migration_assistant_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# This product ships as a desktop app. Mobile-only static/dynamic library
+# outputs duplicate hundreds of MB on every dev build, so keep the Rust rlib.
+crate-type = ["rlib"]
 
 [[bin]]
 name = "medicine-migration-assistant"
@@ -26,12 +28,14 @@ chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 sqlx-core = { version = "0.8.6", default-features = false, features = ["_rt-tokio", "_tls-rustls-ring-native-roots", "chrono", "rust_decimal"] }
 sqlx-mysql = { version = "0.8.6", default-features = false, features = ["chrono", "rust_decimal"] }
+sqlx-postgres = { version = "0.8.6", default-features = false, features = ["chrono", "rust_decimal"] }
 rust_decimal = "1"
 base64 = "0.22"
 sha2 = "0.10"
 md-5 = "0.10.6"
 reqwest = { version = "0.13.4", default-features = false, features = ["cookies", "json", "native-tls", "query"] }
 futures-util = "0.3"
+ring = "0.17"
 
 [target.'cfg(windows)'.dependencies]
 odbc-api = { version = "29.0.0", default-features = false, features = ["odbc_version_3_80"] }
@@ -41,6 +45,19 @@ odbc-api = { version = "29.0.0", default-features = false, features = ["odbc_ver
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.dev]
+# Keep useful file/line information while avoiding full dependency debug data.
+debug = "line-tables-only"
+incremental = true
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+# Release builds are infrequent; incremental caches otherwise accumulate quickly.
+incremental = false
+strip = true
 
 # spin 0.9.8 is required transitively by the MySQL RSA handshake but is yanked
 # from fresh resolution. Vendoring keeps desktop builds deterministic/offline.

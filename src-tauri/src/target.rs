@@ -19,24 +19,57 @@ use sqlx_core::query_scalar::query_scalar;
 use sqlx_core::row::Row;
 use sqlx_mysql::{MySql, MySqlPool, MySqlTransaction};
 use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
+
+static ACTIVE_BATCHES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Debug)]
-struct WriteEvent {
-    operation: &'static str,
-    table: &'static str,
-    target_id: String,
-    message: String,
-    before: Value,
-    after: Value,
+struct ActiveBatchGuard {
+    batch_id: String,
 }
 
-struct WriteOutcome {
-    status: String,
-    id_med: String,
-    id_med_unit: String,
-    id_fac: String,
-    id_med_pro: String,
-    events: Vec<WriteEvent>,
+impl ActiveBatchGuard {
+    fn enter(batch_id: &str) -> Result<Self, String> {
+        let batches = ACTIVE_BATCHES.get_or_init(|| Mutex::new(HashSet::new()));
+        let mut active = batches
+            .lock()
+            .map_err(|_| "迁移执行状态暂时不可用，请重启应用后重试".to_string())?;
+        if !active.insert(batch_id.to_string()) {
+            return Err("该迁移批次正在执行，请勿重复提交".into());
+        }
+        Ok(Self {
+            batch_id: batch_id.to_string(),
+        })
+    }
+}
+
+impl Drop for ActiveBatchGuard {
+    fn drop(&mut self) {
+        if let Some(batches) = ACTIVE_BATCHES.get() {
+            if let Ok(mut active) = batches.lock() {
+                active.remove(&self.batch_id);
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct WriteEvent {
+    pub(crate) operation: &'static str,
+    pub(crate) table: &'static str,
+    pub(crate) target_id: String,
+    pub(crate) message: String,
+    pub(crate) before: Value,
+    pub(crate) after: Value,
+}
+
+pub(crate) struct WriteOutcome {
+    pub(crate) status: String,
+    pub(crate) id_med: String,
+    pub(crate) id_med_unit: String,
+    pub(crate) id_fac: String,
+    pub(crate) id_med_pro: String,
+    pub(crate) events: Vec<WriteEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,6 +329,9 @@ pub(crate) fn audit_undo_failure(
 }
 
 pub async fn inspect_schema(profile: &ConnectionProfile) -> Result<TargetReadiness, String> {
+    if crate::pg_protocol::uses_native_connection(profile) {
+        return crate::pg_protocol::inspect_target_schema(profile).await;
+    }
     if crate::odbc::is_odbc_kind(&profile.kind) {
         return crate::odbc::inspect_target_schema(profile);
     }
@@ -338,6 +374,12 @@ pub async fn preview_overwrite(
     tenant_id: &str,
     operator_id: &str,
 ) -> Result<OverwritePreview, String> {
+    if crate::pg_protocol::uses_native_connection(&request.target) {
+        return Err(
+            "PostgreSQL 通用协议暂不开放覆盖迁移；请使用增量迁移，或显式配置已验收的厂商 ODBC 回退"
+                .into(),
+        );
+    }
     if crate::odbc::is_odbc_kind(&request.target.kind) {
         return crate::target_odbc::preview_overwrite(store, request, tenant_id, operator_id);
     }
@@ -492,13 +534,18 @@ pub async fn execute_batch(
     store: &LocalStore,
     request: ExecuteBatchRequest,
 ) -> Result<BatchDetail, String> {
+    // RUNNING is persisted for auditability, but it may be left behind after an
+    // OS-level driver abort. Duplicate execution is guarded by this process-local
+    // lease, so restarting the application safely makes an interrupted batch
+    // retryable without manually editing the local history database.
+    let _active_batch = ActiveBatchGuard::enter(&request.batch_id)?;
+    if crate::pg_protocol::uses_native_connection(&request.target) {
+        return crate::target_pg::execute_batch(store, request).await;
+    }
     if crate::odbc::is_odbc_kind(&request.target.kind) {
         return crate::target_odbc::execute_batch(store, request);
     }
     let detail = store.load_batch(&request.batch_id)?;
-    if detail.batch.status == "RUNNING" {
-        return Err("该迁移批次正在执行，请勿重复提交".into());
-    }
     validate_overwrite_execution_preview(&detail, &request)?;
     let pool = connect_mysql(&request.target).await?;
     inspect_mysql_pool(&pool).await?;
@@ -568,6 +615,24 @@ pub async fn execute_batch(
         if !executable {
             continue;
         }
+        if let Some(source_factory_key) = row
+            .normalized_data
+            .get("_sourceFactoryKey")
+            .map(value_text)
+            .filter(|value| !value.is_empty())
+        {
+            if let Some(target_id_fac) = store.find_factory_link(
+                &request.tenant_id,
+                &detail.batch.source_type,
+                &detail.batch.source_name,
+                &source_factory_key,
+            )? {
+                row.normalized_data.insert(
+                    "_sourceFactoryTargetId".into(),
+                    Value::String(target_id_fac),
+                );
+            }
+        }
         let trace_id = new_object_id();
         match write_row(
             &pool,
@@ -590,6 +655,23 @@ pub async fn execute_batch(
                 row.error_message.clear();
                 row.updated_at = Utc::now().to_rfc3339();
                 store.update_row_result(&row)?;
+                if let Some(source_factory_key) = row
+                    .normalized_data
+                    .get("_sourceFactoryKey")
+                    .map(value_text)
+                    .filter(|value| !value.is_empty())
+                {
+                    store.record_factory_link_upsert(
+                        &request.tenant_id,
+                        &detail.batch.source_type,
+                        &detail.batch.source_name,
+                        &source_factory_key,
+                        &row.id_fac,
+                        &text(&row.normalized_data, "naFac"),
+                        &request.batch_id,
+                        &row.row_id,
+                    )?;
+                }
                 let write_manifest = Value::Array(
                     outcome
                         .events
@@ -664,6 +746,9 @@ pub async fn undo_batch(
     tenant_id: &str,
     operator_id: &str,
 ) -> Result<BatchDetail, String> {
+    if crate::pg_protocol::uses_native_connection(&request.target) {
+        return crate::target_pg::undo_batch(store, request, tenant_id, operator_id).await;
+    }
     if crate::odbc::is_odbc_kind(&request.target.kind) {
         return crate::target_odbc::undo_batch(store, request, tenant_id, operator_id);
     }
@@ -878,6 +963,7 @@ async fn write_row(
     let name = text(data, "naMed");
     let med_type = text(data, "sdMed");
     let spec = derived_spec(data);
+    let unit_pre = text(data, "unitPre");
     let fg_pri = defaulted(data, "fgPri", "0");
     validate_execution_context(tenant_id, operator_id, organization_id, fg_pri == "1")?;
     if conflict_strategy.eq_ignore_ascii_case("OVERWRITE") && !row.id_med.is_empty() {
@@ -896,15 +982,15 @@ async fn write_row(
     }
     let existing_med = if fg_pri == "1" {
         query_scalar::<MySql, String>(
-            "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND sd_med=? AND COALESCE(spec,'')=? AND fg_active='1' AND ((fg_pri='1' AND id_org_pri=?) OR fg_pri='0' OR fg_pri IS NULL) LIMIT 1",
+            "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND COALESCE(spec,'')=? AND COALESCE(unit_pre,'')=? AND fg_active='1' AND ((fg_pri='1' AND id_org_pri=?) OR fg_pri='0' OR fg_pri IS NULL) LIMIT 1",
         )
-        .bind(tenant_id).bind(&name).bind(&med_type).bind(&spec).bind(organization_id)
+        .bind(tenant_id).bind(&name).bind(&spec).bind(&unit_pre).bind(organization_id)
         .fetch_optional(&mut *tx).await.map_err(db_error)?
     } else {
         query_scalar::<MySql, String>(
-            "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND sd_med=? AND COALESCE(spec,'')=? AND fg_active='1' AND (fg_pri<>'1' OR fg_pri IS NULL) LIMIT 1",
+            "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND COALESCE(spec,'')=? AND COALESCE(unit_pre,'')=? AND fg_active='1' AND (fg_pri<>'1' OR fg_pri IS NULL) LIMIT 1",
         )
-        .bind(tenant_id).bind(&name).bind(&med_type).bind(&spec)
+        .bind(tenant_id).bind(&name).bind(&spec).bind(&unit_pre)
         .fetch_optional(&mut *tx).await.map_err(db_error)?
     };
     let id_med = if let Some(id) = existing_med {
@@ -915,9 +1001,9 @@ async fn write_row(
             operation: "REUSE",
             table: "hi_bd_med",
             target_id: id.clone(),
-            message: "复用已存在的药品基本信息".into(),
-            before: json!({"idMed":id,"businessKey":{"naMed":name,"sdMed":med_type,"spec":spec}}),
-            after: json!({"idMed":id,"naMed":name,"spec":spec}),
+            message: "名称、规格、单位一致，自动合并并复用药品基本信息".into(),
+            before: json!({"idMed":id,"businessKey":{"naMed":name,"spec":spec,"unitPre":unit_pre}}),
+            after: json!({"idMed":id,"naMed":name,"spec":spec,"unitPre":unit_pre}),
         });
         id
     } else {
@@ -941,7 +1027,7 @@ async fn write_row(
         .bind(&name)
         .bind(&med_type)
         .bind(text(data, "idCstmg"))
-        .bind(text(data, "unitPre"))
+        .bind(&unit_pre)
         .bind(&spec)
         .bind(text(data, "dose"))
         .bind(text(data, "unitDose"))
@@ -965,7 +1051,7 @@ async fn write_row(
         .bind(text(data, "sdAnti"))
         .bind(text(data, "sdRound"))
         .bind(text(data, "sdDps"))
-        .bind(defaulted(data, "fgMedRx", "0"))
+        .bind(defaulted(data, "fgMedRx", "2"))
         .bind(defaulted(data, "fgBasMed", "0"))
         .bind(defaulted(data, "fgSkintest", "0"))
         .bind(text(data, "sdSkintest"))
@@ -1170,23 +1256,22 @@ async fn overwrite_mysql_row(
     let data = &row.normalized_data;
     let id_med = row.id_med.clone();
     let name = text(data, "naMed");
-    let med_type = text(data, "sdMed");
     let spec = derived_spec(data);
     let fg_pri = defaulted(data, "fgPri", "0");
     let duplicate_med = query_scalar::<MySql, String>(
-        "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND sd_med=? AND COALESCE(spec,'')=? AND id_med<>? AND fg_active='1' LIMIT 1",
+        "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND COALESCE(spec,'')=? AND COALESCE(unit_pre,'')=? AND id_med<>? AND fg_active='1' LIMIT 1",
     )
     .bind(tenant_id)
     .bind(&name)
-    .bind(&med_type)
     .bind(&spec)
+    .bind(text(data, "unitPre"))
     .bind(&id_med)
     .fetch_optional(&mut **tx)
     .await
     .map_err(db_error)?;
     if let Some(duplicate) = duplicate_med {
         return Err(format!(
-            "覆盖后的药品业务键与目标药品{duplicate}冲突，请先处理重复数据"
+            "覆盖后的药品名称、规格、单位与目标药品{duplicate}重复，请先处理重复数据"
         ));
     }
     let mut events = Vec::new();
@@ -1539,7 +1624,40 @@ async fn ensure_factory(
         });
         return Ok(id);
     }
+    let source_factory_key = text(data, "_sourceFactoryKey");
+    let mapped_id = text(data, "_sourceFactoryTargetId");
+    if !mapped_id.is_empty() {
+        let exists: Option<String> = query_scalar::<MySql, String>(
+            "SELECT id_fac FROM hi_bd_fac WHERE id_fac=? AND id_tet=? AND fg_active='1' LIMIT 1",
+        )
+        .bind(&mapped_id)
+        .bind(tenant_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db_error)?;
+        if let Some(id) = exists {
+            events.push(WriteEvent {
+                operation: "REUSE",
+                table: "hi_bd_fac",
+                target_id: id.clone(),
+                message: format!("按二系列phis厂家主键 YPCD={source_factory_key} 复用生产厂家"),
+                before: json!({"idFac":id,"sourceFactoryKey":source_factory_key}),
+                after: json!({"idFac":id}),
+            });
+            return Ok(id);
+        }
+    }
     let name = text(data, "naFac");
+    if name.is_empty() {
+        return Err(format!(
+            "二系列phis厂家 YPCD={} 未在 YK_CDDZ 中找到有效名称，无法迁移厂家基础数据",
+            if source_factory_key.is_empty() {
+                "未知"
+            } else {
+                &source_factory_key
+            }
+        ));
+    }
     let existing: Option<String> = query_scalar::<MySql, String>(
         "SELECT id_fac FROM hi_bd_fac WHERE id_tet=? AND na_fac=? AND fg_active='1' LIMIT 1",
     )
@@ -1566,15 +1684,17 @@ async fn ensure_factory(
         ));
     }
     let id = new_object_id();
+    let short_name = defaulted(data, "naFacShort", &limit(&name, 32));
+    let pinyin = text(data, "pyFac");
     query::<MySql>(
         r#"INSERT INTO hi_bd_fac(id_fac,na_fac,na_fac_short,sd_prod_plac,py,wb,instr,fg_active,
         id_tet,revision,insert_user,insert_time,sd_fac) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
     )
     .bind(&id)
     .bind(&name)
-    .bind(limit(&name, 32))
+    .bind(limit(&short_name, 32))
     .bind(defaulted(data, "sdProdPlac", "1"))
-    .bind("")
+    .bind(&pinyin)
     .bind("")
     .bind(&name)
     .bind("1")
@@ -1590,14 +1710,22 @@ async fn ensure_factory(
         operation: "INSERT",
         table: "hi_bd_fac",
         target_id: id.clone(),
-        message: "按迁移策略新增生产厂家".into(),
+        message: if source_factory_key.is_empty() {
+            "按迁移策略新增生产厂家".into()
+        } else {
+            format!("迁移二系列phis厂家基础数据（YPCD={source_factory_key}）")
+        },
         before: Value::Null,
-        after: json!({"idFac":id,"naFac":name}),
+        after: json!({"idFac":id,"naFac":name,"naFacShort":short_name,"py":pinyin,"sourceFactoryKey":source_factory_key}),
     });
     Ok(id)
 }
 
-fn finish_batch(store: &LocalStore, batch_id: &str, operator_id: &str) -> Result<(), String> {
+pub(crate) fn finish_batch(
+    store: &LocalStore,
+    batch_id: &str,
+    operator_id: &str,
+) -> Result<(), String> {
     let detail = store.load_batch(batch_id)?;
     let success = detail
         .rows
@@ -1646,10 +1774,10 @@ fn finish_batch(store: &LocalStore, batch_id: &str, operator_id: &str) -> Result
     )
 }
 
-fn text(data: &Map<String, Value>, key: &str) -> String {
+pub(crate) fn text(data: &Map<String, Value>, key: &str) -> String {
     data.get(key).map(value_text).unwrap_or_default()
 }
-fn defaulted(data: &Map<String, Value>, key: &str, default: &str) -> String {
+pub(crate) fn defaulted(data: &Map<String, Value>, key: &str, default: &str) -> String {
     let value = text(data, key);
     if value.is_empty() {
         default.into()
@@ -1657,17 +1785,20 @@ fn defaulted(data: &Map<String, Value>, key: &str, default: &str) -> String {
         value
     }
 }
-fn integer(data: &Map<String, Value>, key: &str) -> Result<i64, String> {
+pub(crate) fn integer(data: &Map<String, Value>, key: &str) -> Result<i64, String> {
     text(data, key)
         .parse::<i64>()
         .map_err(|_| format!("{}必须是整数", key))
 }
-fn decimal(data: &Map<String, Value>, key: &str) -> Result<Decimal, String> {
+pub(crate) fn decimal(data: &Map<String, Value>, key: &str) -> Result<Decimal, String> {
     text(data, key)
         .parse::<Decimal>()
         .map_err(|_| format!("{}必须是数字", key))
 }
-fn optional_decimal(data: &Map<String, Value>, key: &str) -> Result<Option<Decimal>, String> {
+pub(crate) fn optional_decimal(
+    data: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<Decimal>, String> {
     let value = text(data, key);
     if value.is_empty() {
         Ok(None)
@@ -1678,7 +1809,7 @@ fn optional_decimal(data: &Map<String, Value>, key: &str) -> Result<Option<Decim
             .map_err(|_| format!("{}必须是数字", key))
     }
 }
-fn derived_spec(data: &Map<String, Value>) -> String {
+pub(crate) fn derived_spec(data: &Map<String, Value>) -> String {
     let spec = text(data, "spec");
     if !spec.is_empty() {
         spec
@@ -1691,7 +1822,7 @@ fn derived_spec(data: &Map<String, Value>) -> String {
         )
     }
 }
-fn derived_sale_spec(data: &Map<String, Value>, base_spec: &str) -> String {
+pub(crate) fn derived_sale_spec(data: &Map<String, Value>, base_spec: &str) -> String {
     let spec = text(data, "specSale");
     if !spec.is_empty() {
         return spec;
@@ -1713,13 +1844,13 @@ fn derived_sale_spec(data: &Map<String, Value>, base_spec: &str) -> String {
 fn db_error(error: sqlx_core::Error) -> String {
     format!("目标数据库写入失败：{}", error)
 }
-fn limit(text: &str, max: usize) -> String {
+pub(crate) fn limit(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{inserted_targets, updated_targets};
+    use super::{inserted_targets, updated_targets, ActiveBatchGuard};
     use crate::model::MigrationAudit;
     use serde_json::Value;
 
@@ -1772,5 +1903,15 @@ mod tests {
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0].table, "hi_bd_med_pro");
         assert_eq!(targets[1].table, "hi_bd_med");
+    }
+
+    #[test]
+    fn active_batch_guard_blocks_only_concurrent_execution() {
+        let first = ActiveBatchGuard::enter("guard-batch").unwrap();
+        assert!(ActiveBatchGuard::enter("guard-batch")
+            .unwrap_err()
+            .contains("正在执行"));
+        drop(first);
+        assert!(ActiveBatchGuard::enter("guard-batch").is_ok());
     }
 }

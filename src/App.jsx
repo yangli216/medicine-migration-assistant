@@ -5,793 +5,120 @@ import {
   ArrowCounterClockwise,
   Check,
   CheckCircle,
+  CircleNotch,
+  CaretDown,
   Clock,
+  ClockCounterClockwise,
   Code,
   Database,
   FileCsv,
   FirstAidKit,
   FloppyDisk,
   Gear,
+  HardDrives,
   Info,
   LinkSimple,
   ListMagnifyingGlass,
   LockKey,
+  MagnifyingGlass,
+  PencilSimple,
   Play,
   Plugs,
+  Plus,
   Rows,
   ShieldCheck,
   Table,
+  Trash,
   UploadSimple,
   UserCircle,
   Warning,
   X,
 } from "@phosphor-icons/react";
 import { command, demoRows, isDesktop, objectId } from "./api";
-import { applyFieldRule, parseValueMappings } from "./transforms";
+import { Header, Stepper } from "./AppChrome";
+import {
+  ConnectionForm,
+  ConnectionManager,
+  ConnectionPicker,
+  connectionEndpoint,
+  connectionSupports,
+  databaseKinds,
+  initialProfile,
+  newConnectionDraft,
+  profilesMatch,
+} from "./DatabaseConnections";
+import { SearchableSelect } from "./SearchableSelect";
+import {
+  applyFieldRule,
+  EMPTY_VALUE_MAPPING_SOURCE,
+  IGNORE_VALUE_MAPPING_TARGET,
+  parseValueMappings,
+} from "./transforms";
 import {
   buildDictionaryValueMappings,
+  buildPhis27PresetRules,
   dictionaryItemValue,
+  findDictionaryItem,
   mergeValueMappingText,
+  replaceValueMappingText,
   recommendCostMergeMappings,
 } from "./dictionary";
+import {
+  defaultTransformForField,
+  fieldsMentionedInValidationError,
+  targetFields,
+  targetLocations,
+  targetPhysicalLocationText,
+} from "./migrationFields";
+import {
+  MigrationHistory,
+  SummaryCards,
+  statusMeta,
+} from "./MigrationHistory";
+import {
+  DataTable,
+  ValidationResults,
+} from "./MigrationResults";
+import { createInventoryRenderers } from "./InventoryReview";
+import { InventoryMigrationScreen } from "./InventoryMigrationScreen";
+import {
+  MedicineSourceScreen,
+  SourceRecognitionScreen,
+  SystemConnectionScreen,
+  TaskSelectionScreen,
+} from "./PrimaryFlowScreens";
+import {
+  firstPresentValue,
+  formatInventoryMoney,
+  inventoryFinancialTotals,
+  medicinePreviewColumns,
+  medicinePreviewLabels,
+  medicineSampleContext,
+  medicineSampleLabel,
+  parseCsv,
+  randomRowIndex,
+  sourceDictionaryItem,
+  sourceDictionaryPropertySummary,
+  sourceFieldDisplayName,
+  sourceFieldPhysicalOrigin,
+  sourceValueLabel,
+} from "./migrationPreview";
 
-const steps = [
-  "连接新系统",
-  "选择任务",
-  "导入数据源",
-  "识别数据",
-  "匹配字段",
-  "校验修正",
-  "执行审计",
-];
+function isPhis27Source(description) {
+  return description.startsWith("二系列phis内置模板:");
+}
+
+function phis27SourceIdentity(profile, schema) {
+  const service = profile.serviceName || profile.database || "Oracle";
+  return `二系列phis · ${profile.host}:${profile.port}/${service} · ${schema}`;
+}
 
 const initialTargetSystemUrl = "http://10.17.18.88:8000/rbmh-phis/";
 
-const targetFields = [
-  {
-    key: "naMed",
-    label: "医疗物品通用名",
-    required: true,
-    group: "基本信息",
-    hint: "写入 hi_bd_med.na_med",
-    aliases: ["DRUG_NAME", "GENERIC_NAME", "YPMC", "药品名称"],
-  },
-  {
-    key: "sdMed",
-    label: "物品类型编码",
-    required: true,
-    group: "基本信息",
-    hint: "以当前租户 rbmh.base.med.articleType 实时字典为准",
-    aliases: ["DRUG_TYPE", "SD_MED", "YPLX", "物品类型"],
-    dictionaryId: "rbmh.base.med.articleType",
-  },
-  {
-    key: "sdDose",
-    label: "剂型编码",
-    required: true,
-    group: "基本信息",
-    hint: "需映射为新系统剂型字典编码",
-    aliases: ["FORM_CODE", "DOSE_FORM", "JXDM", "剂型"],
-    dictionaryId: "rbmh.base.med.doseType",
-  },
-  {
-    key: "unitPre",
-    label: "制剂单位",
-    required: true,
-    group: "基本信息",
-    hint: "最小制剂单位，例如片、粒、ml",
-    aliases: ["PRE_UNIT", "MIN_UNIT", "UNIT_PRE", "制剂单位"],
-  },
-  {
-    key: "dose",
-    label: "制剂剂量",
-    required: false,
-    group: "基本信息",
-    hint: "耗材可不填",
-    aliases: ["DOSE", "DOSAGE", "JL", "剂量"],
-  },
-  {
-    key: "unitDose",
-    label: "剂量单位",
-    required: false,
-    group: "基本信息",
-    hint: "耗材可不填",
-    aliases: ["DOSE_UNIT", "UNIT_DOSE", "JLDW", "剂量单位"],
-  },
-  {
-    key: "spec",
-    label: "制剂规格",
-    required: false,
-    group: "基本信息",
-    hint: "为空时自动按剂量生成",
-    aliases: ["SPEC", "DRUG_SPEC", "GG", "规格"],
-  },
-  {
-    key: "dftUsage",
-    label: "默认给药方法编码",
-    required: false,
-    group: "用药规则",
-    hint: "草药、耗材可不填",
-    aliases: ["USAGE_CODE", "DFT_USAGE", "GYFF", "用法"],
-    dictionaryId: "rbmh.base.med.usage",
-  },
-  {
-    key: "dftFreq",
-    label: "默认频次编码",
-    required: false,
-    group: "用药规则",
-    hint: "草药、耗材可不填",
-    aliases: ["FREQ_CODE", "DFT_FREQ", "PCDM", "频次"],
-    dictionaryId: "rbmh.base.freq",
-  },
-  {
-    key: "dftDoseOnce",
-    label: "默认一次用量",
-    required: false,
-    group: "用药规则",
-    hint: "原模板“一次用量”，草药未填时使用制剂剂量",
-    aliases: ["DOSE_ONCE", "DFT_DOSE_ONCE", "YCYL", "一次用量"],
-  },
-  {
-    key: "sdRound",
-    label: "取整策略编码",
-    required: false,
-    group: "用药规则",
-    hint: "需映射为新系统取整策略字典编码",
-    aliases: ["ROUND_CODE", "SD_ROUND", "QZCL", "取整策略"],
-    dictionaryId: "rbmh.base.med.roundingStrategy",
-  },
-  {
-    key: "sdDps",
-    label: "发药方式编码",
-    required: false,
-    group: "用药规则",
-    hint: "需映射为新系统发药方式字典编码",
-    aliases: ["DISPENSE_CODE", "SD_DPS", "FYFS", "发药方式"],
-    dictionaryId: "rbmh.base.med.dispensingMethod",
-  },
-  {
-    key: "idFac",
-    label: "生产厂家主键",
-    required: false,
-    group: "厂家商品",
-    hint: "已有厂家对照时优先使用",
-    aliases: ["FACTORY_ID", "ID_FAC", "CJID"],
-  },
-  {
-    key: "naFac",
-    label: "生产厂家名称",
-    required: false,
-    group: "厂家商品",
-    hint: "厂家主键为空时用于精确匹配",
-    aliases: ["FACTORY_NAME", "MANUFACTURER", "SCCJ", "生产厂家"],
-  },
-  {
-    key: "naMedPro",
-    label: "商品名",
-    required: false,
-    group: "厂家商品",
-    hint: "为空时使用通用名",
-    aliases: ["PRODUCT_NAME", "BRAND_NAME", "SPM", "商品名"],
-  },
-  {
-    key: "unitSale",
-    label: "零售包装单位",
-    required: false,
-    group: "包装价格",
-    hint: "存在商品信息时必填，例如盒、瓶、支",
-    aliases: ["SALE_UNIT", "PACK_UNIT", "UNIT_SALE", "包装单位"],
-  },
-  {
-    key: "unitSaleFactor",
-    label: "包装系数",
-    required: false,
-    group: "包装价格",
-    hint: "存在商品信息时必填，必须为正整数",
-    aliases: ["PACK_FACTOR", "UNIT_FACTOR", "BZXS", "包装系数"],
-  },
-  {
-    key: "specSale",
-    label: "零售包装规格",
-    required: false,
-    group: "包装价格",
-    hint: "为空时自动生成",
-    aliases: ["SALE_SPEC", "PACK_SPEC", "SPEC_SALE", "包装规格"],
-  },
-  {
-    key: "pricePur",
-    label: "进货价格",
-    required: false,
-    group: "包装价格",
-    hint: "存在商品信息时必填，允许为0，不允许负数",
-    aliases: ["BUY_PRICE", "PURCHASE_PRICE", "PRICE_PUR", "进货价"],
-  },
-  {
-    key: "priceSale",
-    label: "零售价格",
-    required: false,
-    group: "包装价格",
-    hint: "存在商品信息时必填，允许为0，不允许负数",
-    aliases: ["RETAIL_PRICE", "SALE_PRICE", "PRICE_SALE", "零售价"],
-  },
-  {
-    key: "cdAppr",
-    label: "批准文号",
-    required: false,
-    group: "监管编码",
-    hint: "药品批准文号",
-    aliases: ["APPROVAL_NO", "LICENSE_NO", "CD_APPR", "批准文号"],
-  },
-  {
-    key: "cdBar",
-    label: "条形码",
-    required: false,
-    group: "监管编码",
-    hint: "商品条形码",
-    aliases: ["BARCODE", "CD_BAR", "条形码"],
-  },
-  {
-    key: "cdMedPro",
-    label: "货品码",
-    required: false,
-    group: "监管编码",
-    hint: "三方商品编码",
-    aliases: ["DRUG_CODE", "ITEM_CODE", "CD_MED_PRO", "货品码"],
-  },
-  {
-    key: "sdBasMed",
-    label: "基药类型编码",
-    required: false,
-    group: "监管属性",
-    hint: "需映射为新系统基药类型字典编码",
-    aliases: ["BASIC_DRUG_TYPE", "SD_BAS_MED", "JYLX", "基药类型"],
-    dictionaryId: "rbmh.base.med.baseMed",
-  },
-  {
-    key: "fgMedRx",
-    label: "处方药标志",
-    required: false,
-    group: "监管属性",
-    hint: "统一转换为0否、1是",
-    aliases: ["RX_FLAG", "FG_MED_RX", "CFYP", "处方药品"],
-    dictionaryId: "rbmh.base.med.prescriptiondrugIdentification",
-  },
-  {
-    key: "sdChrgitmLv",
-    label: "药品档次编码",
-    required: false,
-    group: "监管属性",
-    hint: "原模板“档次”，按新系统字典编码接入",
-    aliases: ["CHARGE_LEVEL", "SD_CHRGITM_LV", "YPDC", "档次"],
-    dictionaryId: "phis.medicareLevel",
-  },
-  {
-    key: "sdStorage",
-    label: "药品储藏编码",
-    required: false,
-    group: "监管属性",
-    hint: "需映射为新系统储藏字典编码",
-    aliases: ["STORAGE_CODE", "SD_STORAGE", "YPCC", "药品储藏"],
-    dictionaryId: "phis.storageType",
-  },
-  {
-    key: "sdSpeMed",
-    label: "特殊药品编码",
-    required: false,
-    group: "监管属性",
-    hint: "需映射为新系统特殊药品字典编码",
-    aliases: ["SPECIAL_DRUG_TYPE", "SD_SPE_MED", "TSYP", "特殊药品"],
-    dictionaryId: "rbmh.base.med.sdSpeMed",
-  },
-  {
-    key: "sdAllergy",
-    label: "过敏类别编码",
-    required: false,
-    group: "用药规则",
-    hint: "来自 HiBdMed 的过敏类别标准字典",
-    aliases: ["ALLERGY_CODE", "SD_ALLERGY", "GMLB", "过敏类别"],
-    dictionaryId: "rbmh.base.med.sdAllergy",
-  },
-  {
-    key: "fgAntiAppr",
-    label: "抗菌药物审批标志",
-    required: false,
-    group: "抗菌药物",
-    hint: "按新系统是否字典转换为0/1",
-    aliases: ["ANTI_APPROVAL", "FG_ANTI_APPR", "KJYPSP", "抗菌审批"],
-    dictionaryId: "sys.sd.yesOrNo",
-  },
-  {
-    key: "sdProdPlac",
-    label: "产地类别编码",
-    required: false,
-    group: "厂家商品",
-    hint: "按新系统国产/进口产地类别字典转换",
-    aliases: ["ORIGIN_TYPE", "SD_PROD_PLAC", "CDLB", "产地类别"],
-    dictionaryId: "rbmh.base.med.drugGrade",
-  },
-  {
-    key: "fgPois",
-    label: "毒麻药品标志",
-    required: false,
-    group: "监管属性",
-    hint: "按新系统是否字典转换为0/1",
-    aliases: ["POISON_FLAG", "FG_POIS", "DMBS", "毒麻标志"],
-    dictionaryId: "sys.sd.yesOrNo",
-  },
-  {
-    key: "fgAnti",
-    label: "抗菌药物标志",
-    required: false,
-    group: "抗菌药物",
-    hint: "按新系统是否字典转换为0/1",
-    aliases: ["ANTIBIOTIC_FLAG", "FG_ANTI", "KJYWBS", "抗菌标志"],
-    dictionaryId: "sys.sd.yesOrNo",
-  },
-  {
-    key: "fgTcd",
-    label: "中药饮片标志",
-    required: false,
-    group: "监管属性",
-    hint: "按新系统是否字典转换为0/1",
-    aliases: ["TCM_DECOCTION_FLAG", "FG_TCD", "ZYYPBS", "中药饮片"],
-    dictionaryId: "sys.sd.yesOrNo",
-  },
-  {
-    key: "fgSingle",
-    label: "允许单开标志",
-    required: false,
-    group: "用药规则",
-    hint: "按新系统是否字典转换为0/1",
-    aliases: ["SINGLE_FLAG", "FG_SINGLE", "YXDK", "允许单开"],
-    dictionaryId: "sys.sd.yesOrNo",
-  },
-  {
-    key: "fgRegister",
-    label: "注册证管理标志",
-    required: false,
-    group: "监管属性",
-    hint: "按新系统注册证管理字典转换",
-    aliases: ["REGISTER_FLAG", "FG_REGISTER", "ZCZGL", "需要注册"],
-    dictionaryId: "phis.ifNeedRegister",
-  },
-  {
-    key: "limitAntiDay",
-    label: "一日限量",
-    required: false,
-    group: "监管属性",
-    hint: "不得小于0",
-    aliases: ["DAILY_LIMIT", "LIMIT_ANTI_DAY", "YRXL", "一日限量"],
-  },
-  {
-    key: "fgCollPur",
-    label: "集采标志",
-    required: false,
-    group: "商品属性",
-    hint: "统一转换为0否、1是",
-    aliases: ["COLLECTIVE_PURCHASE", "FG_COLL_PUR", "JCBS", "集采"],
-  },
-  {
-    key: "fgImport",
-    label: "进口药品标志",
-    required: false,
-    group: "商品属性",
-    hint: "统一转换为0否、1是",
-    aliases: ["IMPORT_FLAG", "FG_IMPORT", "JKYP", "进口药品"],
-  },
-];
-
-const databaseKinds = {
-  mysql: {
-    label: "MySQL",
-    port: 3306,
-    protocol: "原生 Rust 驱动",
-    defaultDriver: "",
-  },
-  oracle: {
-    label: "Oracle",
-    port: 1521,
-    protocol: "Instant Client ODBC 19c",
-    defaultDriver: "Oracle 19 ODBC driver",
-  },
-  dameng: {
-    label: "达梦 DM8",
-    port: 5236,
-    protocol: "官方通用 ODBC 驱动",
-    defaultDriver: "DM8 ODBC DRIVER",
-  },
-  opengauss: {
-    label: "Gauss / openGauss",
-    port: 5432,
-    protocol: "官方通用 ODBC 驱动",
-    defaultDriver: "openGauss",
-  },
-  kingbase: {
-    label: "人大金仓 KingbaseES",
-    port: 54321,
-    protocol: "官方通用 ODBC 驱动",
-    defaultDriver: "KingbaseES 8.6 ODBC Driver",
-  },
-  postgresql: {
-    label: "PostgreSQL",
-    port: 5432,
-    protocol: "psqlODBC 通用驱动",
-    defaultDriver: "PostgreSQL Unicode(x64)",
-  },
-};
-
-const driverKeywords = {
-  oracle: ["oracle"],
-  dameng: ["dm8", "dameng", "达梦"],
-  opengauss: ["opengauss", "gauss"],
-  kingbase: ["kingbase", "金仓"],
-  postgresql: ["postgresql", "psql"],
-};
-
-const initialProfile = {
-  kind: "mysql",
-  host: "127.0.0.1",
-  port: 3306,
-  database: "",
-  username: "",
-  password: "",
-  schema: "",
-  serviceName: "",
-  driver: "",
-  connectionString: "",
-};
-
-function statusMeta(status) {
-  return (
-    {
-      VALIDATED: ["可迁移", "ready"],
-      INVALID: ["校验失败", "danger"],
-      RUNNING: ["执行中", "running"],
-      SUCCESS: ["成功", "success"],
-      FAILED: ["失败", "danger"],
-      PARTIAL: ["部分完成", "warning"],
-      SKIPPED: ["已跳过", "muted"],
-      UNDONE: ["已撤销", "muted"],
-      UNDO_PARTIAL: ["部分撤销", "warning"],
-    }[status] || [status || "未开始", "muted"]
-  );
-}
-
-function diffValue(value) {
-  if (value === null || value === undefined || `${value}` === "") return "（空）";
-  return `${value}`;
-}
-
-function Stepper({ active }) {
-  return (
-    <nav className="stepper" aria-label="迁移进度">
-      {steps.map((step, index) => (
-        <div
-          className={`step ${index < active ? "step--done" : ""} ${index === active ? "step--active" : ""}`}
-          key={step}
-        >
-          <div className="step__node">
-            {index < active ? <Check size={16} weight="bold" /> : index + 1}
-          </div>
-          <span>{step}</span>
-          {index < steps.length - 1 && <div className="step__line" />}
-        </div>
-      ))}
-    </nav>
-  );
-}
-
-function Header({ runtime, auth }) {
-  return (
-    <header className="topbar">
-      <div className="brand">
-        <FirstAidKit className="brand-mark" size={34} weight="duotone" />
-        <span className="brand__title">数据迁移助手</span>
-      </div>
-      <div className="topbar__divider" />
-      <span className="topbar__section">药品基础数据</span>
-      <span className="desktop-chip">
-        {runtime === "tauri-rust" ? "桌面版 · 本地运行" : "交互预览"}
-      </span>
-      <div className="topbar__spacer" />
-      <div className="save-status">
-        <ShieldCheck size={18} weight="fill" />
-        审计记录保存在本机
-      </div>
-      <div className="topbar__time">
-        <Clock size={18} />
-        {new Date().toLocaleDateString("zh-CN")}
-      </div>
-      <button className="user-menu">
-        <UserCircle size={27} weight="fill" />
-        <span>{auth ? `${auth.userName} · ${auth.roleName}` : "未登录"}</span>
-      </button>
-    </header>
-  );
-}
-
-function Field({ label, children, wide }) {
-  return (
-    <label className={`form-field ${wide ? "form-field--wide" : ""}`}>
-      <span>{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function ConnectionForm({
-  value,
-  onChange,
-  title,
-  drivers = [],
-  driverPacks = [],
-}) {
-  const set = (key, next) =>
-    onChange({ ...value, [key]: key === "port" ? Number(next) : next });
-  const kind = databaseKinds[value.kind] || databaseKinds.mysql;
-  const driverPack = driverPacks.find(
-    (pack) => pack.databaseKind === value.kind,
-  );
-  const changeKind = (nextKind) => {
-    const next = databaseKinds[nextKind];
-    const keywords = driverKeywords[nextKind] || [];
-    const recommended = drivers.find((driver) =>
-      keywords.some((keyword) => driver.toLowerCase().includes(keyword)),
-    );
-    onChange({
-      ...value,
-      kind: nextKind,
-      port: next.port,
-      driver:
-        nextKind === "mysql"
-          ? ""
-          : recommended ||
-            driverPacks.find((pack) => pack.databaseKind === nextKind)
-              ?.defaultDriver ||
-            next.defaultDriver,
-      connectionString: "",
-    });
-  };
-  return (
-    <div className="connection-form">
-      <div className="section-title">
-        <Database size={21} weight="duotone" />
-        <div>
-          <strong>{title}</strong>
-          <small>
-            {kind.label} · {kind.protocol}
-          </small>
-        </div>
-      </div>
-      {driverPack && value.kind !== "mysql" && (
-        <div className={`driver-preset driver-preset--${driverPack.state}`}>
-          <div className="driver-preset__topline">
-            <span className="driver-preset__name">
-              <ShieldCheck size={17} weight="fill" />
-              {driverPack.title} · {driverPack.version}
-            </span>
-            <span className="driver-preset__status">
-              {driverPack.state === "installed"
-                ? "本机已就绪"
-                : driverPack.state === "bundled"
-                  ? "应用内置"
-                  : "驱动文件未安装"}
-            </span>
-          </div>
-          <p>
-            {driverPack.detectedDriver
-              ? `已识别驱动：${driverPack.detectedDriver}`
-              : `当前只有连接配置，安装或导入驱动文件后才能连接。${driverPack.licenseNote}`}
-          </p>
-        </div>
-      )}
-      <div className="form-grid">
-        <Field label="数据库类型">
-          <select
-            value={value.kind}
-            onChange={(event) => changeKind(event.target.value)}
-          >
-            {Object.entries(databaseKinds).map(([key, item]) => (
-              <option value={key} key={key}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="主机地址">
-          <input
-            value={value.host}
-            onChange={(event) => set("host", event.target.value)}
-            placeholder="例如 192.168.1.20"
-          />
-        </Field>
-        <Field label="端口">
-          <input
-            type="number"
-            value={value.port}
-            onChange={(event) => set("port", event.target.value)}
-          />
-        </Field>
-        <Field label="数据库名">
-          <input
-            value={value.database}
-            onChange={(event) => set("database", event.target.value)}
-            placeholder={
-              value.kind === "oracle" ? "数据库或 PDB 名称" : "数据库名称"
-            }
-          />
-        </Field>
-        {value.kind === "oracle" && (
-          <Field label="Service Name">
-            <input
-              value={value.serviceName}
-              onChange={(event) => set("serviceName", event.target.value)}
-              placeholder="例如 ORCLPDB1"
-            />
-          </Field>
-        )}
-        {value.kind !== "mysql" && (
-          <Field label="Schema / 模式">
-            <input
-              value={value.schema}
-              onChange={(event) => set("schema", event.target.value)}
-              placeholder="不填则读取当前账号可见表"
-            />
-          </Field>
-        )}
-        <Field label={title.includes("老系统") ? "只读账号" : "写入账号"}>
-          <input
-            value={value.username}
-            onChange={(event) => set("username", event.target.value)}
-            autoComplete="off"
-          />
-        </Field>
-        <Field label="密码">
-          <div className="password-input">
-            <LockKey size={17} />
-            <input
-              type="password"
-              value={value.password}
-              onChange={(event) => set("password", event.target.value)}
-              autoComplete="new-password"
-            />
-          </div>
-        </Field>
-        {value.kind !== "mysql" && (
-          <>
-            <Field label="本机数据库驱动" wide>
-              <input
-                list="database-driver-list"
-                value={value.driver}
-                onChange={(event) => set("driver", event.target.value)}
-                placeholder={
-                  drivers.length
-                    ? `推荐：${kind.defaultDriver}`
-                    : `已预置：${kind.defaultDriver}`
-                }
-              />
-              <datalist id="database-driver-list">
-                {drivers.map((driver) => (
-                  <option value={driver} key={driver} />
-                ))}
-              </datalist>
-              <small>
-                {drivers.length
-                  ? `已检测到 ${drivers.length} 个 ODBC 驱动`
-                  : "未检测到本机驱动；连接测试时会给出安装或导入提示"}
-              </small>
-            </Field>
-            <Field label="高级连接串（可选）" wide>
-              <textarea
-                rows={2}
-                value={value.connectionString}
-                onChange={(event) =>
-                  set("connectionString", event.target.value)
-                }
-                placeholder="${HOST}、${PORT}、${DATABASE}、${SERVICE}、${SCHEMA}、${USER}、${PASSWORD}"
-              />
-            </Field>
-          </>
-        )}
-      </div>
-      <p className="security-note">
-        <ShieldCheck size={16} />
-        密码仅在当前运行期间保存在内存，不写入迁移配置或审计日志。
-      </p>
-    </div>
-  );
-}
-
-function DataTable({ columns, rows, maxRows = 6 }) {
-  const shown = columns.slice(0, 7);
-  return (
-    <div className="data-table">
-      <div
-        className="data-table__row data-table__head"
-        style={{
-          gridTemplateColumns: `repeat(${shown.length}, minmax(140px, 1fr))`,
-        }}
-      >
-        {shown.map((column) => (
-          <span key={column}>{column}</span>
-        ))}
-      </div>
-      {rows.slice(0, maxRows).map((row, index) => (
-        <div
-          className="data-table__row"
-          style={{
-            gridTemplateColumns: `repeat(${shown.length}, minmax(140px, 1fr))`,
-          }}
-          key={index}
-        >
-          {shown.map((column) => (
-            <span
-              title={`${row[column] ?? ""}`}
-              key={column}
-            >{`${row[column] ?? "—"}`}</span>
-          ))}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function SummaryCards({ batch }) {
-  if (!batch) return null;
-  const cards = [
-    ["总行数", batch.totalCount, "neutral"],
-    ["可迁移", batch.validCount, "ready"],
-    ["成功", batch.successCount, "success"],
-    ["跳过", batch.skipCount, "muted"],
-    ["失败", batch.failCount, "danger"],
-  ];
-  return (
-    <div className="summary-cards">
-      {cards.map(([label, value, tone]) => (
-        <div className={`summary-card summary-card--${tone}`} key={label}>
-          <span>{label}</span>
-          <strong>{value}</strong>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function parseCsv(text) {
-  const rows = [];
-  let row = [],
-    cell = "",
-    quoted = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i],
-      next = text[i + 1];
-    if (char === '"' && quoted && next === '"') {
-      cell += '"';
-      i += 1;
-    } else if (char === '"') quoted = !quoted;
-    else if (char === "," && !quoted) {
-      row.push(cell);
-      cell = "";
-    } else if ((char === "\n" || char === "\r") && !quoted) {
-      if (char === "\r" && next === "\n") i += 1;
-      row.push(cell);
-      if (row.some((item) => item !== "")) rows.push(row);
-      row = [];
-      cell = "";
-    } else cell += char;
-  }
-  row.push(cell);
-  if (row.some((item) => item !== "")) rows.push(row);
-  const [headers = [], ...data] = rows;
-  return data.map((values) =>
-    Object.fromEntries(
-      headers.map((header, index) => [header.trim(), values[index] ?? ""]),
-    ),
-  );
-}
-
 export function App() {
   const fileInput = useRef(null);
+  const inventoryExecutionLock = useRef(false);
+  const inventoryUndoLock = useRef(false);
   const [runtime, setRuntime] = useState(
     isDesktop ? "tauri-rust" : "browser-preview",
   );
@@ -802,25 +129,68 @@ export function App() {
   const [targetSystemProbe, setTargetSystemProbe] = useState(null);
   const [loginTenantId, setLoginTenantId] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+  const [rememberTargetSystemPassword, setRememberTargetSystemPassword] =
+    useState(true);
+  const [hasSavedTargetSystem, setHasSavedTargetSystem] = useState(false);
   const [targetAuth, setTargetAuth] = useState(null);
+  const [editingTargetConnection, setEditingTargetConnection] = useState(false);
   const [dictionaryCatalog, setDictionaryCatalog] = useState(null);
   const [costMergeCatalog, setCostMergeCatalog] = useState(null);
   const [costMergeMappings, setCostMergeMappings] = useState({});
   const [migrationType, setMigrationType] = useState("MEDICINE_BASE");
   const [sourceMode, setSourceMode] = useState("file");
   const [sourceProfile, setSourceProfile] = useState(initialProfile);
+  const [rememberSourcePassword, setRememberSourcePassword] = useState(true);
+  const [hasSavedSourceConnection, setHasSavedSourceConnection] =
+    useState(false);
   const [legacyInspection, setLegacyInspection] = useState(null);
   const [legacyScope, setLegacyScope] = useState("USED_ACTIVE");
+  const [inventoryReadiness, setInventoryReadiness] = useState(null);
+  const [inventorySourceExpanded, setInventorySourceExpanded] = useState(true);
+  const [inventoryTargetExpanded, setInventoryTargetExpanded] = useState(true);
+  const [inventoryPreflightExpanded, setInventoryPreflightExpanded] =
+    useState(false);
+  const [legacyInventoryCatalog, setLegacyInventoryCatalog] = useState(null);
+  const [targetOrganizationCatalog, setTargetOrganizationCatalog] = useState(null);
+  const [inventoryOrganizationMappings, setInventoryOrganizationMappings] =
+    useState({});
+  const [targetStorageCatalog, setTargetStorageCatalog] = useState(null);
+  const [inventoryLocationMappings, setInventoryLocationMappings] = useState({});
+  const [inventoryResolvedLocations, setInventoryResolvedLocations] = useState({});
+  const [inventoryBatchDetail, setInventoryBatchDetail] = useState(null);
+  const [inventoryMappingExpanded, setInventoryMappingExpanded] = useState(true);
+  const [inventoryReviewSearch, setInventoryReviewSearch] = useState("");
+  const [inventoryReviewStorage, setInventoryReviewStorage] = useState("");
+  const [inventoryReviewStatus, setInventoryReviewStatus] = useState("ALL");
+  const [inventoryReviewConfirmed, setInventoryReviewConfirmed] = useState(false);
+  const [inventoryExecutionSeconds, setInventoryExecutionSeconds] = useState(0);
+  const [inventoryUndoPreview, setInventoryUndoPreview] = useState(null);
+  const [inventoryUndoConfirmed, setInventoryUndoConfirmed] = useState(false);
   const [targetProfile, setTargetProfile] = useState(initialProfile);
-  const [query, setQuery] = useState("SELECT * FROM T_DRUG_INFO");
+  const [rememberTargetDatabasePassword, setRememberTargetDatabasePassword] =
+    useState(true);
+  const [hasSavedTargetDatabase, setHasSavedTargetDatabase] = useState(false);
+  const [databaseConnections, setDatabaseConnections] = useState([]);
+  const [connectionManagerOpen, setConnectionManagerOpen] = useState(false);
+  const [migrationHistoryOpen, setMigrationHistoryOpen] = useState(false);
+  const [historyBatches, setHistoryBatches] = useState([]);
+  const [historyBatchDetail, setHistoryBatchDetail] = useState(null);
+  const [selectedSourceConnectionId, setSelectedSourceConnectionId] = useState("");
+  const [selectedTargetConnectionId, setSelectedTargetConnectionId] = useState("");
+  const [sourceConnectionEditing, setSourceConnectionEditing] = useState(true);
+  const [targetConnectionEditing, setTargetConnectionEditing] = useState(true);
+  const [query, setQuery] = useState("");
+  const [showCustomQuery, setShowCustomQuery] = useState(false);
   const [sourceName, setSourceName] = useState("尚未选择数据源");
   const [sourceDescription, setSourceDescription] = useState("");
   const [rows, setRows] = useState([]);
   const [columns, setColumns] = useState([]);
+  const [columnMetadata, setColumnMetadata] = useState({});
   const [sourceKey, setSourceKey] = useState("");
   const [mapping, setMapping] = useState({});
   const [rules, setRules] = useState({});
   const [fieldIndex, setFieldIndex] = useState(0);
+  const [mappingSampleIndex, setMappingSampleIndex] = useState(0);
   const [expert, setExpert] = useState(false);
   const [allowCreateFactory, setAllowCreateFactory] = useState(false);
   const [conflictStrategy, setConflictStrategy] = useState("INCREMENTAL");
@@ -830,10 +200,14 @@ export function App() {
   const [tenantId, setTenantId] = useState("");
   const [operatorId, setOperatorId] = useState("");
   const [activeResultTab, setActiveResultTab] = useState("rows");
+  const [validationResultFilter, setValidationResultFilter] =
+    useState("INVALID");
+  const [validationFieldContext, setValidationFieldContext] = useState(null);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState(null);
   const [databaseDrivers, setDatabaseDrivers] = useState([]);
   const [driverPacks, setDriverPacks] = useState([]);
+  const [phis27MappingStatus, setPhis27MappingStatus] = useState(null);
 
   useEffect(() => {
     command("app_health")
@@ -845,7 +219,70 @@ export function App() {
     command("list_driver_packs")
       .then(setDriverPacks)
       .catch(() => setDriverPacks([]));
+    Promise.all([
+      command("load_saved_connections"),
+      command("list_database_connections"),
+    ])
+      .then(([saved, connections]) => {
+        setDatabaseConnections(connections || []);
+        if (saved?.source?.profile) {
+          setSourceProfile(saved.source.profile);
+          setRememberSourcePassword(saved.source.rememberPassword);
+          setHasSavedSourceConnection(true);
+          setSourceMode("database");
+          const selected = (connections || []).find(
+            (entry) =>
+              connectionSupports(entry, "SOURCE") &&
+              profilesMatch(entry.profile, saved.source.profile),
+          );
+          if (selected) {
+            setSelectedSourceConnectionId(selected.connectionId);
+            setSourceConnectionEditing(false);
+          }
+        }
+        if (saved?.targetDatabase?.profile) {
+          setTargetProfile(saved.targetDatabase.profile);
+          setRememberTargetDatabasePassword(
+            saved.targetDatabase.rememberPassword,
+          );
+          setHasSavedTargetDatabase(true);
+          const selected = (connections || []).find(
+            (entry) =>
+              connectionSupports(entry, "TARGET") &&
+              profilesMatch(entry.profile, saved.targetDatabase.profile),
+          );
+          if (selected) {
+            setSelectedTargetConnectionId(selected.connectionId);
+            setTargetConnectionEditing(false);
+          }
+        }
+        if (saved?.targetSystem) {
+          setTargetSystemUrl(
+            saved.targetSystem.baseUrl || initialTargetSystemUrl,
+          );
+          setLoginTenantId(saved.targetSystem.tenantId || "");
+          setLoginPassword(saved.targetSystem.password || "");
+          setRememberTargetSystemPassword(
+            saved.targetSystem.rememberPassword,
+          );
+          setHasSavedTargetSystem(true);
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!["inventory-execute", "inventory-undo"].includes(busy)) {
+      setInventoryExecutionSeconds(0);
+      return undefined;
+    }
+    const startedAt = Date.now();
+    setInventoryExecutionSeconds(0);
+    const timer = window.setInterval(() => {
+      setInventoryExecutionSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [busy]);
 
   const currentField = targetFields[fieldIndex];
   const dictionariesById = useMemo(
@@ -861,18 +298,184 @@ export function App() {
   const currentDictionary = currentField?.dictionaryId
     ? dictionariesById[currentField.dictionaryId]
     : null;
+  const currentSourceField = currentField ? mapping[currentField.key] : "";
+  const currentSourceDictionary = currentSourceField
+    ? columnMetadata[currentSourceField]?.sourceDictionary || null
+    : null;
   const articleTypeDictionary =
     dictionariesById["rbmh.base.med.articleType"] || null;
   const mappedCount = targetFields.filter(
     (field) => mapping[field.key] || rules[field.key]?.defaultValue,
   ).length;
+  const eligibleColumns = useMemo(
+    () =>
+      columns.filter(
+        (column) => columnMetadata[column]?.mappingEligible !== false,
+      ),
+    [columns, columnMetadata],
+  );
+  const mappingSample = rows[mappingSampleIndex] || rows[0] || {};
+  const sampleContext = useMemo(
+    () => medicineSampleContext(mappingSample, columnMetadata),
+    [mappingSample, columnMetadata],
+  );
+  const sampleRowOptions = useMemo(
+    () =>
+      rows.map((row, index) => ({
+        value: `${index}`,
+        label: medicineSampleLabel(row, index),
+        keywords: Object.values(row)
+          .filter((value) => value !== null && value !== undefined)
+          .slice(0, 12)
+          .join(" "),
+      })),
+    [rows],
+  );
+  const sourceFieldOptions = useMemo(
+    () =>
+      eligibleColumns.map((column) => {
+        const metadata = columnMetadata[column] || {};
+        const origin = sourceFieldPhysicalOrigin(metadata);
+        const sampleValue = mappingSample[column];
+        const sourceDictionary = metadata.sourceDictionary;
+        return {
+          value: column,
+          label: sourceFieldDisplayName(column, metadata),
+          description: [
+            origin ? `来源：${origin}` : "",
+            sourceDictionary?.name
+              ? `二系列字典：${sourceDictionary.name}`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" · "),
+          meta: `当前样例：${sourceValueLabel(sampleValue, metadata)}`,
+          keywords: `${metadata.comment || ""} ${origin} ${sourceDictionary?.name || ""} ${sourceValueLabel(sampleValue, metadata)}`,
+        };
+      }),
+    [eligibleColumns, columnMetadata, mappingSample],
+  );
   const suggestions = useMemo(() => {
     if (!currentField) return [];
-    return [...columns]
-      .map((column) => ({ column, score: matchScore(column, currentField) }))
+    return [...eligibleColumns]
+      .map((column) => ({
+        column,
+        score: sourceFieldMatchScore(
+          column,
+          currentField,
+          columnMetadata[column],
+        ),
+      }))
+      .filter((candidate) => candidate.score >= 70)
       .sort((a, b) => b.score - a.score)
       .slice(0, 3);
-  }, [columns, currentField]);
+  }, [columnMetadata, eligibleColumns, currentField]);
+  const currentMappingPreview = useMemo(() => {
+    if (!currentField) return null;
+    const sourceField = mapping[currentField.key];
+    if (!sourceField) return null;
+    const original = mappingSample[sourceField];
+    const rule = rules[currentField.key] || {};
+    const parsedMappings = parseValueMappings(rule.valueMappingsText).mappings;
+    const mappingLookup =
+      original === null || original === undefined || `${original}`.trim() === ""
+        ? EMPTY_VALUE_MAPPING_SOURCE
+        : `${original}`.trim();
+    const ignored =
+      Object.prototype.hasOwnProperty.call(parsedMappings, mappingLookup) &&
+      parsedMappings[mappingLookup] === null;
+    const converted = applyFieldRule(original, {
+      ...rule,
+      transform: rule.transform || defaultTransformForField(currentField),
+      valueMappings: parsedMappings,
+    });
+    const dictionaryItem = currentDictionary?.items.find(
+      (item) => `${dictionaryItemValue(item)}` === `${converted ?? ""}`,
+    );
+    return {
+      original,
+      sourceDictionaryText:
+        sourceDictionaryItem(columnMetadata[sourceField], original)?.text || "",
+      sourceDictionaryName:
+        columnMetadata[sourceField]?.sourceDictionary?.name || "",
+      ignored,
+      converted,
+      dictionaryCode: dictionaryItem ? dictionaryItemValue(dictionaryItem) : "",
+      dictionaryText: dictionaryItem?.text || dictionaryItem?.na || "",
+    };
+  }, [
+    columnMetadata,
+    currentField,
+    currentDictionary,
+    mapping,
+    mappingSample,
+    rules,
+  ]);
+  const currentDictionaryRows = useMemo(() => {
+    if (!currentDictionary || !currentSourceField) return [];
+    const configured = parseValueMappings(
+      rules[currentField.key]?.valueMappingsText,
+    ).mappings;
+    const counts = new Map();
+    rows.forEach((row) => {
+      const value = `${row[currentSourceField] ?? ""}`.trim();
+      const sourceValue = value || EMPTY_VALUE_MAPPING_SOURCE;
+      counts.set(sourceValue, (counts.get(sourceValue) || 0) + 1);
+    });
+    return [...counts.entries()]
+      .map(([sourceValue, count]) => {
+        const sourceIsBlank = sourceValue === EMPTY_VALUE_MAPPING_SOURCE;
+        const sourceItem = sourceDictionaryItem(
+          columnMetadata[currentSourceField],
+          sourceIsBlank ? null : sourceValue,
+        );
+        const directTarget = sourceIsBlank
+          ? null
+          : findDictionaryItem(sourceValue, currentDictionary.items);
+        const semanticTarget = sourceItem?.text
+          ? findDictionaryItem(sourceItem.text, currentDictionary.items)
+          : null;
+        const suggestedTarget = semanticTarget || directTarget;
+        const ignored =
+          Object.prototype.hasOwnProperty.call(configured, sourceValue) &&
+          configured[sourceValue] === null;
+        const fieldRule = rules[currentField.key] || {};
+        const converted = applyFieldRule(sourceIsBlank ? null : sourceValue, {
+          ...fieldRule,
+          transform:
+            fieldRule.transform || defaultTransformForField(currentField),
+          valueMappings: configured,
+        });
+        const convertedTarget = currentDictionary.items.find(
+          (item) => dictionaryItemValue(item) === `${converted ?? ""}`,
+        );
+        const appliedTarget = convertedTarget
+          ? dictionaryItemValue(convertedTarget)
+          : "";
+        return {
+          sourceValue,
+          sourceIsBlank,
+          sourceText: sourceItem?.text || "",
+          sourceProperties: sourceDictionaryPropertySummary(sourceItem),
+          count,
+          appliedTarget,
+          suggestedTarget,
+          ignored,
+          matched: Boolean(appliedTarget) && !ignored,
+        };
+      })
+      .sort(
+        (a, b) =>
+          Number(a.matched || a.ignored) - Number(b.matched || b.ignored),
+      );
+  }, [
+    columnMetadata,
+    currentDictionary,
+    currentField,
+    currentSourceField,
+    rows,
+    rules,
+  ]);
 
   const notify = (message, tone = "success") => {
     setNotice({ message, tone });
@@ -884,13 +487,221 @@ export function App() {
       "danger",
     );
 
+  function updateDatabaseConnectionList(saved) {
+    setDatabaseConnections((current) => [
+      saved,
+      ...current.filter((entry) => entry.connectionId !== saved.connectionId),
+    ]);
+  }
+
+  async function saveManagedDatabaseConnection(draft) {
+    setBusy("connection-manager-save");
+    try {
+      const saved = await command("save_database_connection", {
+        request: {
+          connectionId: draft.connectionId || "",
+          name: draft.name,
+          purpose: draft.purpose,
+          profile: draft.profile,
+          rememberPassword: draft.rememberPassword,
+        },
+      });
+      updateDatabaseConnectionList(saved);
+      if (selectedSourceConnectionId === saved.connectionId) {
+        setSourceProfile({ ...saved.profile });
+        setRememberSourcePassword(saved.rememberPassword);
+      }
+      if (selectedTargetConnectionId === saved.connectionId) {
+        setTargetProfile({ ...saved.profile });
+        setRememberTargetDatabasePassword(saved.rememberPassword);
+      }
+      notify(`已保存连接“${saved.name}”`);
+      return saved;
+    } catch (error) {
+      fail(error);
+      return null;
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function deleteManagedDatabaseConnection(connectionId) {
+    setBusy("connection-manager-delete");
+    try {
+      await command("delete_database_connection", { connectionId });
+      setDatabaseConnections((current) =>
+        current.filter((entry) => entry.connectionId !== connectionId),
+      );
+      if (selectedSourceConnectionId === connectionId) {
+        setSelectedSourceConnectionId("");
+        setSourceConnectionEditing(true);
+      }
+      if (selectedTargetConnectionId === connectionId) {
+        setSelectedTargetConnectionId("");
+        setTargetConnectionEditing(true);
+      }
+      notify("连接已从本地连接库删除");
+      return true;
+    } catch (error) {
+      fail(error);
+      return false;
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function testManagedDatabaseConnection(profile) {
+    setBusy("connection-manager-test");
+    try {
+      const result = await command("test_database_connection", { profile });
+      notify(result.message);
+      return result;
+    } catch (error) {
+      fail(error);
+      return null;
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function useDatabaseConnection(entry, purpose, closeManager = true) {
+    if (!entry) return;
+    if (purpose === "SOURCE") {
+      setSourceProfile({ ...entry.profile });
+      setRememberSourcePassword(entry.rememberPassword);
+      setHasSavedSourceConnection(true);
+      setSelectedSourceConnectionId(entry.connectionId);
+      setSourceConnectionEditing(false);
+      setSourceMode("database");
+      setLegacyInspection(null);
+      command("save_source_connection", {
+        request: {
+          profile: entry.profile,
+          rememberPassword: entry.rememberPassword,
+        },
+      }).catch(fail);
+      notify(`老库读取已切换为“${entry.name}”`);
+    } else {
+      setTargetProfile({ ...entry.profile });
+      setRememberTargetDatabasePassword(entry.rememberPassword);
+      setHasSavedTargetDatabase(true);
+      setSelectedTargetConnectionId(entry.connectionId);
+      setTargetConnectionEditing(false);
+      setOverwritePreview(null);
+      setSelectedOverwriteRowIds([]);
+      command("save_target_database_connection", {
+        request: {
+          profile: entry.profile,
+          rememberPassword: entry.rememberPassword,
+        },
+      }).catch(fail);
+      notify(`目标库写入已切换为“${entry.name}”`);
+    }
+    if (closeManager) setConnectionManagerOpen(false);
+  }
+
+  function selectDatabaseConnection(connectionId, purpose) {
+    const entry = databaseConnections.find(
+      (item) => item.connectionId === connectionId,
+    );
+    useDatabaseConnection(entry, purpose, false);
+  }
+
+  async function rememberSourceConnection() {
+    const saved = await command("save_source_connection", {
+      request: {
+        profile: sourceProfile,
+        rememberPassword: rememberSourcePassword,
+      },
+    });
+    setHasSavedSourceConnection(true);
+    setRememberSourcePassword(saved.rememberPassword);
+    return saved;
+  }
+
+  async function rememberTargetDatabaseConnection() {
+    const saved = await command("save_target_database_connection", {
+      request: {
+        profile: targetProfile,
+        rememberPassword: rememberTargetDatabasePassword,
+      },
+    });
+    setHasSavedTargetDatabase(true);
+    setRememberTargetDatabasePassword(saved.rememberPassword);
+    return saved;
+  }
+
+  async function loadHistoryBatch(batchId) {
+    setBusy("history-detail");
+    try {
+      const detail = await command("load_migration_batch", { batchId });
+      setHistoryBatchDetail(detail);
+      return detail;
+    } catch (error) {
+      fail(error);
+      return null;
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function openMigrationHistory() {
+    setMigrationHistoryOpen(true);
+    setBusy("history-list");
+    try {
+      const batches = await command("list_recent_batches", { limit: 100 });
+      setHistoryBatches(batches);
+      if (!batches.length) {
+        setHistoryBatchDetail(null);
+        return;
+      }
+      const selectedId = historyBatchDetail?.batch?.batchId;
+      const nextBatch =
+        batches.find((batch) => batch.batchId === selectedId) || batches[0];
+      const detail = await command("load_migration_batch", {
+        batchId: nextBatch.batchId,
+      });
+      setHistoryBatchDetail(detail);
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function forgetSourceConnection() {
+    await command("forget_source_connection");
+    setSourceProfile({ ...initialProfile });
+    setRememberSourcePassword(true);
+    setHasSavedSourceConnection(false);
+    setLegacyInspection(null);
+    notify("已删除保存的老库连接和本地加密密码");
+  }
+
+  async function forgetTargetDatabaseConnection() {
+    await command("forget_target_database_connection");
+    setTargetProfile({ ...initialProfile });
+    setRememberTargetDatabasePassword(true);
+    setHasSavedTargetDatabase(false);
+    notify("已删除保存的新系统数据库连接和本地加密密码");
+  }
+
+  async function forgetTargetSystemConnection() {
+    await command("forget_target_system_connection");
+    setTargetSystemUrl(initialTargetSystemUrl);
+    setLoginTenantId("");
+    setLoginPassword("");
+    setRememberTargetSystemPassword(true);
+    setHasSavedTargetSystem(false);
+    setTargetSystemProbe(null);
+    setTargetAuth(null);
+    setEditingTargetConnection(false);
+    notify("已删除保存的新系统登录信息和本地加密密码");
+  }
+
   async function probeTargetSystem() {
     setBusy("target-system-probe");
     setTargetSystemProbe(null);
-    setTargetAuth(null);
-    setDictionaryCatalog(null);
-    setCostMergeCatalog(null);
-    setCostMergeMappings({});
     try {
       const result = await command("probe_target_system", {
         request: { baseUrl: targetSystemUrl },
@@ -907,12 +718,12 @@ export function App() {
 
   async function loginTargetSystem(event) {
     event?.preventDefault();
-    if (!targetSystemProbe) return fail("请先验证新系统地址");
+    const loginBaseUrl = targetSystemProbe?.baseUrl || targetSystemUrl;
     setBusy("target-system-login");
     try {
       const result = await command("login_target_system", {
         request: {
-          baseUrl: targetSystemProbe.baseUrl,
+          baseUrl: loginBaseUrl,
           tenantId: loginTenantId,
           loginName: "system",
           password: loginPassword,
@@ -931,17 +742,30 @@ export function App() {
         recommendCostMergeMappings(articleTypes?.items || [], costMerges.items),
       );
       setTargetAuth(result);
+      setEditingTargetConnection(false);
+      setTargetSystemUrl(result.baseUrl);
       setTenantId(result.tenantId);
       setOperatorId(result.userId);
+      const saved = await command("save_target_system_connection", {
+        request: {
+          baseUrl: result.baseUrl,
+          tenantId: loginTenantId,
+          password: loginPassword,
+          rememberPassword: rememberTargetSystemPassword,
+        },
+      });
+      setHasSavedTargetSystem(true);
+      setRememberTargetSystemPassword(saved.rememberPassword);
       setLoginPassword("");
       notify(
         `${result.message}；${catalog.message}；${costMerges.message}${catalog.warnings?.length ? `（${catalog.warnings.length} 个可选字典暂不可用）` : ""}`,
       );
     } catch (error) {
-      setTargetAuth(null);
-      setDictionaryCatalog(null);
-      setCostMergeCatalog(null);
-      setCostMergeMappings({});
+      if (!targetAuth) {
+        setDictionaryCatalog(null);
+        setCostMergeCatalog(null);
+        setCostMergeMappings({});
+      }
       fail(error);
     } finally {
       setBusy("");
@@ -951,8 +775,13 @@ export function App() {
   function acceptData(data, name, options = {}) {
     if (!data.length) return fail("文件中没有可识别的数据行");
     const detectedColumns = Object.keys(data[0]);
+    const metadataByName = Object.fromEntries(
+      (options.columnMetadata || []).map((item) => [item.name, item]),
+    );
     setRows(data);
     setColumns(detectedColumns);
+    setColumnMetadata(metadataByName);
+    setMappingSampleIndex(randomRowIndex(data.length));
     setSourceName(name);
     setSourceDescription(options.description || name);
     setSourceKey(
@@ -960,16 +789,77 @@ export function App() {
         ? options.sourceKey
         : detectedColumns[0] || "",
     );
+    const mappingColumns = detectedColumns.filter(
+      (column) => metadataByName[column]?.mappingEligible !== false,
+    );
+    const restoredMapping = options.mappingProfile?.mapping || null;
     const auto = {};
+    let restoredCount = 0;
+    let missingCount = 0;
     targetFields.forEach((field) => {
-      const best = detectedColumns
-        .map((column) => ({ column, score: matchScore(column, field) }))
+      if (
+        restoredMapping &&
+        Object.prototype.hasOwnProperty.call(restoredMapping, field.key)
+      ) {
+        const savedSource = restoredMapping[field.key] || "";
+        if (!savedSource || mappingColumns.includes(savedSource)) {
+          auto[field.key] = savedSource;
+          if (savedSource) restoredCount += 1;
+          return;
+        }
+        missingCount += 1;
+      }
+      const best = mappingColumns
+        .map((column) => ({
+          column,
+          score: sourceFieldMatchScore(
+            column,
+            field,
+            metadataByName[column],
+          ),
+        }))
         .sort((a, b) => b.score - a.score)[0];
       if (best?.score >= 55) auto[field.key] = best.column;
     });
+    if (
+      options.phis27Preset &&
+      mappingColumns.includes("PRE_UNIT") &&
+      metadataByName.PRE_UNIT?.sourceColumn === "ZXDW"
+    ) {
+      auto.unitPre = "PRE_UNIT";
+    }
+    const targetKeys = new Set(targetFields.map((field) => field.key));
+    const restoredRules = Object.fromEntries(
+      Object.entries(options.mappingProfile?.rules || {}).filter(
+        ([target, rule]) => targetKeys.has(target) && rule && typeof rule === "object",
+      ),
+    );
+    const effectiveRules = options.phis27Preset
+      ? buildPhis27PresetRules({
+          rows: data,
+          mapping: auto,
+          columnMetadata: metadataByName,
+          targetFields,
+          dictionariesById,
+          rules: restoredRules,
+        })
+      : restoredRules;
     setMapping(auto);
+    setRules(effectiveRules);
+    setPhis27MappingStatus(
+      options.mappingProfile
+        ? {
+            restored: true,
+            restoredCount,
+            missingCount,
+            savedAt: options.mappingProfile.savedAt,
+          }
+        : null,
+    );
     setStep(3);
-    notify(`已读取 ${data.length} 行、${detectedColumns.length} 个字段`);
+    if (!options.skipNotice)
+      notify(`已读取 ${data.length} 行、${detectedColumns.length} 个字段`);
+    return { restoredCount, missingCount };
   }
 
   async function loadFile(file) {
@@ -985,6 +875,7 @@ export function App() {
   }
 
   async function loadDatabase() {
+    if (!query.trim()) return fail("请先填写要执行的自定义只读 SQL");
     setBusy("source");
     try {
       const checked = await command("test_database_connection", {
@@ -994,12 +885,16 @@ export function App() {
         request: { connection: sourceProfile, query, limit: 500 },
       });
       if (preview.truncated)
-        return fail("自定义查询结果超过500行，请收窄范围或使用 PHIS27 自动模板");
+        return fail("自定义查询结果超过500行，请收窄范围或使用二系列phis自动模板");
       acceptData(
         preview.rows,
         `${databaseKinds[sourceProfile.kind]?.label || sourceProfile.kind} · ${sourceProfile.database} · 自定义只读查询`,
-        { description: query },
+        {
+          description: query,
+          columnMetadata: preview.columnMetadata,
+        },
       );
+      await rememberSourceConnection();
       notify(`${checked.message}，已预览 ${preview.rows.length} 行`);
     } catch (error) {
       fail(error);
@@ -1014,6 +909,7 @@ export function App() {
       const checked = await command("test_database_connection", {
         profile: sourceProfile,
       });
+      await rememberSourceConnection();
       notify(`${checked.message} · ${checked.latencyMs}ms`);
     } catch (error) {
       fail(error);
@@ -1032,6 +928,7 @@ export function App() {
       const inspection = await command("inspect_phis27_source", {
         profile: sourceProfile,
       });
+      await rememberSourceConnection();
       setLegacyInspection(inspection);
       const recommended = inspection.scopes?.find((scope) => scope.recommended);
       if (recommended) setLegacyScope(recommended.id);
@@ -1045,32 +942,41 @@ export function App() {
   }
 
   async function loadPhis27Medicine() {
-    if (!legacyInspection?.detected) return fail("请先识别 PHIS27 数据结构");
+    if (!legacyInspection?.detected) return fail("请先识别二系列phis数据结构");
     const selected = legacyInspection.scopes.find(
       (scope) => scope.id === legacyScope,
     );
     setBusy("phis27-load");
     try {
-      const preview = await command("load_phis27_medicine", {
-        request: {
-          connection: sourceProfile,
-          scope: legacyScope,
-          limit: 10000,
-        },
-      });
+      const [preview, savedMappingProfile] = await Promise.all([
+        command("load_phis27_medicine", {
+          request: {
+            connection: sourceProfile,
+            scope: legacyScope,
+            limit: 10000,
+          },
+        }),
+        command("load_phis27_mapping_profile"),
+      ]);
       if (preview.truncated)
         return fail("当前范围超过单批10,000行，请缩小范围后再读取");
       setAllowCreateFactory(true);
-      acceptData(
+      const restored = acceptData(
         preview.rows,
-        `PHIS27 · ${legacyInspection.schema} · ${selected?.label || legacyScope}`,
+        `二系列phis · ${legacyInspection.schema} · ${selected?.label || legacyScope}`,
         {
           sourceKey: "SOURCE_KEY",
-          description: `PHIS27内置模板:${legacyScope}; schema=${legacyInspection.schema}`,
+          description: `二系列phis内置模板:${legacyScope}; schema=${legacyInspection.schema}`,
+          columnMetadata: preview.columnMetadata,
+          mappingProfile: savedMappingProfile,
+          phis27Preset: true,
+          skipNotice: true,
         },
       );
       notify(
-        `已按安全模板读取 ${preview.rows.length} 行，来源主键使用 YPXH:YPCD`,
+        savedMappingProfile
+          ? `已读取 ${preview.rows.length} 行并恢复 ${restored.restoredCount} 项固化映射${restored.missingCount ? `；${restored.missingCount} 项来源字段已变化，已重新建议` : ""}`
+          : `已按安全模板读取 ${preview.rows.length} 行，首次使用请核对并固化映射`,
       );
     } catch (error) {
       fail(error);
@@ -1079,9 +985,511 @@ export function App() {
     }
   }
 
+  async function inspectPhis27Inventory() {
+    if (sourceProfile.kind !== "oracle")
+      return fail("二系列phis库存检查当前需要选择 Oracle 老库连接");
+    setBusy("inventory-inspect");
+    setInventoryReadiness(null);
+    setLegacyInventoryCatalog(null);
+    setTargetOrganizationCatalog(null);
+    setInventoryOrganizationMappings({});
+    setTargetStorageCatalog(null);
+    setInventoryLocationMappings({});
+    setInventoryResolvedLocations({});
+    setInventoryBatchDetail(null);
+    setInventoryUndoPreview(null);
+    setInventoryUndoConfirmed(false);
+    try {
+      const schema =
+        `${sourceProfile.schema || sourceProfile.username || "PHIS27"}`
+          .trim()
+          .toUpperCase();
+      const sourceIdentity = phis27SourceIdentity(sourceProfile, schema);
+      const readiness = await command("inspect_phis27_inventory", {
+        request: {
+          connection: sourceProfile,
+          sourceName: sourceIdentity,
+        },
+      });
+      await rememberSourceConnection();
+      setInventoryReadiness(readiness);
+      setInventorySourceExpanded(false);
+      setInventoryPreflightExpanded(false);
+      notify(readiness.message);
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function inventorySourceIdentity() {
+    const schema =
+      `${sourceProfile.schema || sourceProfile.username || "PHIS27"}`
+        .trim()
+        .toUpperCase();
+    return phis27SourceIdentity(sourceProfile, schema);
+  }
+
+  async function loadInventoryTargetStorages() {
+    setBusy("inventory-target");
+    setTargetStorageCatalog(null);
+    setInventoryBatchDetail(null);
+    try {
+      const sourceName = inventorySourceIdentity();
+      const [legacyCatalog, organizationCatalog, catalog, savedMappings, savedOrganizations] = await Promise.all([
+        command("load_phis27_inventory_catalog", { profile: sourceProfile }),
+        command("load_inventory_target_organizations"),
+        command("load_inventory_target_storages", { target: targetProfile }),
+        command("load_inventory_location_mappings", {
+          sourceName,
+          target: targetProfile,
+        }),
+        command("load_inventory_organization_mappings", { sourceName }),
+      ]);
+      await rememberTargetDatabaseConnection();
+      const availableIds = new Set(
+        catalog.storages.map((storage) => storage.idSto),
+      );
+      const availableOrganizationIds = new Set(
+        organizationCatalog.organizations.map((organization) => organization.id),
+      );
+      const availableStorageOrganizationIds = new Set(
+        catalog.storages
+          .filter((storage) => ["1", "2"].includes(storage.storageType))
+          .map((storage) => storage.organizationId),
+      );
+      setLegacyInventoryCatalog(legacyCatalog);
+      setTargetOrganizationCatalog(organizationCatalog);
+      setTargetStorageCatalog(catalog);
+      setInventoryTargetExpanded(false);
+      setInventoryOrganizationMappings(
+        Object.fromEntries(
+          savedOrganizations
+            .filter((mapping) =>
+              availableOrganizationIds.has(mapping.targetOrganizationId) &&
+              availableStorageOrganizationIds.has(mapping.targetOrganizationId),
+            )
+            .map((mapping) => [
+              mapping.sourceOrganizationId,
+              mapping.targetOrganizationId,
+            ]),
+        ),
+      );
+      setInventoryLocationMappings(
+        Object.fromEntries(
+          savedMappings
+            .filter((mapping) => availableIds.has(mapping.targetIdSto))
+            .map((mapping) => [
+              mapping.sourceLocationKey,
+              mapping.targetIdSto,
+            ]),
+        ),
+      );
+      setInventoryResolvedLocations(
+        Object.fromEntries(
+          savedMappings
+            .filter((mapping) => mapping.resolvedSourceLocationKey)
+            .map((mapping) => [
+              mapping.sourceLocationKey,
+              mapping.resolvedSourceLocationKey,
+            ]),
+        ),
+      );
+      notify(
+        `${legacyCatalog.message}；${organizationCatalog.message}；${catalog.message}${savedMappings.length || savedOrganizations.length ? `，已恢复 ${savedOrganizations.length} 项机构、${savedMappings.length} 项库房映射` : ""}`,
+      );
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function preparePhis27Inventory() {
+    const locations = inventoryReadiness?.locations || [];
+    const storages = targetStorageCatalog?.storages || [];
+    const targetOrganizations = targetOrganizationCatalog?.organizations || [];
+    const legacyOrganizations = legacyInventoryCatalog?.organizations || [];
+    const completedOrganizationIds = completeInventoryOrganizationIds(
+      locations,
+      inventoryOrganizationMappings,
+      inventoryLocationMappings,
+      inventoryResolvedLocations,
+    );
+    if (!completedOrganizationIds.length) {
+      return fail("请至少完整映射一个机构及其全部药库/药房");
+    }
+    const selectedOrganizationIds = new Set(completedOrganizationIds);
+    const selectedLocations = locations.filter((location) =>
+      selectedOrganizationIds.has(location.organizationId),
+    );
+    const storageById = new Map(
+      storages.map((storage) => [storage.idSto, storage]),
+    );
+    const missing = selectedLocations.filter(
+      (location) => !inventoryLocationMappings[location.sourceLocationKey],
+    );
+    if (missing.length) {
+      return fail(
+        `请先为 ${missing.map((item) => item.sourceLocationName).join("、")} 选择新系统库房`,
+      );
+    }
+    const unresolvedWarehouses = selectedLocations.filter(
+      (location) =>
+        location.mappingStatus === "SOURCE_LOCATION_AMBIGUOUS" &&
+        !inventoryResolvedLocations[location.sourceLocationKey],
+    );
+    if (unresolvedWarehouses.length) {
+      return fail("请先指定药库库存总账实际属于哪个老系统药库");
+    }
+    const mappings = selectedLocations.map((location) => {
+      const storage = storageById.get(
+        inventoryLocationMappings[location.sourceLocationKey],
+      );
+      const resolvedSourceLocationKey =
+        inventoryResolvedLocations[location.sourceLocationKey] ||
+        (location.mappingStatus === "SOURCE_LOCATION_AMBIGUOUS"
+          ? ""
+          : location.sourceLocationKey);
+      const resolvedLocation = legacyInventoryCatalog?.locations?.find(
+        (item) => item.sourceLocationKey === resolvedSourceLocationKey,
+      );
+      return {
+        sourceLocationKey: location.sourceLocationKey,
+        sourceKind: location.sourceKind,
+        sourceLocationName: resolvedLocation?.name || location.sourceLocationName,
+        sourceOrganizationId: location.organizationId,
+        resolvedSourceLocationKey,
+        targetIdSto: storage.idSto,
+        targetName: storage.name,
+        targetIdOrg: storage.organizationId,
+      };
+    });
+    const organizationMappings = completedOrganizationIds.map((sourceId) => {
+      const source = legacyOrganizations.find((item) => item.id === sourceId);
+      const targetId = inventoryOrganizationMappings[sourceId];
+      const target = targetOrganizations.find((item) => item.id === targetId);
+      return {
+        sourceOrganizationId: sourceId,
+        sourceOrganizationName: source?.name || sourceId,
+        targetOrganizationId: targetId,
+        targetOrganizationName: target?.name || targetId,
+      };
+    });
+    setBusy("inventory-prepare");
+    setInventoryBatchDetail(null);
+    setInventoryUndoPreview(null);
+    setInventoryUndoConfirmed(false);
+    setInventoryReviewConfirmed(false);
+    setInventoryReviewSearch("");
+    setInventoryReviewStorage("");
+    setInventoryReviewStatus("ALL");
+    try {
+      const detail = await command("prepare_phis27_inventory", {
+        request: {
+          source: sourceProfile,
+          target: targetProfile,
+          sourceName: inventorySourceIdentity(),
+          organizationMappings,
+          mappings,
+        },
+      });
+      setInventoryBatchDetail(detail);
+      setInventoryMappingExpanded(false);
+      notify(
+        detail.batch.failCount
+          ? `${completedOrganizationIds.length} 个机构防重预检完成：${detail.batch.validCount} 组可写入，${detail.batch.failCount} 组需处理`
+          : `${completedOrganizationIds.length} 个机构防重预检通过：${detail.batch.validCount} 组可进入正式写入`,
+      );
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function executePhis27Inventory() {
+    if (inventoryExecutionLock.current || busy === "inventory-execute") return;
+    if (!inventoryBatchDetail || inventoryBatchDetail.batch.failCount > 0) {
+      return fail("请先完成库房映射并处理全部库存预检失败项");
+    }
+    if (!inventoryReviewConfirmed) {
+      return fail("请先核对本批机构、库房、药品、批号、效期、数量和价格");
+    }
+    const storageCount = new Set(
+      inventoryBatchDetail.rows
+        .filter((row) => row.status === "VALIDATED")
+        .map((row) => row.normalizedData?.idSto)
+        .filter(Boolean),
+    ).size;
+    if (!storageCount) return fail("当前批次没有可执行的目标库房");
+    inventoryExecutionLock.current = true;
+    setBusy("inventory-execute");
+    try {
+      await new Promise((resolve) =>
+        window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+      );
+      const detail = await command("execute_phis27_inventory", {
+        request: {
+          batchId: inventoryBatchDetail.batch.batchId,
+          target: targetProfile,
+        },
+      });
+      setInventoryBatchDetail(detail);
+      setInventoryUndoPreview(null);
+      setInventoryUndoConfirmed(false);
+      notify(
+        detail.batch.failCount
+          ? `首次盘点执行完成：${detail.batch.successCount} 组成功，${detail.batch.failCount} 组失败`
+          : `首次盘点执行成功：${detail.batch.successCount} 组库存已建立初始账簿`,
+      );
+    } catch (error) {
+      fail(error);
+    } finally {
+      inventoryExecutionLock.current = false;
+      setBusy("");
+    }
+  }
+
+  async function previewPhis27InventoryUndo() {
+    if (!inventoryBatchDetail) return;
+    setBusy("inventory-undo-preview");
+    setInventoryUndoPreview(null);
+    setInventoryUndoConfirmed(false);
+    try {
+      const preview = await command("preview_phis27_inventory_undo", {
+        request: {
+          batchId: inventoryBatchDetail.batch.batchId,
+          target: targetProfile,
+        },
+      });
+      setInventoryUndoPreview(preview);
+      notify(preview.message);
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function undoPhis27Inventory() {
+    if (inventoryUndoLock.current || busy === "inventory-undo") return;
+    if (!inventoryUndoPreview?.canUndo) {
+      return fail("请先完成撤销预检，并处理所有后续业务阻断项");
+    }
+    if (!inventoryUndoConfirmed) {
+      return fail("请先确认撤销范围和影响");
+    }
+    inventoryUndoLock.current = true;
+    setBusy("inventory-undo");
+    try {
+      await new Promise((resolve) =>
+        window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+      );
+      const detail = await command("undo_phis27_inventory", {
+        request: {
+          batchId: inventoryBatchDetail.batch.batchId,
+          target: targetProfile,
+        },
+      });
+      setInventoryBatchDetail(detail);
+      setInventoryUndoPreview(null);
+      setInventoryUndoConfirmed(false);
+      notify("首次盘点、初始库存和初始账簿已安全撤销");
+    } catch (error) {
+      fail(error);
+    } finally {
+      inventoryUndoLock.current = false;
+      setBusy("");
+    }
+  }
+
+  function autoMatchInventoryMappings() {
+    if (
+      !inventoryReadiness ||
+      !legacyInventoryCatalog ||
+      !targetOrganizationCatalog ||
+      !targetStorageCatalog
+    )
+      return;
+    const normalizeName = (value) =>
+      `${value || ""}`.trim().replace(/\s+/g, "").toLocaleLowerCase("zh-CN");
+    const nextOrganizations = { ...inventoryOrganizationMappings };
+    const nextLocations = { ...inventoryLocationMappings };
+    const nextResolved = { ...inventoryResolvedLocations };
+    const sourceOrganizationIds = [
+      ...new Set(
+        inventoryReadiness.locations
+          .map((location) => location.organizationId)
+          .filter(Boolean),
+      ),
+    ];
+    let matchedOrganizations = 0;
+    let matchedLocations = 0;
+    for (const sourceOrganizationId of sourceOrganizationIds) {
+      const sourceOrganization = legacyInventoryCatalog.organizations.find(
+        (item) => item.id === sourceOrganizationId,
+      );
+      const matches = targetOrganizationCatalog.organizations.filter(
+        (item) =>
+          normalizeName(item.name || item.fullName) ===
+          normalizeName(sourceOrganization?.name),
+      );
+      if (!nextOrganizations[sourceOrganizationId] && matches.length === 1) {
+        nextOrganizations[sourceOrganizationId] = matches[0].id;
+        matchedOrganizations += 1;
+      }
+      const targetOrganizationId = nextOrganizations[sourceOrganizationId];
+      if (!targetOrganizationId) continue;
+      for (const location of inventoryReadiness.locations.filter(
+        (item) => item.organizationId === sourceOrganizationId,
+      )) {
+        const sourceCandidates = legacyInventoryCatalog.locations.filter(
+          (item) =>
+            item.organizationId === sourceOrganizationId &&
+            item.sourceKind === location.sourceKind &&
+            item.active,
+        );
+        const sourceLocation =
+          location.mappingStatus === "SOURCE_LOCATION_AMBIGUOUS"
+            ? sourceCandidates.find(
+                (item) =>
+                  normalizeName(item.name) ===
+                  normalizeName(location.sourceLocationName),
+              )
+            : sourceCandidates.find(
+                (item) => item.sourceLocationKey === location.sourceLocationKey,
+              );
+        if (
+          location.mappingStatus === "SOURCE_LOCATION_AMBIGUOUS" &&
+          sourceLocation &&
+          !nextResolved[location.sourceLocationKey]
+        ) {
+          nextResolved[location.sourceLocationKey] =
+            sourceLocation.sourceLocationKey;
+        }
+        const sourceName = sourceLocation?.name || location.sourceLocationName;
+        const expectedType =
+          location.sourceKind === "WAREHOUSE" ? "1" : "2";
+        const storageMatches = targetStorageCatalog.storages.filter(
+          (storage) =>
+            storage.organizationId === targetOrganizationId &&
+            storage.storageType === expectedType &&
+            normalizeName(storage.name) === normalizeName(sourceName),
+        );
+        if (
+          !nextLocations[location.sourceLocationKey] &&
+          storageMatches.length === 1
+        ) {
+          nextLocations[location.sourceLocationKey] = storageMatches[0].idSto;
+          matchedLocations += 1;
+        }
+      }
+    }
+    setInventoryOrganizationMappings(nextOrganizations);
+    setInventoryLocationMappings(nextLocations);
+    setInventoryResolvedLocations(nextResolved);
+    setInventoryBatchDetail(null);
+    notify(
+      matchedOrganizations || matchedLocations
+        ? `已安全匹配 ${matchedOrganizations} 个同名机构、${matchedLocations} 个同名库房/药房`
+        : "没有发现唯一且完全同名的可自动匹配项，请手工选择",
+    );
+  }
+
+  const {
+    renderInventoryMappingBoard,
+    renderInventoryBatchScopeSummary,
+    renderInventoryBatchReview,
+    renderInventoryUndoPanel,
+  } = createInventoryRenderers({
+    autoMatchInventoryMappings,
+    busy,
+    inventoryBatchDetail,
+    inventoryExecutionSeconds,
+    inventoryLocationMappings,
+    inventoryOrganizationMappings,
+    inventoryReadiness,
+    inventoryResolvedLocations,
+    inventoryReviewSearch,
+    inventoryReviewStatus,
+    inventoryReviewStorage,
+    inventoryUndoConfirmed,
+    inventoryUndoPreview,
+    legacyInventoryCatalog,
+    preparePhis27Inventory,
+    previewPhis27InventoryUndo,
+    setInventoryBatchDetail,
+    setInventoryLocationMappings,
+    setInventoryMappingExpanded,
+    setInventoryOrganizationMappings,
+    setInventoryResolvedLocations,
+    setInventoryReviewSearch,
+    setInventoryReviewStatus,
+    setInventoryReviewStorage,
+    setInventoryUndoConfirmed,
+    targetOrganizationCatalog,
+    targetStorageCatalog,
+    undoPhis27Inventory,
+  });
+
+
+
   function beginMapping() {
     setFieldIndex(0);
     setStep(4);
+  }
+
+  async function persistPhis27MappingProfile() {
+    if (!isPhis27Source(sourceDescription)) return null;
+    const completeMapping = Object.fromEntries(
+      targetFields.map((field) => [field.key, mapping[field.key] || ""]),
+    );
+    const saved = await command("save_phis27_mapping_profile", {
+      request: {
+        mapping: completeMapping,
+        rules,
+      },
+    });
+    setPhis27MappingStatus({
+      restored: true,
+      restoredCount: Object.values(saved.mapping).filter(Boolean).length,
+      missingCount: 0,
+      savedAt: saved.savedAt,
+    });
+    return saved;
+  }
+
+  async function continueFieldMapping() {
+    if (fieldIndex < targetFields.length - 1) {
+      setFieldIndex(fieldIndex + 1);
+      return;
+    }
+    setBusy("mapping-save");
+    try {
+      const saved = await persistPhis27MappingProfile();
+      setStep(5);
+      if (saved) notify("二系列phis字段映射和转换规则已固化到本机");
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function saveExpertMappingAndContinue() {
+    setBusy("mapping-save");
+    try {
+      const saved = await persistPhis27MappingProfile();
+      setExpert(false);
+      setStep(5);
+      if (saved) notify("二系列phis字段映射和转换规则已更新");
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
   }
 
   function fieldRulePreview(field) {
@@ -1094,6 +1502,7 @@ export function App() {
     const rule = rules[field.key] || {};
     const converted = applyFieldRule(original, {
       ...rule,
+      transform: rule.transform || defaultTransformForField(field),
       valueMappings: parseValueMappings(rule.valueMappingsText).mappings,
     });
     return `样例：${original} → ${converted ?? "空值"}`;
@@ -1112,10 +1521,28 @@ export function App() {
     const additions = buildDictionaryValueMappings(
       rows.map((row) => row[sourceField]),
       dictionary.items,
+      columnMetadata[sourceField]?.sourceDictionary?.items || [],
     );
     const count = Object.keys(additions).length;
     if (!count) {
-      return fail("没有找到可安全自动匹配的字典名称或编码，请人工确认");
+      const directCount = new Set(
+        rows
+          .map((row) => `${row[sourceField] ?? ""}`.trim())
+          .filter(Boolean),
+      );
+      const hasBlank = rows.some(
+        (row) => `${row[sourceField] ?? ""}`.trim() === "",
+      );
+      const allDirect =
+        !hasBlank &&
+        [...directCount].every((value) =>
+          dictionary.items.some(
+            (item) => dictionaryItemValue(item) === value,
+          ),
+        );
+      return allDirect
+        ? notify("来源编码已与新系统字典一致，无需额外转换")
+        : fail("没有找到可安全自动匹配的字典含义，请人工确认未匹配项");
     }
     setRules((current) => ({
       ...current,
@@ -1128,6 +1555,33 @@ export function App() {
       },
     }));
     notify(`已为“${field.label}”生成 ${count} 条目标字典映射`);
+  }
+
+  function setCurrentDictionaryMapping(sourceValue, targetValue) {
+    if (!currentField) return;
+    setRules((current) => ({
+      ...current,
+      [currentField.key]: {
+        ...current[currentField.key],
+        valueMappingsText: replaceValueMappingText(
+          current[currentField.key]?.valueMappingsText,
+          sourceValue,
+          targetValue,
+        ),
+      },
+    }));
+  }
+
+  function clearCurrentDictionaryMappings() {
+    if (!currentField) return;
+    setRules((current) => ({
+      ...current,
+      [currentField.key]: {
+        ...current[currentField.key],
+        valueMappingsText: "",
+      },
+    }));
+    notify(`已清空“${currentField.label}”的字典转换`, "success");
   }
 
   async function prepareBatch() {
@@ -1149,24 +1603,39 @@ export function App() {
         return {
           sourceField: mapping[field.key] || "",
           targetField: field.key,
-          transform: rule.transform || "TRIM",
+          transform: rule.transform || defaultTransformForField(field),
           defaultValue: rule.defaultValue || "",
           valueMappings: parseValueMappings(rule.valueMappingsText).mappings,
           valueMappingCaseInsensitive:
             rule.valueMappingCaseInsensitive || false,
         };
       });
+    const phis27Source = isPhis27Source(sourceDescription);
     const preparedRows = rows.map((row) => ({
       ...row,
-      _sourceKey: row[sourceKey] ?? "",
+      _sourceKey: phis27Source ? row.SOURCE_KEY ?? "" : row[sourceKey] ?? "",
     }));
+    const stableSourceName = phis27Source
+      ? phis27SourceIdentity(
+          sourceProfile,
+          legacyInspection?.schema ||
+            sourceProfile.schema ||
+            sourceProfile.username ||
+            "PHIS27",
+        )
+      : sourceName;
     setBusy("prepare");
     try {
+      if (phis27Source) await persistPhis27MappingProfile();
       const detail = await command("prepare_migration_batch", {
         request: {
           batchName: `${sourceName}-药品迁移`,
-          sourceType: sourceMode === "database" ? "DATABASE" : "FILE",
-          sourceName,
+          sourceType: phis27Source
+            ? "PHIS27"
+            : sourceMode === "database"
+              ? "DATABASE"
+              : "FILE",
+          sourceName: stableSourceName,
           sourceDescription: sourceDescription || query,
           conflictStrategy,
           allowCreateFactory,
@@ -1177,6 +1646,9 @@ export function App() {
         },
       });
       setBatchDetail(detail);
+      setValidationResultFilter(
+        detail.batch.failCount > 0 ? "INVALID" : "VALIDATED",
+      );
       setOverwritePreview(null);
       setSelectedOverwriteRowIds([]);
       notify(`校验完成：${detail.batch.validCount} 行可迁移`);
@@ -1185,6 +1657,24 @@ export function App() {
     } finally {
       setBusy("");
     }
+  }
+
+  function openValidationFieldMapping(field, row) {
+    const nextIndex = targetFields.findIndex((item) => item.key === field.key);
+    if (nextIndex < 0) return;
+    setFieldIndex(nextIndex);
+    setExpert(false);
+    setValidationFieldContext({
+      fieldKey: field.key,
+      fieldLabel: field.label,
+      rowNo: row.rowNo,
+      sourceKey: row.sourceKey,
+      errorMessage: row.errorMessage,
+    });
+    if (row.rowNo > 0 && row.rowNo <= rows.length) {
+      setMappingSampleIndex(row.rowNo - 1);
+    }
+    setStep(4);
   }
 
   async function testTarget() {
@@ -1196,6 +1686,7 @@ export function App() {
       const readiness = await command("inspect_target_schema", {
         profile: targetProfile,
       });
+      await rememberTargetDatabaseConnection();
       notify(
         `${result.message} · 已核对 ${readiness.checkedTables.length} 张药品表 · ${result.latencyMs}ms`,
       );
@@ -1293,551 +1784,182 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <Header runtime={runtime} auth={targetAuth} />
+      <Header
+        runtime={runtime}
+        auth={targetAuth}
+        connectionCount={databaseConnections.length}
+        historyCount={historyBatches.length}
+        onOpenConnections={() => setConnectionManagerOpen(true)}
+        onOpenHistory={openMigrationHistory}
+      />
       <Stepper active={step} />
       <main className="workspace">
-        {step === 0 && (
-          <section className="screen access-screen">
-            <div className="screen-heading">
-              <span className="eyebrow">第 1 步 · 新系统身份确认</span>
-              <h1>先连接要迁入的新系统</h1>
-              <p>
-                地址可用、取得 system 租户管理员角色并成功建立 tk 登录会话后，才开放数据迁移功能。密码和 tk 仅在本次运行内存中使用。
-              </p>
-            </div>
+        <SystemConnectionScreen
+          context={{
+            busy,
+            costMergeCatalog,
+            dictionaryCatalog,
+            editingTargetConnection,
+            forgetTargetSystemConnection,
+            hasSavedTargetSystem,
+            loginPassword,
+            loginTargetSystem,
+            loginTenantId,
+            probeTargetSystem,
+            rememberTargetSystemPassword,
+            setEditingTargetConnection,
+            setLoginPassword,
+            setLoginTenantId,
+            setRememberTargetSystemPassword,
+            setStep,
+            setTargetSystemProbe,
+            setTargetSystemUrl,
+            step,
+            targetAuth,
+            targetSystemProbe,
+            targetSystemUrl,
+          }}
+        />
 
-            <div className="access-grid">
-              <div className="access-card">
-                <div className="access-card__number">1</div>
-                <div className="access-card__body">
-                  <div className="section-title">
-                    <Plugs size={21} weight="duotone" />
-                    <div>
-                      <strong>验证新系统地址</strong>
-                      <small>检查服务是否可以从当前电脑访问</small>
-                    </div>
-                  </div>
-                  <div className="access-inline-form">
-                    <Field label="新系统访问地址" wide>
-                      <input
-                        value={targetSystemUrl}
-                        onChange={(event) => {
-                          setTargetSystemUrl(event.target.value);
-                          setTargetSystemProbe(null);
-                          setTargetAuth(null);
-                          setDictionaryCatalog(null);
-                          setCostMergeCatalog(null);
-                          setCostMergeMappings({});
-                        }}
-                        placeholder="http://服务器:端口/rbmh-phis"
-                        spellCheck="false"
-                      />
-                    </Field>
-                    <button
-                      className="button button--secondary"
-                      disabled={busy === "target-system-probe"}
-                      onClick={probeTargetSystem}
-                    >
-                      <Plugs size={19} />
-                      {busy === "target-system-probe"
-                        ? "正在验证…"
-                        : "验证地址"}
-                    </button>
-                  </div>
-                  {targetSystemProbe && (
-                    <div className="access-result access-result--success">
-                      <CheckCircle size={19} weight="fill" />
-                      <div>
-                        <strong>地址可用</strong>
-                        <span>
-                          HTTP {targetSystemProbe.statusCode} · {targetSystemProbe.latencyMs}ms
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                  {targetSystemUrl.trim().toLowerCase().startsWith("http://") && (
-                    <div className="access-result access-result--warning">
-                      <Warning size={19} weight="fill" />
-                      <div>
-                        <strong>当前使用内网 HTTP</strong>
-                        <span>MD5 仅符合登录接口协议，不等同于传输加密；正式环境建议启用 HTTPS。</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
+        <TaskSelectionScreen
+          context={{
+            migrationType,
+            setMigrationType,
+            setStep,
+            step,
+            targetAuth,
+          }}
+        />
 
-              <form
-                className={`access-card ${!targetSystemProbe ? "access-card--locked" : ""}`}
-                onSubmit={loginTargetSystem}
-              >
-                <div className="access-card__number">2</div>
-                <div className="access-card__body">
-                  <div className="section-title">
-                    <LockKey size={21} weight="duotone" />
-                    <div>
-                      <strong>租户管理员认证与角色登录</strong>
-                      <small>依次调用 myRoles、myApps，仅允许 system 账号</small>
-                    </div>
-                  </div>
-                  <div className="auth-form-grid">
-                    <Field label="租户编码">
-                      <input
-                        value={loginTenantId}
-                        disabled={!targetSystemProbe || Boolean(targetAuth)}
-                        onChange={(event) => setLoginTenantId(event.target.value)}
-                        placeholder="例如 cszzyzh"
-                        autoComplete="organization"
-                      />
-                    </Field>
-                    <Field label="登录账号">
-                      <input value="system" disabled aria-label="登录账号" />
-                    </Field>
-                    <Field label="system 密码" wide>
-                      <div className="password-input">
-                        <LockKey size={17} />
-                        <input
-                          type="password"
-                          value={loginPassword}
-                          disabled={!targetSystemProbe || Boolean(targetAuth)}
-                          onChange={(event) => setLoginPassword(event.target.value)}
-                          placeholder="请输入 system 密码"
-                          autoComplete="current-password"
-                        />
-                      </div>
-                    </Field>
-                  </div>
-                  {!targetAuth ? (
-                    <button
-                      className="button button--primary button--wide"
-                      type="submit"
-                      disabled={
-                        !targetSystemProbe || busy === "target-system-login"
-                      }
-                    >
-                      <ShieldCheck size={19} />
-                      {busy === "target-system-login"
-                        ? "正在认证…"
-                        : "认证并建立 tk 登录会话"}
-                    </button>
-                  ) : (
-                    <div className="access-result access-result--success auth-result">
-                      <ShieldCheck size={20} weight="fill" />
-                      <div>
-                        <strong>
-                          {targetAuth.tenantName || targetAuth.tenantId}
-                        </strong>
-                        <span>
-                          {targetAuth.userName} · {targetAuth.roleName} · {targetAuth.roleCd}
-                        </span>
-                        {dictionaryCatalog && (
-                          <span>
-                            已同步 {dictionaryCatalog.dictionaries.length} 个药品标准字典
-                            {dictionaryCatalog.warnings?.length
-                              ? ` · ${dictionaryCatalog.warnings.length} 个可选字典待处理`
-                              : ""}
-                          </span>
-                        )}
-                        {costMergeCatalog && (
-                          <span>已同步 {costMergeCatalog.items.length} 个费用归并项目</span>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </form>
-            </div>
+        <InventoryMigrationScreen
+          context={{
+            busy,
+            databaseConnections,
+            databaseDrivers,
+            driverPacks,
+            executePhis27Inventory,
+            forgetSourceConnection,
+            forgetTargetDatabaseConnection,
+            hasSavedSourceConnection,
+            hasSavedTargetDatabase,
+            inspectPhis27Inventory,
+            inventoryBatchDetail,
+            inventoryExecutionSeconds,
+            inventoryLocationMappings,
+            inventoryMappingExpanded,
+            inventoryOrganizationMappings,
+            inventoryPreflightExpanded,
+            inventoryReadiness,
+            inventoryResolvedLocations,
+            inventoryReviewConfirmed,
+            inventorySourceExpanded,
+            inventoryTargetExpanded,
+            legacyInventoryCatalog,
+            loadInventoryTargetStorages,
+            migrationType,
+            preparePhis27Inventory,
+            previewPhis27InventoryUndo,
+            rememberSourcePassword,
+            rememberTargetDatabasePassword,
+            renderInventoryBatchReview,
+            renderInventoryBatchScopeSummary,
+            renderInventoryMappingBoard,
+            renderInventoryUndoPanel,
+            selectDatabaseConnection,
+            selectedSourceConnectionId,
+            selectedTargetConnectionId,
+            setConnectionManagerOpen,
+            setInventoryBatchDetail,
+            setInventoryLocationMappings,
+            setInventoryOrganizationMappings,
+            setInventoryPreflightExpanded,
+            setInventoryReadiness,
+            setInventoryResolvedLocations,
+            setInventoryReviewConfirmed,
+            setInventorySourceExpanded,
+            setInventoryTargetExpanded,
+            setLegacyInventoryCatalog,
+            setRememberSourcePassword,
+            setRememberTargetDatabasePassword,
+            setSelectedSourceConnectionId,
+            setSelectedTargetConnectionId,
+            setSourceConnectionEditing,
+            setSourceProfile,
+            setStep,
+            setTargetConnectionEditing,
+            setTargetOrganizationCatalog,
+            setTargetProfile,
+            setTargetStorageCatalog,
+            sourceConnectionEditing,
+            sourceProfile,
+            step,
+            targetAuth,
+            targetConnectionEditing,
+            targetOrganizationCatalog,
+            targetProfile,
+            targetStorageCatalog,
+            tenantId,
+          }}
+        />
 
-            <div className="security-banner">
-              <ShieldCheck size={20} weight="fill" />
-              <div>
-                <strong>双重门禁</strong>
-                <span>
-                  前端固定 system，桌面后端会再次检查账号、租户、角色编码、启用状态和 tk 下发结果，后续服务请求自动携带 Cookie。
-                </span>
-              </div>
-            </div>
-            <div className="screen-actions screen-actions--end">
-              <button
-                className="button button--primary"
-                disabled={!targetAuth}
-                onClick={() => setStep(1)}
-              >
-                认证完成，选择迁移任务
-                <ArrowRight />
-              </button>
-            </div>
-          </section>
-        )}
+        <MedicineSourceScreen
+          context={{
+            acceptData,
+            busy,
+            databaseConnections,
+            databaseDrivers,
+            driverPacks,
+            fileInput,
+            forgetSourceConnection,
+            hasSavedSourceConnection,
+            inspectPhis27Source,
+            legacyInspection,
+            legacyScope,
+            loadDatabase,
+            loadFile,
+            loadPhis27Medicine,
+            migrationType,
+            query,
+            rememberSourcePassword,
+            selectDatabaseConnection,
+            selectedSourceConnectionId,
+            setConnectionManagerOpen,
+            setLegacyInspection,
+            setLegacyScope,
+            setQuery,
+            setRememberSourcePassword,
+            setSelectedSourceConnectionId,
+            setShowCustomQuery,
+            setSourceConnectionEditing,
+            setSourceMode,
+            setSourceProfile,
+            setStep,
+            showCustomQuery,
+            sourceConnectionEditing,
+            sourceMode,
+            sourceProfile,
+            step,
+            testSourceConnection,
+          }}
+        />
 
-        {step === 1 && (
-          <section className="screen task-screen">
-            <div className="screen-heading screen-heading--row">
-              <div>
-                <span className="eyebrow">第 2 步 · 迁移任务</span>
-                <h1>这次要迁移什么？</h1>
-                <p>两类任务相互独立，库存初始化必须建立在药品基础信息已经同步的前提下。</p>
-              </div>
-              <div className="source-summary">
-                <ShieldCheck size={24} />
-                <div>
-                  <small>已认证新系统</small>
-                  <strong>
-                    {targetAuth?.tenantName || targetAuth?.tenantId} · system
-                  </strong>
-                </div>
-              </div>
-            </div>
-            <div className="task-grid">
-              <button
-                className={`task-card ${migrationType === "MEDICINE_BASE" ? "task-card--selected" : ""}`}
-                onClick={() => setMigrationType("MEDICINE_BASE")}
-              >
-                <span className="task-card__icon">
-                  <FirstAidKit size={28} weight="duotone" />
-                </span>
-                <span className="task-card__copy">
-                  <small>任务 A · 可用</small>
-                  <strong>药品基础信息同步</strong>
-                  <p>
-                    同步通用药品、单位、别名、生产厂家和药品商品信息，为后续机构库存初始化建立主键对照。
-                  </p>
-                  <em>全局数据 · 支持预校验、幂等复用和失败重试</em>
-                </span>
-                <span className="task-card__check">
-                  {migrationType === "MEDICINE_BASE" && (
-                    <Check size={17} weight="bold" />
-                  )}
-                </span>
-              </button>
-              <button className="task-card task-card--disabled" disabled>
-                <span className="task-card__icon">
-                  <Database size={28} weight="duotone" />
-                </span>
-                <span className="task-card__copy">
-                  <small>任务 B · 下一轮接入</small>
-                  <strong>机构库房初始化</strong>
-                  <p>
-                    选择具体机构、药库或药房，在基础药品匹配完整后按批次同步库存数量、价格、批号和效期。
-                  </p>
-                  <em>机构数据 · 需要库房映射和库存初始化防重锁</em>
-                </span>
-                <span className="task-card__badge">前置能力建设中</span>
-              </button>
-            </div>
-            <div className="prerequisite-note">
-              <Info size={19} />
-              <span>
-                当前先完成药品基础信息同步闭环。机构库房初始化将在目标库存表结构和机构、库房接口明确后开放。
-              </span>
-            </div>
-            <div className="screen-actions">
-              <button
-                className="button button--secondary"
-                onClick={() => setStep(0)}
-              >
-                <ArrowLeft />
-                返回认证
-              </button>
-              <button
-                className="button button--primary"
-                onClick={() => setStep(2)}
-              >
-                进入药品基础信息同步
-                <ArrowRight />
-              </button>
-            </div>
-          </section>
-        )}
-
-        {step === 2 && (
-          <section className="screen source-screen">
-            <div className="screen-heading">
-              <span className="eyebrow">第 3 步 · 数据来源</span>
-              <h1>三方数据从哪里来？</h1>
-              <p>
-                可以直接连接老数据库，也可以导入 CSV / JSON
-                文件。数据库模式只执行只读查询。
-              </p>
-            </div>
-            <div className="source-tabs">
-              <button
-                className={sourceMode === "file" ? "active" : ""}
-                onClick={() => setSourceMode("file")}
-              >
-                <FileCsv size={22} />
-                文件导入
-              </button>
-              <button
-                className={sourceMode === "database" ? "active" : ""}
-                onClick={() => setSourceMode("database")}
-              >
-                <Database size={22} />
-                数据库直连
-              </button>
-            </div>
-            {sourceMode === "file" ? (
-              <div
-                className="upload-zone"
-                onClick={() => fileInput.current?.click()}
-              >
-                <input
-                  ref={fileInput}
-                  type="file"
-                  accept=".csv,.json"
-                  hidden
-                  onChange={(event) =>
-                    event.target.files?.[0] && loadFile(event.target.files[0])
-                  }
-                />
-                <UploadSimple size={44} weight="duotone" />
-                <h2>选择三方数据文件</h2>
-                <p>支持 UTF-8 CSV、JSON；首行作为字段名，单批最多 10,000 行</p>
-                <button className="button button--primary">选择文件</button>
-              </div>
-            ) : (
-              <div className="source-db-layout">
-                <ConnectionForm
-                  value={sourceProfile}
-                  onChange={(next) => {
-                    setSourceProfile(next);
-                    setLegacyInspection(null);
-                  }}
-                  title="老系统只读连接"
-                  drivers={databaseDrivers}
-                  driverPacks={driverPacks}
-                />
-                {sourceProfile.kind === "oracle" && (
-                  <div className="legacy-adapter">
-                    <div className="legacy-adapter__heading">
-                      <div>
-                        <span className="eyebrow">内置适配器</span>
-                        <strong>自动识别 Bsoft PHIS27 药品数据</strong>
-                        <small>
-                          自动核对核心表、统计数据范围，并生成只读多表组合查询。
-                        </small>
-                      </div>
-                      <button
-                        className="button button--secondary"
-                        disabled={busy === "phis27-inspect"}
-                        onClick={inspectPhis27Source}
-                      >
-                        <ListMagnifyingGlass size={19} />
-                        {busy === "phis27-inspect"
-                          ? "正在识别…"
-                          : "识别 PHIS27"}
-                      </button>
-                    </div>
-                    {legacyInspection && (
-                      <div className="legacy-inspection">
-                        <div
-                          className={`access-result ${legacyInspection.detected ? "access-result--success" : "access-result--warning"}`}
-                        >
-                          {legacyInspection.detected ? (
-                            <CheckCircle size={19} weight="fill" />
-                          ) : (
-                            <Warning size={19} weight="fill" />
-                          )}
-                          <div>
-                            <strong>{legacyInspection.message}</strong>
-                            <span>
-                              Schema {legacyInspection.schema} · 已核对 {legacyInspection.checkedTables.length} 张表
-                            </span>
-                          </div>
-                        </div>
-                        {legacyInspection.detected && (
-                          <>
-                            <div className="legacy-stats">
-                              {[
-                                ["通用药品", legacyInspection.totalMedicines],
-                                ["机构配置", legacyInspection.configuredMedicines],
-                                ["在用药品", legacyInspection.activeConfiguredMedicines],
-                                ["厂家商品", legacyInspection.productRows],
-                                ["有库存药品", legacyInspection.stockMedicines],
-                              ].map(([label, value]) => (
-                                <div key={label}>
-                                  <span>{label}</span>
-                                  <strong>{value}</strong>
-                                </div>
-                              ))}
-                            </div>
-                            <div className="legacy-scopes">
-                              {legacyInspection.scopes.map((scope) => (
-                                <label
-                                  className={`legacy-scope ${legacyScope === scope.id ? "legacy-scope--selected" : ""}`}
-                                  key={scope.id}
-                                >
-                                  <input
-                                    type="radio"
-                                    name="legacy-scope"
-                                    checked={legacyScope === scope.id}
-                                    onChange={() => setLegacyScope(scope.id)}
-                                  />
-                                  <span>
-                                    <strong>
-                                      {scope.label}
-                                      {scope.recommended && <em>推荐</em>}
-                                    </strong>
-                                    <small>{scope.description}</small>
-                                  </span>
-                                  <b>
-                                    {scope.medicineCount} 种 / 约 {scope.estimatedRows} 行
-                                  </b>
-                                </label>
-                              ))}
-                            </div>
-                            <div className="legacy-warnings">
-                              {legacyInspection.warnings.map((warning) => (
-                                <span key={warning}>
-                                  <Warning size={15} />
-                                  {warning}
-                                </span>
-                              ))}
-                            </div>
-                            <button
-                              className="button button--primary button--wide"
-                              disabled={busy === "phis27-load"}
-                              onClick={loadPhis27Medicine}
-                            >
-                              <Rows size={19} />
-                              {busy === "phis27-load"
-                                ? "正在读取标准数据…"
-                                : "按选定范围读取标准药品数据"}
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-                <div className="custom-query-divider">
-                  <span>或使用自定义只读 SQL</span>
-                </div>
-                <Field label="读取数据的 SQL" wide>
-                  <textarea
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    rows={5}
-                  />
-                  <small>
-                    仅允许 SELECT / WITH；如只验证驱动，可先点击“仅测试连接”。
-                  </small>
-                </Field>
-                <div className="source-actions">
-                  <button
-                    className="button button--secondary"
-                    disabled={["source", "source-test"].includes(busy)}
-                    onClick={testSourceConnection}
-                  >
-                    <Plugs size={20} />
-                    {busy === "source-test" ? "正在测试…" : "仅测试连接"}
-                  </button>
-                  <button
-                    className="button button--primary"
-                    disabled={["source", "source-test"].includes(busy)}
-                    onClick={loadDatabase}
-                  >
-                    <Rows size={20} />
-                    {busy === "source" ? "正在读取…" : "连接并读取预览"}
-                  </button>
-                </div>
-              </div>
-            )}
-            <div className="demo-line">
-              <span>还没有数据？</span>
-              <button
-                onClick={() =>
-                  acceptData(demoRows(), "内置演示数据 · T_DRUG_INFO")
-                }
-              >
-                使用示例药品数据体验完整流程 <ArrowRight size={16} />
-              </button>
-            </div>
-          </section>
-        )}
-
-        {step === 3 && (
-          <section className="screen">
-            <div className="screen-heading screen-heading--row">
-              <div>
-                <span className="eyebrow">第 4 步 · 识别数据</span>
-                <h1>确认要迁移的数据范围</h1>
-                <p>
-                  系统已读取数据。请选择能代表三方记录唯一性的字段，它只用于追溯，不会作为新表主键。
-                </p>
-              </div>
-              <div className="source-summary">
-                <Database size={24} />
-                <div>
-                  <small>当前来源</small>
-                  <strong>{sourceName}</strong>
-                </div>
-              </div>
-            </div>
-            <div className="recognition-grid">
-              <div className="stat-panel">
-                <div>
-                  <span>读取行数</span>
-                  <strong>{rows.length}</strong>
-                </div>
-                <div>
-                  <span>来源字段</span>
-                  <strong>{columns.length}</strong>
-                </div>
-                <div>
-                  <span>空记录</span>
-                  <strong>
-                    {
-                      rows.filter((row) =>
-                        Object.values(row).every(
-                          (value) => `${value ?? ""}`.trim() === "",
-                        ),
-                      ).length
-                    }
-                  </strong>
-                </div>
-              </div>
-              <Field label="三方记录唯一标识">
-                <select
-                  value={sourceKey}
-                  onChange={(event) => setSourceKey(event.target.value)}
-                >
-                  {columns.map((column) => (
-                    <option key={column}>{column}</option>
-                  ))}
-                </select>
-                <small>
-                  例如药品编码或三方主键。它会写入本地迁移日志，便于反查老系统。
-                </small>
-              </Field>
-            </div>
-            <div className="table-heading">
-              <div>
-                <Table size={20} />
-                <strong>数据预览</strong>
-                <span>前 {Math.min(6, rows.length)} 行</span>
-              </div>
-              <span className="read-only">
-                <LockKey size={15} />
-                只读
-              </span>
-            </div>
-            <DataTable columns={columns} rows={rows} />
-            <div className="screen-actions">
-              <button
-                className="button button--secondary"
-                onClick={() => setStep(2)}
-              >
-                <ArrowLeft />
-                重新选择
-              </button>
-              <button className="button button--primary" onClick={beginMapping}>
-                开始匹配新系统字段
-                <ArrowRight />
-              </button>
-            </div>
-          </section>
-        )}
+        <SourceRecognitionScreen
+          context={{
+            beginMapping,
+            columnMetadata,
+            columns,
+            medicinePreviewColumns,
+            medicinePreviewLabels,
+            phis27MappingStatus,
+            rows,
+            setSourceKey,
+            setStep,
+            sourceDescription,
+            sourceKey,
+            sourceName,
+            step,
+          }}
+        />
 
         {step === 4 && (
           <section className="screen mapping-screen">
@@ -1868,8 +1990,37 @@ export function App() {
               <strong>{sourceName}</strong>
               <span className="source-chip">唯一标识 {sourceKey}</span>
             </div>
+            {validationFieldContext?.fieldKey === currentField.key && (
+              <div className="validation-jump-context">
+                <Warning size={18} weight="fill" />
+                <div>
+                  <strong>
+                    从校验失败定位：第 {validationFieldContext.rowNo} 行 · 来源键 {validationFieldContext.sourceKey}
+                  </strong>
+                  <span>{validationFieldContext.errorMessage}</span>
+                </div>
+                <button
+                  className="button button--secondary"
+                  type="button"
+                  onClick={() => setStep(5)}
+                >
+                  返回校验结果
+                </button>
+              </div>
+            )}
             <div className="question-copy">
-              <span className="field-group">{currentField.group}</span>
+              <div className="question-copy__meta">
+                <span className="field-group">{currentField.group}</span>
+                <div className="target-destination">
+                  <span>
+                    <Database size={14} weight="duotone" />
+                    新系统落点
+                  </span>
+                  {targetLocations(currentField).map((location) => (
+                    <code key={location}>{location}</code>
+                  ))}
+                </div>
+              </div>
               <h1>
                 老系统里，哪个字段代表“{currentField.label}”？
                 {currentField.required && <em>必填</em>}
@@ -1907,7 +2058,7 @@ export function App() {
             )}
             <div className="suggestion-heading">
               <span>智能推荐</span>
-              <small>基于字段名和常用医院数据结构</small>
+              <small>只展示字段名或别名达到可信阈值的老系统字段</small>
               <Info size={15} />
             </div>
             <div className="suggestions">
@@ -1925,10 +2076,25 @@ export function App() {
                   <span className="radio">
                     {mapping[currentField.key] === item.column && <i />}
                   </span>
-                  <strong>{item.column}</strong>
+                  <span className="suggestion-field">
+                    <strong>
+                      {sourceFieldDisplayName(
+                        item.column,
+                        columnMetadata[item.column],
+                      )}
+                    </strong>
+                    <small>
+                      {sourceFieldPhysicalOrigin(columnMetadata[item.column])
+                        ? `来源：${sourceFieldPhysicalOrigin(columnMetadata[item.column])}`
+                        : "来源数据字段"}
+                    </small>
+                  </span>
                   <span>
-                    <small>样例</small>
-                    {`${rows[0]?.[item.column] ?? "—"}`}
+                    <small>当前药品样例</small>
+                    {sourceValueLabel(
+                      mappingSample[item.column],
+                      columnMetadata[item.column],
+                    )}
                   </span>
                   <b
                     className={
@@ -1942,41 +2108,261 @@ export function App() {
                   <strong className="score">{item.score}%</strong>
                 </button>
               ))}
+              {!suggestions.length && (
+                <div className="suggestions-empty">
+                  <Info size={18} />
+                  <span>
+                    <strong>没有达到可信阈值的推荐字段</strong>
+                    请在下方按字段注释、物理来源和当前药品样例人工选择。
+                  </span>
+                </div>
+              )}
             </div>
             <div className="inline-select">
               <span>没有合适的推荐？</span>
-              <select
+              <SearchableSelect
+                ariaLabel={`${currentField.label}来源字段`}
                 value={mapping[currentField.key] || ""}
-                onChange={(event) =>
+                onChange={(next) =>
                   setMapping((current) => ({
                     ...current,
-                    [currentField.key]: event.target.value,
+                    [currentField.key]: next,
                   }))
                 }
+                options={[
+                  {
+                    value: "",
+                    label: "不映射 / 稍后使用默认值",
+                  },
+                  ...sourceFieldOptions,
+                ]}
+                searchPlaceholder="按字段名、注释、表名或样例值过滤"
+              />
+            </div>
+            {currentDictionary && currentSourceField && (
+              <section className="dictionary-match-panel">
+                <div className="dictionary-match-panel__heading">
+                  <div>
+                    <strong>二系列字典 → 新系统字典</strong>
+                    <span>
+                      {currentSourceDictionary?.name || "来源字段值"}
+                      {currentSourceDictionary?.entry
+                        ? ` · ${currentSourceDictionary.entry}.${currentSourceDictionary.keyField} → ${currentSourceDictionary.textField}`
+                        : ""}
+                      {` · 本次数据出现 ${currentDictionaryRows.length} 类值${currentDictionaryRows.some((item) => item.sourceIsBlank) ? "（含空值）" : ""} · 已处理 ${currentDictionaryRows.filter((item) => item.matched || item.ignored).length} 个`}
+                    </span>
+                  </div>
+                  <div>
+                    <button
+                      className="button button--secondary"
+                      type="button"
+                      onClick={() => autoMapDictionary(currentField)}
+                    >
+                      <LinkSimple size={16} />
+                      一键按含义匹配
+                    </button>
+                    <button
+                      className="button button--ghost"
+                      type="button"
+                      disabled={!rules[currentField.key]?.valueMappingsText}
+                      onClick={clearCurrentDictionaryMappings}
+                    >
+                      清空转换
+                    </button>
+                  </div>
+                </div>
+                {currentSourceDictionary?.loadStatus === "unavailable" && (
+                  <div className="dictionary-load-note dictionary-load-note--warning">
+                    <Warning size={16} weight="fill" />
+                    <span>{currentSourceDictionary.loadMessage}</span>
+                  </div>
+                )}
+                {currentSourceDictionary?.loadStatus === "empty" && (
+                  <div className="dictionary-load-note">
+                    <Info size={16} />
+                    <span>{currentSourceDictionary.loadMessage}</span>
+                  </div>
+                )}
+                <div className="dictionary-match-list">
+                  {currentDictionaryRows.map((item) => {
+                    const suggestionCode = item.suggestedTarget
+                      ? dictionaryItemValue(item.suggestedTarget)
+                      : "";
+                    return (
+                      <div className="dictionary-match-row" key={item.sourceValue}>
+                        <span className="dictionary-match-source">
+                          <strong>
+                            {item.sourceIsBlank
+                              ? "空值"
+                              : item.sourceText || "待补充来源含义"}
+                          </strong>
+                          <small>
+                            {item.sourceIsBlank
+                              ? `来源为 NULL、空字符串或仅空格 · ${item.count} 条药品`
+                              : `来源编码 ${item.sourceValue} · ${item.count} 条药品`}
+                          </small>
+                          {item.sourceProperties && (
+                            <small title={item.sourceProperties}>
+                              {item.sourceProperties}
+                            </small>
+                          )}
+                        </span>
+                        <ArrowRight size={17} />
+                        <SearchableSelect
+                          ariaLabel={`${item.sourceIsBlank ? "空值" : item.sourceText || item.sourceValue}目标字典值`}
+                          value={
+                            item.ignored
+                              ? IGNORE_VALUE_MAPPING_TARGET
+                              : item.appliedTarget
+                          }
+                          onChange={(next) =>
+                            setCurrentDictionaryMapping(item.sourceValue, next)
+                          }
+                          options={[
+                            {
+                              value: "",
+                              label: suggestionCode
+                                ? `未采用 · 建议 ${item.suggestedTarget.text || item.suggestedTarget.na}（${suggestionCode}）`
+                                : "尚未选择目标字典值",
+                            },
+                            ...(!currentField.required
+                              ? [
+                                  {
+                                    value: IGNORE_VALUE_MAPPING_TARGET,
+                                    label: "忽略此来源值",
+                                    description:
+                                      "目标字段留空，并记录为已人工确认忽略；该值不再触发字典校验。",
+                                  },
+                                ]
+                              : []),
+                            ...currentDictionary.items.map((targetItem) => ({
+                              value: dictionaryItemValue(targetItem),
+                              label: `${targetItem.text || targetItem.na}（${dictionaryItemValue(targetItem)}）`,
+                              keywords: `${targetItem.py || ""} ${targetItem.wb || ""}`,
+                            })),
+                          ]}
+                          searchPlaceholder="按编码、名称或拼音查找"
+                        />
+                        <span
+                          className={`dictionary-match-status ${item.ignored ? "dictionary-match-status--ignored" : item.matched ? "dictionary-match-status--done" : suggestionCode ? "dictionary-match-status--suggested" : ""}`}
+                        >
+                          {item.ignored
+                            ? "已忽略"
+                            : item.matched
+                            ? "已确认"
+                            : suggestionCode
+                              ? "有建议"
+                              : "待确认"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {!currentDictionaryRows.length && (
+                    <div className="dictionary-match-empty">
+                      当前数据没有可配置的来源值。
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
+            <div className="sample-toolbar">
+              <div>
+                <strong>预览哪一条待迁移药品？</strong>
+                <span>推荐和即时预览都会跟随此处切换</span>
+              </div>
+              <button
+                className="button button--secondary"
+                disabled={rows.length < 2}
+                onClick={() =>
+                  setMappingSampleIndex((current) =>
+                    randomRowIndex(rows.length, current),
+                  )
+                }
+                type="button"
               >
-                <option value="">不映射 / 稍后使用默认值</option>
-                {columns.map((column) => (
-                  <option key={column}>{column}</option>
-                ))}
-              </select>
+                <ArrowCounterClockwise size={17} />
+                随机换一条
+              </button>
+              <SearchableSelect
+                ariaLabel="指定预览药品"
+                className="sample-row-select"
+                value={`${mappingSampleIndex}`}
+                onChange={(next) => setMappingSampleIndex(Number(next))}
+                options={sampleRowOptions}
+                searchPlaceholder="按药品名、规格、厂家或来源键查找"
+              />
             </div>
             <div className="preview-card">
-              <div>
+              <div className="preview-card__heading">
                 <LinkSimple size={17} />
                 <strong>即时预览</strong>
                 <span>
-                  {mapping[currentField.key] || "未选择来源字段"} →{" "}
+                  {mapping[currentField.key]
+                    ? sourceFieldDisplayName(
+                        mapping[currentField.key],
+                        columnMetadata[mapping[currentField.key]],
+                      )
+                    : "未选择来源字段"}{" "}
+                  →{" "}
                   {currentField.key}
                 </span>
               </div>
-              <div className="preview-values">
-                {rows.slice(0, 3).map((row, index) => (
-                  <span key={index}>
-                    {mapping[currentField.key]
-                      ? `${row[mapping[currentField.key]] ?? "空值"}`
-                      : "—"}
+              <div className="preview-medicine-context">
+                {sampleContext.length ? (
+                  sampleContext.map(([label, value]) => (
+                    <span key={label}>
+                      <small>{label}</small>
+                      <strong>{value}</strong>
+                    </span>
+                  ))
+                ) : (
+                  <span>
+                    <small>待迁移记录</small>
+                    <strong>{medicineSampleLabel(mappingSample, mappingSampleIndex)}</strong>
                   </span>
-                ))}
+                )}
+              </div>
+              <div className="preview-conversion">
+                <div>
+                  <span>
+                    二系列来源值
+                    {currentMappingPreview?.sourceDictionaryName
+                      ? ` · ${currentMappingPreview.sourceDictionaryName}`
+                      : ""}
+                  </span>
+                  <strong>
+                    {currentMappingPreview
+                      ? currentMappingPreview.sourceDictionaryText
+                        ? `${currentMappingPreview.sourceDictionaryText}（${currentMappingPreview.original}）`
+                        : `${currentMappingPreview.original ?? "空值"}`
+                      : "尚未选择来源字段"}
+                  </strong>
+                </div>
+                <ArrowRight size={20} />
+                <div>
+                  <span>清洗 / 转换后</span>
+                  <strong>
+                    {currentMappingPreview
+                      ? currentMappingPreview.ignored
+                        ? "已忽略，不写入新系统"
+                        : `${currentMappingPreview.converted ?? "空值"}`
+                      : "—"}
+                  </strong>
+                </div>
+                {currentDictionary && (
+                  <div className="preview-dictionary-value">
+                    <span>新系统字典含义</span>
+                    <strong>
+                      {currentMappingPreview?.ignored
+                        ? "该来源值已确认忽略，不参与目标字典校验"
+                        : currentMappingPreview?.dictionaryText
+                        ? `${currentMappingPreview.dictionaryText}（${currentMappingPreview.dictionaryCode}）`
+                        : currentMappingPreview
+                          ? "当前值尚未匹配到新系统字典"
+                          : "选择来源字段后显示"}
+                    </strong>
+                  </div>
+                )}
               </div>
             </div>
             <div className="screen-actions">
@@ -2003,13 +2389,12 @@ export function App() {
                 </button>
                 <button
                   className="button button--primary"
-                  onClick={() => {
-                    if (fieldIndex < targetFields.length - 1)
-                      setFieldIndex(fieldIndex + 1);
-                    else setStep(5);
-                  }}
+                  disabled={busy === "mapping-save"}
+                  onClick={continueFieldMapping}
                 >
-                  {fieldIndex < targetFields.length - 1
+                  {busy === "mapping-save"
+                    ? "正在固化映射…"
+                    : fieldIndex < targetFields.length - 1
                     ? `确认，继续匹配${targetFields[fieldIndex + 1].label}`
                     : "完成映射，进入校验"}
                   <ArrowRight />
@@ -2048,22 +2433,27 @@ export function App() {
                           <b>{articleKey}</b>
                           {article.text || article.na}
                         </span>
-                        <select
+                        <SearchableSelect
+                          ariaLabel={`${article.text || article.na}费用归并`}
                           value={costMergeMappings[articleKey] || ""}
-                          onChange={(event) =>
+                          onChange={(next) =>
                             setCostMergeMappings((current) => ({
                               ...current,
-                              [articleKey]: event.target.value,
+                              [articleKey]: next,
                             }))
                           }
-                        >
-                          <option value="">未设置，相关药品将校验失败</option>
-                          {(costMergeCatalog?.items || []).map((cost) => (
-                            <option value={cost.key} key={cost.key}>
-                              {cost.text} · {cost.key}
-                            </option>
-                          ))}
-                        </select>
+                          options={[
+                            {
+                              value: "",
+                              label: "未设置，相关药品将校验失败",
+                            },
+                            ...(costMergeCatalog?.items || []).map((cost) => ({
+                              value: cost.key,
+                              label: `${cost.text} · ${cost.key}`,
+                            })),
+                          ]}
+                          searchPlaceholder="过滤费用归并"
+                        />
                       </label>
                     );
                   })}
@@ -2082,19 +2472,26 @@ export function App() {
                     <strong>目标重复时</strong>
                     <small>
                       增量模式会跳过来源未变化的数据；检测到来源已变化时阻止静默覆盖。
-                      新数据仍按药品及商品业务键判重
+                      二系列药品按名称、规格、最小单位自动合并，来源映射仍逐条保留
                     </small>
                   </span>
-                  <select
+                  <SearchableSelect
+                    ariaLabel="目标重复时"
                     value={conflictStrategy}
-                    onChange={(event) =>
-                      setConflictStrategy(event.target.value)
-                    }
-                  >
-                    <option value="INCREMENTAL">新增增量迁移（推荐）</option>
-                    <option value="FAIL">发现重复即报错</option>
-                    <option value="OVERWRITE">覆盖迁移（保存原值，可撤销）</option>
-                  </select>
+                    onChange={setConflictStrategy}
+                    options={[
+                      {
+                        value: "INCREMENTAL",
+                        label: "新增增量迁移（推荐）",
+                      },
+                      { value: "FAIL", label: "发现重复即报错" },
+                      {
+                        value: "OVERWRITE",
+                        label: "覆盖迁移（保存原值，可撤销）",
+                      },
+                    ]}
+                    searchPlaceholder="过滤迁移策略"
+                  />
                 </label>
                 {conflictStrategy === "OVERWRITE" && (
                   <div className="strategy-warning">
@@ -2104,13 +2501,22 @@ export function App() {
                 )}
                 <label className="option-row">
                   <span>
-                    <strong>未匹配到生产厂家</strong>
-                    <small>关闭时该行失败，不会静默制造厂家脏数据</small>
+                    <strong>
+                      {isPhis27Source(sourceDescription)
+                        ? "同步缺失的生产厂家基础数据"
+                        : "未匹配到生产厂家"}
+                    </strong>
+                    <small>
+                      {isPhis27Source(sourceDescription)
+                        ? "按 YK_YPCD.YPCD 关联 YK_CDDZ，厂家先迁入 HI_BD_FAC，商品再引用新厂家主键"
+                        : "关闭时该行失败，不会静默制造厂家脏数据"}
+                    </small>
                   </span>
                   <input
                     className="switch"
                     type="checkbox"
                     checked={allowCreateFactory}
+                    disabled={isPhis27Source(sourceDescription)}
                     onChange={(event) =>
                       setAllowCreateFactory(event.target.checked)
                     }
@@ -2140,59 +2546,81 @@ export function App() {
                           <strong>
                             {field.label}
                             {field.required && <em>*</em>}
+                            <span className="rule-target-location">
+                              （{targetPhysicalLocationText(field)}）
+                            </span>
                           </strong>
                           <small>
                             {mapping[field.key]
-                              ? `来自 ${mapping[field.key]}${fieldRulePreview(field) ? `；${fieldRulePreview(field)}` : ""}`
+                              ? `来自 ${sourceFieldDisplayName(mapping[field.key], columnMetadata[mapping[field.key]])}${sourceFieldPhysicalOrigin(columnMetadata[mapping[field.key]]) ? `（${sourceFieldPhysicalOrigin(columnMetadata[mapping[field.key]])}）` : ""}${fieldRulePreview(field) ? `；${fieldRulePreview(field)}` : ""}`
                               : "尚未匹配来源字段"}
                           </small>
                         </span>
-                        <select
-                          value={rules[field.key]?.transform || "TRIM"}
-                          onChange={(event) =>
+                        <SearchableSelect
+                          ariaLabel={`${field.label}转换规则`}
+                          value={
+                            rules[field.key]?.transform ||
+                            defaultTransformForField(field)
+                          }
+                          onChange={(next) =>
                             setRules((current) => ({
                               ...current,
                               [field.key]: {
                                 ...current[field.key],
-                                transform: event.target.value,
+                                transform: next,
                               },
                             }))
                           }
-                        >
-                          <option value="TRIM">清理首尾空格</option>
-                          <option value="COLLAPSE_WHITESPACE">合并连续空格</option>
-                          <option value="REMOVE_WHITESPACE">移除全部空格</option>
-                          <option value="INTEGER">转为整数</option>
-                          <option value="DECIMAL">转为数字</option>
-                          <option value="BOOLEAN_01">是/否转 1/0</option>
-                          <option value="UPPER">转大写</option>
-                          <option value="LOWER">转小写</option>
-                          <option value="DATE_YYYY_MM_DD">日期转 YYYY-MM-DD</option>
-                        </select>
+                          options={[
+                            { value: "TRIM", label: "清理首尾空格" },
+                            {
+                              value: "COLLAPSE_WHITESPACE",
+                              label: "合并连续空格",
+                            },
+                            {
+                              value: "REMOVE_WHITESPACE",
+                              label: "移除全部空格",
+                            },
+                            { value: "INTEGER", label: "转为整数" },
+                            { value: "DECIMAL", label: "转为数字" },
+                            {
+                              value: "BOOLEAN_01",
+                              label: "常见标志转 1/0（含 1/2、RX/OTC）",
+                            },
+                            { value: "UPPER", label: "转大写" },
+                            { value: "LOWER", label: "转小写" },
+                            {
+                              value: "DATE_YYYY_MM_DD",
+                              label: "日期转 YYYY-MM-DD",
+                            },
+                          ]}
+                          searchPlaceholder="过滤转换规则"
+                        />
                         {dictionaryForField(field) ? (
-                          <select
-                            aria-label={`${field.label}缺失时默认值`}
+                          <SearchableSelect
+                            ariaLabel={`${field.label}缺失时默认值`}
                             value={rules[field.key]?.defaultValue || ""}
-                            onChange={(event) =>
+                            onChange={(next) =>
                               setRules((current) => ({
                                 ...current,
                                 [field.key]: {
                                   ...current[field.key],
-                                  defaultValue: event.target.value,
+                                  defaultValue: next,
                                 },
                               }))
                             }
-                          >
-                            <option value="">缺失时不设置默认值</option>
-                            {dictionaryForField(field).items.map((item) => (
-                              <option
-                                value={dictionaryItemValue(item)}
-                                key={item.id || dictionaryItemValue(item)}
-                              >
-                                {dictionaryItemValue(item)} · {item.text || item.na}
-                              </option>
-                            ))}
-                          </select>
+                            options={[
+                              {
+                                value: "",
+                                label: "缺失时不设置默认值",
+                              },
+                              ...dictionaryForField(field).items.map((item) => ({
+                                value: dictionaryItemValue(item),
+                                label: `${dictionaryItemValue(item)} · ${item.text || item.na}`,
+                              })),
+                            ]}
+                            searchPlaceholder="过滤字典默认值"
+                          />
                         ) : (
                           <input
                             placeholder="缺失时使用默认值"
@@ -2237,7 +2665,7 @@ export function App() {
                             )}
                             <textarea
                               rows={4}
-                              placeholder={"西药 = 1\n中成药 = 2\n停用 = 0"}
+                              placeholder={"西药 = 1\n中成药 = 2\n无需迁移 = <忽略>"}
                               value={rules[field.key]?.valueMappingsText || ""}
                               onChange={(event) =>
                                 setRules((current) => ({
@@ -2270,7 +2698,7 @@ export function App() {
                               英文字母忽略大小写
                             </label>
                             <small>
-                              每行一条，格式为“旧值 = 新值”；先执行值映射，再执行上方格式转换。
+                              每行一条，格式为“旧值 = 新值”；如需明确忽略某个来源值，可填写“旧值 = &lt;忽略&gt;”。
                             </small>
                           </div>
                         </details>
@@ -2282,35 +2710,12 @@ export function App() {
             {batchDetail && (
               <>
                 <SummaryCards batch={batchDetail.batch} />
-                <div className="validation-result">
-                  <div className="table-heading">
-                    <div>
-                      <ListMagnifyingGlass size={20} />
-                      <strong>逐行校验结果</strong>
-                    </div>
-                    <span
-                      className={`status-pill status-pill--${statusMeta(batchDetail.batch.status)[1]}`}
-                    >
-                      {statusMeta(batchDetail.batch.status)[0]}
-                    </span>
-                  </div>
-                  <div className="issue-list">
-                    {batchDetail.rows.slice(0, 12).map((row) => (
-                      <div key={row.rowId}>
-                        <span>第 {row.rowNo} 行</span>
-                        <code>{row.sourceKey}</code>
-                        <span
-                          className={`status-pill status-pill--${statusMeta(row.status)[1]}`}
-                        >
-                          {statusMeta(row.status)[0]}
-                        </span>
-                        <p>
-                          {row.errorMessage || "字段、类型和条件规则均通过"}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                <ValidationResults
+                  detail={batchDetail}
+                  filter={validationResultFilter}
+                  onFilterChange={setValidationResultFilter}
+                  onEditField={openValidationFieldMapping}
+                />
               </>
             )}
             <div className="screen-actions">
@@ -2371,17 +2776,39 @@ export function App() {
                 batchDetail.batch.status,
               ) && (
                 <div className="target-card">
-                  <ConnectionForm
-                    value={targetProfile}
-                    onChange={(profile) => {
-                      setTargetProfile(profile);
-                      setOverwritePreview(null);
-                      setSelectedOverwriteRowIds([]);
-                    }}
-                    title="新系统目标数据库"
-                    drivers={databaseDrivers}
-                    driverPacks={driverPacks}
+                  <ConnectionPicker
+                    purpose="TARGET"
+                    entries={databaseConnections}
+                    selectedId={selectedTargetConnectionId}
+                    onSelect={(connectionId) =>
+                      selectDatabaseConnection(connectionId, "TARGET")
+                    }
+                    onManage={() => setConnectionManagerOpen(true)}
+                    editing={targetConnectionEditing}
+                    onToggleEditing={() =>
+                      setTargetConnectionEditing((current) => !current)
+                    }
                   />
+                  {(!selectedTargetConnectionId || targetConnectionEditing) && (
+                    <ConnectionForm
+                      value={targetProfile}
+                      onChange={(profile) => {
+                        setTargetProfile(profile);
+                        setSelectedTargetConnectionId("");
+                        setTargetConnectionEditing(true);
+                        setOverwritePreview(null);
+                        setSelectedOverwriteRowIds([]);
+                      }}
+                      title="新系统目标数据库"
+                      drivers={databaseDrivers}
+                      driverPacks={driverPacks}
+                      rememberPassword={rememberTargetDatabasePassword}
+                      onRememberPasswordChange={setRememberTargetDatabasePassword}
+                      hasSavedConnection={hasSavedTargetDatabase}
+                      onForgetSaved={forgetTargetDatabaseConnection}
+                      showCredentialPreference={false}
+                    />
+                  )}
                   <div className="target-context">
                     <Field label="租户 ID">
                       <input
@@ -2435,6 +2862,8 @@ export function App() {
                       <Play weight="fill" />
                       {busy === "execute"
                         ? "正在逐行写入…"
+                        : batchDetail.batch.status === "RUNNING"
+                          ? `重新执行中断批次 ${batchDetail.batch.validCount} 行`
                         : batchDetail.batch.conflictStrategy === "OVERWRITE"
                           ? `执行已确认的 ${selectedOverwriteRowIds.length} 行`
                           : `正式迁移 ${batchDetail.batch.validCount} 行`}
@@ -2658,7 +3087,7 @@ export function App() {
             <p>一次检查全部来源与目标字段；修改结果会同步回引导模式。</p>
             <div className="expert-grid">
               <div className="expert-grid__head">
-                <span>新系统字段</span>
+                <span>新系统字段 / 物理落点</span>
                 <span>三方来源字段</span>
                 <span>状态</span>
               </div>
@@ -2667,21 +3096,28 @@ export function App() {
                   <span>
                     <strong>{field.label}</strong>
                     <code>{field.key}</code>
+                    <div className="target-destination target-destination--compact">
+                      <span>新系统落点</span>
+                      {targetLocations(field).map((location) => (
+                        <code key={location}>{location}</code>
+                      ))}
+                    </div>
                   </span>
-                  <select
+                  <SearchableSelect
+                    ariaLabel={`${field.label}来源字段`}
                     value={mapping[field.key] || ""}
-                    onChange={(event) =>
+                    onChange={(next) =>
                       setMapping((current) => ({
                         ...current,
-                        [field.key]: event.target.value,
+                        [field.key]: next,
                       }))
                     }
-                  >
-                    <option value="">不映射</option>
-                    {columns.map((column) => (
-                      <option key={column}>{column}</option>
-                    ))}
-                  </select>
+                    options={[
+                      { value: "", label: "不映射" },
+                      ...sourceFieldOptions,
+                    ]}
+                    searchPlaceholder="按字段名、注释、表名或样例值过滤"
+                  />
                   <span
                     className={`status-pill status-pill--${mapping[field.key] ? "ready" : field.required ? "danger" : "muted"}`}
                   >
@@ -2703,17 +3139,36 @@ export function App() {
               </button>
               <button
                 className="button button--primary"
-                onClick={() => {
-                  setExpert(false);
-                  setStep(5);
-                }}
+                disabled={busy === "mapping-save"}
+                onClick={saveExpertMappingAndContinue}
               >
-                保存并进入校验
+                {busy === "mapping-save" ? "正在固化映射…" : "保存并进入校验"}
               </button>
             </div>
           </aside>
         </>
       )}
+      <ConnectionManager
+        open={connectionManagerOpen}
+        entries={databaseConnections}
+        drivers={databaseDrivers}
+        driverPacks={driverPacks}
+        busy={busy}
+        onClose={() => setConnectionManagerOpen(false)}
+        onSave={saveManagedDatabaseConnection}
+        onDelete={deleteManagedDatabaseConnection}
+        onTest={testManagedDatabaseConnection}
+        onUse={useDatabaseConnection}
+      />
+      <MigrationHistory
+        open={migrationHistoryOpen}
+        batches={historyBatches}
+        detail={historyBatchDetail}
+        busy={busy}
+        onClose={() => setMigrationHistoryOpen(false)}
+        onRefresh={openMigrationHistory}
+        onSelect={loadHistoryBatch}
+      />
       {notice && (
         <div className={`toast toast--${notice.tone}`}>
           {notice.tone === "danger" ? (
@@ -2741,26 +3196,35 @@ function matchScore(column, field) {
     const normalizedAlias = alias
       .toUpperCase()
       .replace(/[^A-Z0-9\u4e00-\u9fa5]/g, "");
+    const lengthSimilarity =
+      Math.min(normalized.length, normalizedAlias.length) /
+      Math.max(normalized.length, normalizedAlias.length);
     // SPEC/DOSE/TYPE 等短字段含义过宽，只允许精确命中，避免误配到监管字段。
     return (
       Math.min(normalized.length, normalizedAlias.length) >= 6 &&
+      lengthSimilarity >= 0.8 &&
       (normalized.includes(normalizedAlias) ||
         normalizedAlias.includes(normalized))
     );
   });
   if (partial) return 82;
   const key = field.key.toUpperCase();
+  const keySimilarity =
+    Math.min(normalized.length, key.length) /
+    Math.max(normalized.length, key.length);
   if (
     Math.min(normalized.length, key.length) >= 6 &&
+    keySimilarity >= 0.8 &&
     (normalized.includes(key) || key.includes(normalized))
   )
     return 72;
-  return 28 + (Math.abs(hash(column + field.key)) % 25);
+  return 0;
 }
 
-function hash(text) {
-  return [...text].reduce(
-    (value, character) => ((value << 5) - value + character.charCodeAt(0)) | 0,
-    0,
+function sourceFieldMatchScore(column, field, metadata = {}) {
+  return Math.max(
+    matchScore(column, field),
+    matchScore(metadata.sourceColumn || "", field),
+    matchScore(metadata.comment || "", field),
   );
 }
