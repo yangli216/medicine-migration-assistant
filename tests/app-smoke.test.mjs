@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 import { transformWithEsbuild } from "vite";
+import * as phosphorIcons from "@phosphor-icons/react";
 
 test("main React flow compiles as JSX", async () => {
   const source = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
@@ -12,17 +13,40 @@ test("main React flow compiles as JSX", async () => {
   assert.match(result.code, /function App\(/);
 });
 
-test("database connection summaries import their status icon", async () => {
-  const source = await readFile(
-    new URL("../src/DatabaseConnections.jsx", import.meta.url),
-    "utf8",
+test("every used Phosphor JSX icon is explicitly imported", async () => {
+  const sourceDirectory = new URL("../src/", import.meta.url);
+  const files = (await readdir(sourceDirectory)).filter((file) =>
+    file.endsWith(".jsx"),
   );
-  const phosphorImport = source.match(
-    /import\s*\{([\s\S]*?)\}\s*from\s*["']@phosphor-icons\/react["']/,
-  )?.[1];
-  assert.ok(phosphorImport, "missing Phosphor icon import block");
-  assert.match(phosphorImport, /\bCheckCircle\b/);
-  assert.match(source, /<CheckCircle\b/);
+  for (const file of files) {
+    const source = await readFile(new URL(file, sourceDirectory), "utf8");
+    const phosphorImport = source.match(
+      /import\s*\{([^}]*)\}\s*from\s*["']@phosphor-icons\/react["']/,
+    )?.[1];
+    if (!phosphorImport) continue;
+    const importedNames = new Set(
+      phosphorImport
+        .split(",")
+        .map((name) => name.trim())
+        .filter(Boolean)
+        .map((name) => name.split(/\s+as\s+/).at(-1)),
+    );
+    const missingIcons = [
+      ...new Set(
+        [...source.matchAll(/<([A-Z][A-Za-z0-9]*)\b/g)]
+          .map((match) => match[1])
+          .filter(
+            (name) =>
+              Object.hasOwn(phosphorIcons, name) && !importedNames.has(name),
+          ),
+      ),
+    ];
+    assert.deepEqual(
+      missingIcons,
+      [],
+      `${file} uses Phosphor icons without importing them`,
+    );
+  }
 });
 
 test("all dropdowns use the searchable combobox and medicine previews use business labels", async () => {

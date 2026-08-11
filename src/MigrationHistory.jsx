@@ -4,6 +4,7 @@ import {
   Info,
   MagnifyingGlass,
   Warning,
+  X,
 } from "@phosphor-icons/react";
 import { SearchableSelect } from "./SearchableSelect";
 
