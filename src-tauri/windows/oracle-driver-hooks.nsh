@@ -3,23 +3,23 @@
   FileWrite $9 "oracle-postinstall-started"
   FileClose $9
   DetailPrint "正在登记应用内置的 Oracle Instant Client ODBC 19.31 驱动..."
-  SetOutPath "$INSTDIR\resources\oracle\instantclient_19_31_bsoft_migration"
-  ExecWait '"$INSTDIR\resources\oracle\instantclient_19_31_bsoft_migration\odbc_install.exe"' $0
-  SetOutPath "$INSTDIR"
-  StrCmp $0 "0" oracle_driver_install_done
-  DetailPrint "Oracle ODBC 驱动登记失败，退出码：$0"
-  MessageBox MB_ICONSTOP|MB_OK "应用内置的 Oracle ODBC 驱动登记失败（退出码 $0）。请确认使用管理员权限安装。"
-  Abort
-oracle_driver_install_done:
+  SetRegView 64
+  WriteRegStr HKLM "SOFTWARE\ODBC\ODBCINST.INI\ODBC Drivers" "Oracle in instantclient_19_31_bsoft_migration" "Installed"
+  WriteRegStr HKLM "SOFTWARE\ODBC\ODBCINST.INI\Oracle in instantclient_19_31_bsoft_migration" "APILevel" "1"
+  WriteRegStr HKLM "SOFTWARE\ODBC\ODBCINST.INI\Oracle in instantclient_19_31_bsoft_migration" "ConnectFunctions" "YYY"
+  WriteRegStr HKLM "SOFTWARE\ODBC\ODBCINST.INI\Oracle in instantclient_19_31_bsoft_migration" "CPTimeout" "60"
+  WriteRegStr HKLM "SOFTWARE\ODBC\ODBCINST.INI\Oracle in instantclient_19_31_bsoft_migration" "Driver" "$INSTDIR\resources\oracle\instantclient_19_31_bsoft_migration\sqora32.dll"
+  WriteRegStr HKLM "SOFTWARE\ODBC\ODBCINST.INI\Oracle in instantclient_19_31_bsoft_migration" "DriverODBCVer" "03.52"
+  WriteRegStr HKLM "SOFTWARE\ODBC\ODBCINST.INI\Oracle in instantclient_19_31_bsoft_migration" "FileUsage" "0"
+  WriteRegStr HKLM "SOFTWARE\ODBC\ODBCINST.INI\Oracle in instantclient_19_31_bsoft_migration" "Setup" "$INSTDIR\resources\oracle\instantclient_19_31_bsoft_migration\sqoras32.dll"
+  WriteRegStr HKLM "SOFTWARE\ODBC\ODBCINST.INI\Oracle in instantclient_19_31_bsoft_migration" "SQLLevel" "1"
   Delete "$TEMP\medicine-migration-oracle-hook.txt"
   DetailPrint "Oracle ODBC 驱动登记完成：Oracle in instantclient_19_31_bsoft_migration"
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  IfFileExists "$INSTDIR\resources\oracle\instantclient_19_31_bsoft_migration\odbc_uninstall.exe" 0 oracle_driver_uninstall_done
   DetailPrint "正在移除应用专用的 Oracle ODBC 驱动登记..."
-  SetOutPath "$INSTDIR\resources\oracle\instantclient_19_31_bsoft_migration"
-  ExecWait '"$INSTDIR\resources\oracle\instantclient_19_31_bsoft_migration\odbc_uninstall.exe"' $0
-  SetOutPath "$INSTDIR"
-oracle_driver_uninstall_done:
+  SetRegView 64
+  DeleteRegValue HKLM "SOFTWARE\ODBC\ODBCINST.INI\ODBC Drivers" "Oracle in instantclient_19_31_bsoft_migration"
+  DeleteRegKey HKLM "SOFTWARE\ODBC\ODBCINST.INI\Oracle in instantclient_19_31_bsoft_migration"
 !macroend
