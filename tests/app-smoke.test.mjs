@@ -240,6 +240,14 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /查看前后数据快照/);
   assert.match(appSource, /不需要重新登录新系统/);
   assert.match(stylesSource, /\.migration-history\s*\{/);
+  assert.match(
+    stylesSource,
+    /\.history-batch-list\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-direction:\s*column;/,
+  );
+  assert.match(
+    stylesSource,
+    /\.history-batch-list\s*>\s*button\s*\{[\s\S]*?flex:\s*0\s+0\s+auto;/,
+  );
   assert.match(appSource, /const createEntry = \(\) =>/);
   assert.match(appSource, /className="connection-editor__content"/);
   assert.match(appSource, /draft\.connectionId[\s\S]*\? "更新连接"[\s\S]*: "保存连接"/);

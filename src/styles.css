@@ -3211,14 +3211,16 @@ button:disabled {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: 10px;
   padding-right: 3px;
   overflow-x: hidden;
   overflow-y: auto;
 }
 .history-batch-list > button {
+  flex: 0 0 auto;
   width: 100%;
   min-width: 0;
   display: grid;
