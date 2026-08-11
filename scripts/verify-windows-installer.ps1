@@ -96,7 +96,7 @@ if (-not (Test-Path $oracleRegistryPath)) {
   throw "Oracle 内置 ODBC 驱动未登记到 64 位系统驱动清单：$oracleDriverName"
 }
 $oracleRegistry = Get-ItemProperty $oracleRegistryPath
-$registeredOracleDriver = ([string]$oracleRegistry.Driver).Trim([char]0)
+$registeredOracleDriver = ([string]$oracleRegistry.Driver) -replace [char]0, ""
 $expectedOracleDriver = Join-Path $oracleDirectory "sqora32.dll"
 if (-not $registeredOracleDriver -or
     -not [System.IO.Path]::GetFullPath($registeredOracleDriver).Equals(

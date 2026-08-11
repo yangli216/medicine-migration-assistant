@@ -44,7 +44,7 @@ Invoke-OracleTool "odbc_install.exe"
 if (-not (Test-Path $driverRegistryPath)) {
   throw "Oracle 官方登记工具执行后未发现 64 位 ODBC 驱动：$driverName"
 }
-$registeredDriver = ([string](Get-ItemProperty $driverRegistryPath).Driver).Trim([char]0)
+$registeredDriver = ([string](Get-ItemProperty $driverRegistryPath).Driver) -replace [char]0, ""
 $expectedDriver = Join-Path $oracleDirectory "sqora32.dll"
 if (-not [System.IO.Path]::GetFullPath($registeredDriver).Equals(
     [System.IO.Path]::GetFullPath($expectedDriver),
