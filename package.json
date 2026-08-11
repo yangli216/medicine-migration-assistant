@@ -8,10 +8,12 @@
     "build": "vite build && node scripts/prepare-sites-build.mjs",
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
-    "desktop:build": "tauri build",
+    "desktop:build": "npm run prepare:oracle-driver && tauri build",
     "preview": "vite preview",
     "test": "node --test tests/transforms.test.mjs tests/dictionary.test.mjs tests/inventory-mapping.test.mjs tests/app-smoke.test.mjs",
     "test:drivers": "node --test tests/driver-delivery.test.mjs",
+    "prepare:oracle-driver": "node scripts/prepare-oracle-windows-driver.mjs",
+    "verify:oracle-driver": "node scripts/prepare-oracle-windows-driver.mjs --verify",
     "verify:macos": "scripts/verify-macos-release.sh",
     "verify:windows": "powershell -ExecutionPolicy Bypass -File scripts/verify-windows-installer.ps1",
     "test:sites": "node --test tests/sites-worker.test.mjs"

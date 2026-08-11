@@ -42,9 +42,9 @@ npm run desktop:build
 
 仓库提供 `.github/workflows/windows-build.yml`。进入 GitHub 仓库的 **Actions → Build Windows installer → Run workflow**，构建完成后下载 `medicine-migration-assistant-windows-x64`，其中包含可直接安装的 NSIS `.exe`。
 
-Windows x64 是驱动准备和安装包验收的第一优先级，macOS Apple Silicon、macOS Intel 依次验证。MySQL 原生协议和 PostgreSQL 通用协议随应用内置；PostgreSQL、openGauss/GaussDB、Vastbase、GBase 8c、KingbaseES 默认无需安装 ODBC。Oracle、达梦、GBase 8a/8s 等厂商 ODBC 不随 Windows 安装包重新分发，连接界面会显示本机检测结果、逐步安装说明和官方下载/文档入口。
+Windows x64 是驱动准备和安装包验收的第一优先级，macOS Apple Silicon、macOS Intel 依次验证。MySQL 原生协议和 PostgreSQL 通用协议随应用内置；PostgreSQL、openGauss/GaussDB、Vastbase、GBase 8c、KingbaseES 默认无需安装 ODBC。Windows x64 安装包同时内置 Oracle Instant Client 19.31 完整 Basic + ODBC，安装时自动登记应用专用驱动，因此会申请管理员权限；达梦、GBase 8a/8s 等厂商 ODBC 仍由项目安装介质或厂商提供。
 
-Windows 流水线不仅生成 NSIS 安装包，还会在干净的 Windows x64 Runner 中执行静默安装、核对安装后程序为 x86-64 PE、实际启动桌面应用，并输出 `windows-install-acceptance.json`。本地 Windows 也可运行：
+Windows 流水线从 Oracle 官方地址下载固定版本驱动并核对 SHA-256，不把大体积厂商文件提交到 Git。它不仅生成 NSIS 安装包，还会在干净的 Windows x64 Runner 中执行静默安装，核对程序为 x86-64 PE、Oracle 许可及运行文件齐全、64 位 ODBC 登记指向应用目录，并实际启动桌面应用，最后输出 `windows-install-acceptance.json`。本地 Windows 也可运行：
 
 ```powershell
 npm run verify:windows
@@ -86,7 +86,7 @@ npm run test:drivers
 
 MySQL 使用应用内置原生协议。PostgreSQL 兼容家族优先使用应用内置的 PostgreSQL 前端协议：PostgreSQL、openGauss/GaussDB、海量 Vastbase G100、南大通用 GBase 8c 和人大金仓 KingbaseES；连接测试、只读查询、表清单、目标结构检查、药品基础数据增量写入和安全撤销均不依赖本机 ODBC。每条药品来源记录在同一事务中完成药品、别名、包装单位、厂家和厂家商品写入，任一步失败整行回滚。特殊版本可在连接表单的高级区域显式配置厂商 ODBC 回退。
 
-Oracle、达梦 DM8、南大通用 GBase 8a/8s 默认使用厂商 64 位 ODBC。GBase 产品必须选择具体分支，不能把 8a/8s 当作 8c 的 PostgreSQL 协议连接。PG 通用协议当前开放药品基础数据增量写入，不开放覆盖写入；机构库存首次盘点仍需按目标数据库版本完成方言验收。目标表结构或字段约束变化时，应同步调整 `src-tauri/src/target.rs`、`src-tauri/src/target_pg.rs`、`src-tauri/src/target_odbc.rs` 和库存写入语句。
+Oracle、达梦 DM8、南大通用 GBase 8a/8s 默认使用 64 位 ODBC。其中 Windows x64 的 Oracle 19.31 驱动已内置并自动登记；保存的 `Oracle 19 ODBC driver` 配置会自动解析为应用专用驱动，不覆盖电脑原有 Oracle 客户端。GBase 产品必须选择具体分支，不能把 8a/8s 当作 8c 的 PostgreSQL 协议连接。PG 通用协议当前开放药品基础数据增量写入，不开放覆盖写入；机构库存首次盘点仍需按目标数据库版本完成方言验收。目标表结构或字段约束变化时，应同步调整 `src-tauri/src/target.rs`、`src-tauri/src/target_pg.rs`、`src-tauri/src/target_odbc.rs` 和库存写入语句。
 
 ## 驱动预置策略
 
@@ -100,12 +100,12 @@ Oracle、达梦 DM8、南大通用 GBase 8a/8s 默认使用厂商 64 位 ODBC。
 | 海量 Vastbase G100 | 通用 PG 前端协议优先 | 已内置；项目专用驱动从安装介质或海量支持获取 |
 | 南大通用 GBase 8c | 通用 PG 前端协议优先 | 已内置；厂商包从 GBase 8c 下载中心获取 |
 | 人大金仓 KingbaseES | 通用 PG 前端协议优先 | 已内置；特殊兼容版本可回退厂商 ODBC |
-| Oracle | Instant Client ODBC 19c/23ai 64 位 | Windows 下载同版本 Basic/Basic Light + ODBC，解压至同一目录并运行 `odbc_install.exe` |
+| Oracle | Instant Client ODBC 19.31 64 位 | Windows x64 安装包内置完整 Basic + ODBC；自动登记和卸载应用专用驱动，保留 Oracle 许可文件 |
 | 达梦 DM8 | 厂商 ODBC | 从达梦官方客户端或项目授权安装介质获取 |
 | 南大通用 GBase 8a | 厂商 ODBC | 从官方下载中心查找；Windows 驱动缺失时按官方说明向技术支持申请 |
 | 南大通用 GBase 8s | 厂商 ODBC | 从官方下载中心或项目安装介质获取 |
 
-厂商驱动二进制必须与应用位数、操作系统和 CPU 架构一致，Windows 统一按 64 位准备。未允许重新分发的厂商驱动只内置配置、检测规则和下载说明，不把授权二进制打入公共安装包。
+厂商驱动二进制必须与应用位数、操作系统和 CPU 架构一致，Windows 统一按 64 位准备。Oracle 包在构建时从官方地址取得、按固定 SHA-256 校验并保持原文件不变；其他未允许重新分发的厂商驱动只内置配置、检测规则和下载说明，不把授权二进制打入公共安装包。
 
 ## 代码结构
 

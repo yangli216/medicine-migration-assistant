@@ -1,6 +1,15 @@
 {
   "bundle": {
     "targets": ["nsis"],
-    "icon": ["icons/icon.ico"]
+    "icon": ["icons/icon.ico"],
+    "resources": {
+      "resources/oracle/instantclient_19_31_bsoft_migration/": "oracle/instantclient_19_31_bsoft_migration/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "windows/oracle-driver-hooks.nsh"
+      }
+    }
   }
 }

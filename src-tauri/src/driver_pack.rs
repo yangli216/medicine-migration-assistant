@@ -54,9 +54,7 @@ pub fn list(installed_drivers: &[String]) -> Result<Vec<DriverPackStatus>, Strin
                     .iter()
                     .any(|keyword| normalized.contains(&keyword.to_lowercase()))
             });
-            let state = if definition.delivery == "bundled"
-                || (definition.delivery == "licensed-bundle" && detected_driver.is_some())
-            {
+            let state = if matches!(definition.delivery.as_str(), "bundled" | "licensed-bundle") {
                 "bundled"
             } else if detected_driver.is_some() {
                 "installed"
@@ -97,9 +95,10 @@ mod tests {
             .iter()
             .find(|pack| pack.database_kind == "oracle")
             .expect("oracle pack");
-        assert_eq!(oracle.version, "19c/23ai · 64 位");
+        assert_eq!(oracle.version, "19.31 · Windows x64");
         assert_eq!(oracle.default_port, 1521);
-        assert_eq!(oracle.state, "profile-ready");
+        assert_eq!(oracle.delivery, "licensed-bundle");
+        assert_eq!(oracle.state, "bundled");
     }
 
     #[test]
@@ -114,13 +113,18 @@ mod tests {
     }
 
     #[test]
-    fn installed_oracle_driver_is_reported_as_installed() {
-        let packs = list(&["Oracle 19 ODBC driver".to_string()]).expect("driver manifest");
+    fn installed_oracle_bundle_reports_the_registered_driver() {
+        let packs = list(&["Oracle in instantclient_19_31_bsoft_migration".to_string()])
+            .expect("driver manifest");
         let oracle = packs
             .iter()
             .find(|pack| pack.database_kind == "oracle")
             .expect("oracle pack");
-        assert_eq!(oracle.state, "installed");
+        assert_eq!(oracle.state, "bundled");
+        assert_eq!(
+            oracle.detected_driver.as_deref(),
+            Some("Oracle in instantclient_19_31_bsoft_migration")
+        );
     }
 
     #[test]

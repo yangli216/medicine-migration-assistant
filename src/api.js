@@ -134,9 +134,9 @@ export async function command(name, args = {}) {
       mockDriverPack("mysql", "MySQL 原生驱动", "内置", "bundled", ""),
       mockDriverPack(
         "oracle",
-        "Oracle Instant Client ODBC 19c",
-        "19c/23ai · 64 位",
-        "profile-ready",
+        "Oracle Instant Client ODBC 19.31",
+        "19.31 · Windows x64",
+        "bundled",
         "Oracle 19 ODBC driver",
       ),
       mockDriverPack(

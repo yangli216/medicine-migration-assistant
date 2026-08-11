@@ -13,6 +13,11 @@ use std::time::Instant;
 
 const QUERY_TIMEOUT_SECONDS: usize = 60;
 const MAX_CELL_BYTES: usize = 64 * 1024;
+const ORACLE_BUNDLED_ALIAS: &str = "Oracle 19 ODBC driver";
+#[cfg(target_os = "windows")]
+const ORACLE_WINDOWS_BUNDLE_DIRECTORY: &str = "instantclient_19_31_bsoft_migration";
+#[cfg(target_os = "windows")]
+const ORACLE_WINDOWS_DRIVER_NAME: &str = "Oracle in instantclient_19_31_bsoft_migration";
 static ODBC_RUNTIME_CONFIGURED: OnceLock<()> = OnceLock::new();
 
 pub fn is_odbc_kind(kind: &str) -> bool {
@@ -39,8 +44,9 @@ pub fn list_installed_drivers() -> Result<Vec<String>, String> {
         .into_iter()
         .map(|driver| driver.description)
         .collect::<Vec<_>>();
+    #[cfg(target_os = "macos")]
     if bundled_oracle_driver_path().is_some() {
-        drivers.push("Oracle 19 ODBC driver".to_string());
+        drivers.push(ORACLE_BUNDLED_ALIAS.to_string());
     }
     drivers.sort();
     drivers.dedup();
@@ -180,13 +186,24 @@ pub fn with_connection<T>(
 
 fn configure_odbc_runtime() {
     ODBC_RUNTIME_CONFIGURED.get_or_init(|| {
+        if std::env::var_os("NLS_LANG").is_none() {
+            std::env::set_var("NLS_LANG", "SIMPLIFIED CHINESE_CHINA.AL32UTF8");
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(directory) = bundled_oracle_runtime_directory() {
+            let existing = std::env::var_os("PATH").unwrap_or_default();
+            let already_present = std::env::split_paths(&existing).any(|entry| entry == directory);
+            if !already_present {
+                let paths = std::iter::once(directory).chain(std::env::split_paths(&existing));
+                if let Ok(value) = std::env::join_paths(paths) {
+                    std::env::set_var("PATH", value);
+                }
+            }
+        }
         #[cfg(target_os = "macos")]
         {
             // Oracle Instant Client otherwise inherits the host locale. On macOS this can make
             // AL32UTF8 Chinese text arrive as question marks even though the database stores it correctly.
-            if std::env::var_os("NLS_LANG").is_none() {
-                std::env::set_var("NLS_LANG", "SIMPLIFIED CHINESE_CHINA.AL32UTF8");
-            }
             let system_ini = Path::new("/usr/local/etc/odbcinst.ini");
             if std::env::var_os("ODBCSYSINI").is_none() && system_ini.is_file() {
                 std::env::set_var("ODBCSYSINI", "/usr/local/etc");
@@ -245,9 +262,19 @@ pub fn inspect_target_schema(profile: &ConnectionProfile) -> Result<TargetReadin
     })
 }
 
-fn bundled_oracle_driver_path() -> Option<PathBuf> {
+fn bundled_oracle_runtime_directory() -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(executable) = std::env::current_exe() {
+        #[cfg(target_os = "windows")]
+        if let Some(application_directory) = executable.parent() {
+            candidates.push(
+                application_directory
+                    .join("resources")
+                    .join("oracle")
+                    .join(ORACLE_WINDOWS_BUNDLE_DIRECTORY),
+            );
+        }
+        #[cfg(target_os = "macos")]
         if let Some(contents) = executable.parent().and_then(Path::parent) {
             candidates.push(
                 contents
@@ -257,16 +284,41 @@ fn bundled_oracle_driver_path() -> Option<PathBuf> {
             );
         }
     }
+    #[cfg(target_os = "windows")]
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("oracle")
+            .join(ORACLE_WINDOWS_BUNDLE_DIRECTORY),
+    );
+    #[cfg(target_os = "macos")]
     candidates.push(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources")
             .join("oracle")
             .join("instantclient_19_16"),
     );
-    candidates
-        .into_iter()
-        .map(|directory| directory.join("libsqora.dylib.19.1"))
-        .find(|driver| driver.is_file())
+    candidates.into_iter().find(|directory| {
+        #[cfg(target_os = "windows")]
+        let driver = directory.join("sqora32.dll");
+        #[cfg(target_os = "macos")]
+        let driver = directory.join("libsqora.dylib.19.1");
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        let driver = directory.join("missing-oracle-driver");
+        driver.is_file()
+    })
+}
+
+fn bundled_oracle_driver_path() -> Option<PathBuf> {
+    bundled_oracle_runtime_directory().map(|directory| {
+        #[cfg(target_os = "windows")]
+        let driver = directory.join("sqora32.dll");
+        #[cfg(target_os = "macos")]
+        let driver = directory.join("libsqora.dylib.19.1");
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        let driver = directory.join("missing-oracle-driver");
+        driver
+    })
 }
 
 fn resolved_driver(profile: &ConnectionProfile) -> String {
@@ -274,8 +326,13 @@ fn resolved_driver(profile: &ConnectionProfile) -> String {
         && profile
             .driver
             .trim()
-            .eq_ignore_ascii_case("Oracle 19 ODBC driver")
+            .eq_ignore_ascii_case(ORACLE_BUNDLED_ALIAS)
     {
+        #[cfg(target_os = "windows")]
+        if bundled_oracle_driver_path().is_some() {
+            return ORACLE_WINDOWS_DRIVER_NAME.to_string();
+        }
+        #[cfg(target_os = "macos")]
         if let Some(path) = bundled_oracle_driver_path() {
             return path.to_string_lossy().into_owned();
         }
@@ -321,10 +378,20 @@ fn validate_driver_registration(
         };
     }
     if normalize_kind(&profile.kind) == "oracle"
-        && driver.eq_ignore_ascii_case("Oracle 19 ODBC driver")
-        && bundled_oracle_driver_path().is_some()
+        && driver.eq_ignore_ascii_case(ORACLE_BUNDLED_ALIAS)
     {
-        return Ok(());
+        #[cfg(target_os = "windows")]
+        if bundled_oracle_driver_path().is_some()
+            && installed
+                .iter()
+                .any(|item| item.eq_ignore_ascii_case(ORACLE_WINDOWS_DRIVER_NAME))
+        {
+            return Ok(());
+        }
+        #[cfg(target_os = "macos")]
+        if bundled_oracle_driver_path().is_some() {
+            return Ok(());
+        }
     }
     if installed
         .iter()
@@ -335,7 +402,7 @@ fn validate_driver_registration(
 
     let platform = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
     let requirement = if normalize_kind(&profile.kind) == "oracle" {
-        "Oracle Instant Client 19c 的 Basic Light 与 ODBC 组件"
+        "应用内置的 Oracle Instant Client 19.31 Basic 与 ODBC 组件"
     } else {
         "数据库厂商提供的 64 位 ODBC 驱动"
     };
@@ -345,7 +412,7 @@ fn validate_driver_registration(
         format!("本机当前可用：{}", installed.join("、"))
     };
     Err(format!(
-        "未检测到 {} 驱动“{driver}”。当前应用只预置了连接配置，驱动文件尚未安装；请先安装适用于 {platform} 的 {requirement}。{detected}",
+        "未检测到 {} 驱动“{driver}”。请修复或重新安装适用于 {platform} 的 {requirement}。{detected}",
         display_kind(&profile.kind)
     ))
 }
@@ -748,8 +815,8 @@ mod tests {
         let mut oracle = profile("oracle");
         oracle.driver = "Oracle in instantclient_19_31".to_string();
         let error = validate_driver_registration(&oracle, &[]).unwrap_err();
-        assert!(error.contains("当前应用只预置了连接配置"));
-        assert!(error.contains("Basic Light 与 ODBC"));
+        assert!(error.contains("请修复或重新安装"));
+        assert!(error.contains("Basic 与 ODBC"));
 
         assert!(validate_driver_registration(
             &oracle,
