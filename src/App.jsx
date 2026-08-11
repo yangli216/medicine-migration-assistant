@@ -81,6 +81,7 @@ import {
 } from "./MigrationResults";
 import { createInventoryRenderers } from "./InventoryReview";
 import { InventoryMigrationScreen } from "./InventoryMigrationScreen";
+import { completeInventoryOrganizationIds } from "./inventoryMapping";
 import {
   MedicineSourceScreen,
   SourceRecognitionScreen,
