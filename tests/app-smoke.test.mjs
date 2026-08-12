@@ -54,12 +54,14 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
     "App.jsx",
     "AppChrome.jsx",
     "DatabaseConnections.jsx",
+    "FieldMappingWorkspace.jsx",
     "InventoryMigrationScreen.jsx",
     "InventoryReview.jsx",
     "MigrationHistory.jsx",
     "MigrationResults.jsx",
     "PrimaryFlowScreens.jsx",
     "migrationFields.js",
+    "fieldMappingStatus.js",
     "migrationPreview.js",
   ];
   const appSource = (
@@ -166,6 +168,16 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /sourceDictionaryText/);
   assert.match(appSource, /columnMetadata=\{columnMetadata\}/);
   assert.match(appSource, /二系列字典 → 新系统字典/);
+  assert.match(appSource, /字段配置导航/);
+  assert.match(appSource, /搜索名称、字段或来源/);
+  assert.match(appSource, /快速跳转目标字段/);
+  assert.match(appSource, /来源已配置/);
+  assert.match(appSource, /就绪 \{readyCount\}\/\{statuses\.length\}/);
+  assert.match(appSource, /全部字段配置总览/);
+  assert.match(appSource, /来源字段和字典项都可在此维护/);
+  assert.match(appSource, /字典 \{status\.dictionaryHandled\}\/\{status\.dictionaryTotal\}/);
+  assert.match(appSource, /详细配置/);
+  assert.match(appSource, /DictionaryMappingEditor/);
   assert.match(appSource, /来源为 NULL、空字符串或仅空格/);
   assert.match(appSource, /EMPTY_VALUE_MAPPING_SOURCE/);
   assert.match(appSource, /一键按含义匹配/);
@@ -173,8 +185,8 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /已忽略，不写入新系统/);
   assert.match(appSource, /该来源值已确认忽略，不参与目标字典校验/);
   assert.match(appSource, /待补充来源含义/);
-  assert.match(appSource, /currentSourceDictionary\.entry/);
-  assert.match(appSource, /currentSourceDictionary\.loadMessage/);
+  assert.match(appSource, /sourceDictionary\?\.entry/);
+  assert.match(appSource, /sourceDictionary\.loadMessage/);
   assert.match(appSource, /每日次数/);
   assert.match(appSource, /candidate\.score >= 70/);
   assert.match(appSource, /\.\.\.sourceFieldOptions/);

@@ -51,7 +51,6 @@ import { SearchableSelect } from "./SearchableSelect";
 import {
   applyFieldRule,
   EMPTY_VALUE_MAPPING_SOURCE,
-  IGNORE_VALUE_MAPPING_TARGET,
   parseValueMappings,
 } from "./transforms";
 import {
@@ -104,6 +103,14 @@ import {
   sourceFieldPhysicalOrigin,
   sourceValueLabel,
 } from "./migrationPreview";
+import {
+  DictionaryMappingEditor,
+  FieldMappingNavigator,
+} from "./FieldMappingWorkspace";
+import {
+  buildFieldMappingStatuses,
+  dictionaryRowsForField,
+} from "./fieldMappingStatus";
 
 function isPhis27Source(description) {
   return description.startsWith("二系列phis内置模板:");
@@ -193,6 +200,7 @@ export function App() {
   const [fieldIndex, setFieldIndex] = useState(0);
   const [mappingSampleIndex, setMappingSampleIndex] = useState(0);
   const [expert, setExpert] = useState(false);
+  const [expertDictionaryFieldKey, setExpertDictionaryFieldKey] = useState("");
   const [allowCreateFactory, setAllowCreateFactory] = useState(false);
   const [conflictStrategy, setConflictStrategy] = useState("INCREMENTAL");
   const [batchDetail, setBatchDetail] = useState(null);
@@ -413,70 +421,41 @@ export function App() {
     rules,
   ]);
   const currentDictionaryRows = useMemo(() => {
-    if (!currentDictionary || !currentSourceField) return [];
-    const configured = parseValueMappings(
-      rules[currentField.key]?.valueMappingsText,
-    ).mappings;
-    const counts = new Map();
-    rows.forEach((row) => {
-      const value = `${row[currentSourceField] ?? ""}`.trim();
-      const sourceValue = value || EMPTY_VALUE_MAPPING_SOURCE;
-      counts.set(sourceValue, (counts.get(sourceValue) || 0) + 1);
+    if (!currentField) return [];
+    return dictionaryRowsForField({
+      columnMetadata,
+      dictionary: currentDictionary,
+      field: currentField,
+      findDictionaryItem,
+      mapping,
+      rows,
+      rules,
+      sourceDictionaryItem,
+      sourceDictionaryPropertySummary,
     });
-    return [...counts.entries()]
-      .map(([sourceValue, count]) => {
-        const sourceIsBlank = sourceValue === EMPTY_VALUE_MAPPING_SOURCE;
-        const sourceItem = sourceDictionaryItem(
-          columnMetadata[currentSourceField],
-          sourceIsBlank ? null : sourceValue,
-        );
-        const directTarget = sourceIsBlank
-          ? null
-          : findDictionaryItem(sourceValue, currentDictionary.items);
-        const semanticTarget = sourceItem?.text
-          ? findDictionaryItem(sourceItem.text, currentDictionary.items)
-          : null;
-        const suggestedTarget = semanticTarget || directTarget;
-        const ignored =
-          Object.prototype.hasOwnProperty.call(configured, sourceValue) &&
-          configured[sourceValue] === null;
-        const fieldRule = rules[currentField.key] || {};
-        const converted = applyFieldRule(sourceIsBlank ? null : sourceValue, {
-          ...fieldRule,
-          transform:
-            fieldRule.transform || defaultTransformForField(currentField),
-          valueMappings: configured,
-        });
-        const convertedTarget = currentDictionary.items.find(
-          (item) => dictionaryItemValue(item) === `${converted ?? ""}`,
-        );
-        const appliedTarget = convertedTarget
-          ? dictionaryItemValue(convertedTarget)
-          : "";
-        return {
-          sourceValue,
-          sourceIsBlank,
-          sourceText: sourceItem?.text || "",
-          sourceProperties: sourceDictionaryPropertySummary(sourceItem),
-          count,
-          appliedTarget,
-          suggestedTarget,
-          ignored,
-          matched: Boolean(appliedTarget) && !ignored,
-        };
-      })
-      .sort(
-        (a, b) =>
-          Number(a.matched || a.ignored) - Number(b.matched || b.ignored),
-      );
   }, [
     columnMetadata,
     currentDictionary,
     currentField,
-    currentSourceField,
+    mapping,
     rows,
     rules,
   ]);
+  const mappingStatuses = useMemo(
+    () =>
+      buildFieldMappingStatuses({
+        columnMetadata,
+        dictionariesById,
+        fields: targetFields,
+        findDictionaryItem,
+        mapping,
+        rows,
+        rules,
+        sourceDictionaryItem,
+        sourceDictionaryPropertySummary,
+      }),
+    [columnMetadata, dictionariesById, mapping, rows, rules],
+  );
 
   const notify = (message, tone = "success") => {
     setNotice({ message, tone });
@@ -1484,6 +1463,7 @@ export function App() {
     try {
       const saved = await persistPhis27MappingProfile();
       setExpert(false);
+      setExpertDictionaryFieldKey("");
       setStep(5);
       if (saved) notify("二系列phis字段映射和转换规则已更新");
     } catch (error) {
@@ -1558,14 +1538,14 @@ export function App() {
     notify(`已为“${field.label}”生成 ${count} 条目标字典映射`);
   }
 
-  function setCurrentDictionaryMapping(sourceValue, targetValue) {
-    if (!currentField) return;
+  function setDictionaryMapping(field, sourceValue, targetValue) {
+    if (!field) return;
     setRules((current) => ({
       ...current,
-      [currentField.key]: {
-        ...current[currentField.key],
+      [field.key]: {
+        ...current[field.key],
         valueMappingsText: replaceValueMappingText(
-          current[currentField.key]?.valueMappingsText,
+          current[field.key]?.valueMappingsText,
           sourceValue,
           targetValue,
         ),
@@ -1573,16 +1553,24 @@ export function App() {
     }));
   }
 
-  function clearCurrentDictionaryMappings() {
-    if (!currentField) return;
+  function clearDictionaryMappings(field) {
+    if (!field) return;
     setRules((current) => ({
       ...current,
-      [currentField.key]: {
-        ...current[currentField.key],
+      [field.key]: {
+        ...current[field.key],
         valueMappingsText: "",
       },
     }));
-    notify(`已清空“${currentField.label}”的字典转换`, "success");
+    notify(`已清空“${field.label}”的字典转换`, "success");
+  }
+
+  function openMappingField(index, closeExpert = false) {
+    setFieldIndex(index);
+    if (closeExpert) {
+      setExpert(false);
+      setExpertDictionaryFieldKey("");
+    }
   }
 
   async function prepareBatch() {
@@ -1969,7 +1957,7 @@ export function App() {
                 <Rows size={26} weight="duotone" />
                 <div>
                   <strong>
-                    已识别 {mappedCount} / {targetFields.length} 个目标字段
+                    来源已配置 {mappedCount} / {targetFields.length} 个目标字段
                   </strong>
                   <div className="progress-track">
                     <span
@@ -1980,11 +1968,41 @@ export function App() {
                   </div>
                 </div>
               </div>
-              <button className="expert-switch" onClick={() => setExpert(true)}>
-                <Code size={19} />
-                专业映射模式
-              </button>
+              <div className="mapping-top__actions">
+                <SearchableSelect
+                  ariaLabel="快速跳转目标字段"
+                  className="mapping-quick-jump"
+                  onChange={(next) =>
+                    openMappingField(
+                      targetFields.findIndex((field) => field.key === next),
+                    )
+                  }
+                  options={mappingStatuses.map((status) => ({
+                    value: status.field.key,
+                    label: status.field.label,
+                    description: `${status.field.group} · ${status.label}`,
+                    meta: status.sourceField
+                      ? `来源：${status.sourceField}`
+                      : targetLocations(status.field).join(" · "),
+                    keywords: `${status.field.key} ${status.field.group} ${status.sourceField}`,
+                  }))}
+                  searchPlaceholder="按名称、字段、分组或来源查找"
+                  value={currentField.key}
+                />
+                <button className="expert-switch" onClick={() => setExpert(true)}>
+                  <Code size={19} />
+                  全部字段总览
+                </button>
+              </div>
             </div>
+            <div className="mapping-workspace">
+              <FieldMappingNavigator
+                currentFieldKey={currentField.key}
+                onSelectField={openMappingField}
+                statuses={mappingStatuses}
+                targetLocations={targetLocations}
+              />
+              <div className="mapping-field-workbench">
             <div className="source-line">
               <Database size={20} />
               <span>来源：</span>
@@ -2141,130 +2159,18 @@ export function App() {
               />
             </div>
             {currentDictionary && currentSourceField && (
-              <section className="dictionary-match-panel">
-                <div className="dictionary-match-panel__heading">
-                  <div>
-                    <strong>二系列字典 → 新系统字典</strong>
-                    <span>
-                      {currentSourceDictionary?.name || "来源字段值"}
-                      {currentSourceDictionary?.entry
-                        ? ` · ${currentSourceDictionary.entry}.${currentSourceDictionary.keyField} → ${currentSourceDictionary.textField}`
-                        : ""}
-                      {` · 本次数据出现 ${currentDictionaryRows.length} 类值${currentDictionaryRows.some((item) => item.sourceIsBlank) ? "（含空值）" : ""} · 已处理 ${currentDictionaryRows.filter((item) => item.matched || item.ignored).length} 个`}
-                    </span>
-                  </div>
-                  <div>
-                    <button
-                      className="button button--secondary"
-                      type="button"
-                      onClick={() => autoMapDictionary(currentField)}
-                    >
-                      <LinkSimple size={16} />
-                      一键按含义匹配
-                    </button>
-                    <button
-                      className="button button--ghost"
-                      type="button"
-                      disabled={!rules[currentField.key]?.valueMappingsText}
-                      onClick={clearCurrentDictionaryMappings}
-                    >
-                      清空转换
-                    </button>
-                  </div>
-                </div>
-                {currentSourceDictionary?.loadStatus === "unavailable" && (
-                  <div className="dictionary-load-note dictionary-load-note--warning">
-                    <Warning size={16} weight="fill" />
-                    <span>{currentSourceDictionary.loadMessage}</span>
-                  </div>
-                )}
-                {currentSourceDictionary?.loadStatus === "empty" && (
-                  <div className="dictionary-load-note">
-                    <Info size={16} />
-                    <span>{currentSourceDictionary.loadMessage}</span>
-                  </div>
-                )}
-                <div className="dictionary-match-list">
-                  {currentDictionaryRows.map((item) => {
-                    const suggestionCode = item.suggestedTarget
-                      ? dictionaryItemValue(item.suggestedTarget)
-                      : "";
-                    return (
-                      <div className="dictionary-match-row" key={item.sourceValue}>
-                        <span className="dictionary-match-source">
-                          <strong>
-                            {item.sourceIsBlank
-                              ? "空值"
-                              : item.sourceText || "待补充来源含义"}
-                          </strong>
-                          <small>
-                            {item.sourceIsBlank
-                              ? `来源为 NULL、空字符串或仅空格 · ${item.count} 条药品`
-                              : `来源编码 ${item.sourceValue} · ${item.count} 条药品`}
-                          </small>
-                          {item.sourceProperties && (
-                            <small title={item.sourceProperties}>
-                              {item.sourceProperties}
-                            </small>
-                          )}
-                        </span>
-                        <ArrowRight size={17} />
-                        <SearchableSelect
-                          ariaLabel={`${item.sourceIsBlank ? "空值" : item.sourceText || item.sourceValue}目标字典值`}
-                          value={
-                            item.ignored
-                              ? IGNORE_VALUE_MAPPING_TARGET
-                              : item.appliedTarget
-                          }
-                          onChange={(next) =>
-                            setCurrentDictionaryMapping(item.sourceValue, next)
-                          }
-                          options={[
-                            {
-                              value: "",
-                              label: suggestionCode
-                                ? `未采用 · 建议 ${item.suggestedTarget.text || item.suggestedTarget.na}（${suggestionCode}）`
-                                : "尚未选择目标字典值",
-                            },
-                            ...(!currentField.required
-                              ? [
-                                  {
-                                    value: IGNORE_VALUE_MAPPING_TARGET,
-                                    label: "忽略此来源值",
-                                    description:
-                                      "目标字段留空，并记录为已人工确认忽略；该值不再触发字典校验。",
-                                  },
-                                ]
-                              : []),
-                            ...currentDictionary.items.map((targetItem) => ({
-                              value: dictionaryItemValue(targetItem),
-                              label: `${targetItem.text || targetItem.na}（${dictionaryItemValue(targetItem)}）`,
-                              keywords: `${targetItem.py || ""} ${targetItem.wb || ""}`,
-                            })),
-                          ]}
-                          searchPlaceholder="按编码、名称或拼音查找"
-                        />
-                        <span
-                          className={`dictionary-match-status ${item.ignored ? "dictionary-match-status--ignored" : item.matched ? "dictionary-match-status--done" : suggestionCode ? "dictionary-match-status--suggested" : ""}`}
-                        >
-                          {item.ignored
-                            ? "已忽略"
-                            : item.matched
-                            ? "已确认"
-                            : suggestionCode
-                              ? "有建议"
-                              : "待确认"}
-                        </span>
-                      </div>
-                    );
-                  })}
-                  {!currentDictionaryRows.length && (
-                    <div className="dictionary-match-empty">
-                      当前数据没有可配置的来源值。
-                    </div>
-                  )}
-                </div>
-              </section>
+              <DictionaryMappingEditor
+                dictionary={currentDictionary}
+                field={currentField}
+                onAutoMap={() => autoMapDictionary(currentField)}
+                onChange={(sourceValue, targetValue) =>
+                  setDictionaryMapping(currentField, sourceValue, targetValue)
+                }
+                onClear={() => clearDictionaryMappings(currentField)}
+                rows={currentDictionaryRows}
+                sourceDictionary={currentSourceDictionary}
+                valueMappingsText={rules[currentField.key]?.valueMappingsText}
+              />
             )}
             <div className="sample-toolbar">
               <div>
@@ -2400,6 +2306,8 @@ export function App() {
                     : "完成映射，进入校验"}
                   <ArrowRight />
                 </button>
+              </div>
+            </div>
               </div>
             </div>
           </section>
@@ -3074,67 +2982,168 @@ export function App() {
 
       {expert && (
         <>
-          <div className="panel-backdrop" onClick={() => setExpert(false)} />
+          <div
+            className="panel-backdrop"
+            onClick={() => {
+              setExpert(false);
+              setExpertDictionaryFieldKey("");
+            }}
+          />
           <aside className="expert-panel">
             <div className="expert-panel__header">
               <div>
                 <span className="eyebrow">专业模式</span>
-                <h2>全部字段映射</h2>
+                <h2>全部字段配置总览</h2>
               </div>
-              <button className="icon-button" onClick={() => setExpert(false)}>
+              <button
+                className="icon-button"
+                onClick={() => {
+                  setExpert(false);
+                  setExpertDictionaryFieldKey("");
+                }}
+              >
                 <X />
               </button>
             </div>
-            <p>一次检查全部来源与目标字段；修改结果会同步回引导模式。</p>
+            <p>来源字段和字典项都可在此维护；也可直接进入任一字段的完整配置。</p>
+            <div className="expert-overview-toolbar">
+              <SearchableSelect
+                ariaLabel="专业模式快速定位字段"
+                onChange={(next) =>
+                  openMappingField(
+                    targetFields.findIndex((field) => field.key === next),
+                    true,
+                  )
+                }
+                options={mappingStatuses.map((status) => ({
+                  value: status.field.key,
+                  label: status.field.label,
+                  description: `${status.field.group} · ${status.label}`,
+                  meta: status.sourceField
+                    ? `来源：${status.sourceField}`
+                    : targetLocations(status.field).join(" · "),
+                  keywords: `${status.field.key} ${status.field.group} ${status.sourceField}`,
+                }))}
+                placeholder="快速查找并进入字段详情"
+                searchPlaceholder="搜索目标字段、物理字段或来源"
+                value=""
+              />
+              <span>
+                <b>{mappingStatuses.filter((item) => item.state === "ready").length}</b>
+                已完成
+              </span>
+              <span className="is-warning">
+                <b>{mappingStatuses.filter((item) => item.state === "dictionary").length}</b>
+                字典待确认
+              </span>
+              <span>
+                <b>{mappingStatuses.filter((item) => ["pending", "optional"].includes(item.state)).length}</b>
+                未配置
+              </span>
+            </div>
             <div className="expert-grid">
               <div className="expert-grid__head">
                 <span>新系统字段 / 物理落点</span>
                 <span>三方来源字段</span>
                 <span>状态</span>
+                <span>配置</span>
               </div>
-              {targetFields.map((field) => (
-                <div key={field.key}>
-                  <span>
-                    <strong>{field.label}</strong>
-                    <code>{field.key}</code>
-                    <div className="target-destination target-destination--compact">
-                      <span>新系统落点</span>
-                      {targetLocations(field).map((location) => (
-                        <code key={location}>{location}</code>
-                      ))}
-                    </div>
-                  </span>
-                  <SearchableSelect
-                    ariaLabel={`${field.label}来源字段`}
-                    value={mapping[field.key] || ""}
-                    onChange={(next) =>
-                      setMapping((current) => ({
-                        ...current,
-                        [field.key]: next,
-                      }))
-                    }
-                    options={[
-                      { value: "", label: "不映射" },
-                      ...sourceFieldOptions,
-                    ]}
-                    searchPlaceholder="按字段名、注释、表名或样例值过滤"
-                  />
-                  <span
-                    className={`status-pill status-pill--${mapping[field.key] ? "ready" : field.required ? "danger" : "muted"}`}
-                  >
-                    {mapping[field.key]
-                      ? "已匹配"
-                      : field.required
-                        ? "待处理"
-                        : "可选"}
-                  </span>
+              {mappingStatuses.map((status) => (
+                <div className="expert-field-block" key={status.field.key}>
+                  <div className="expert-grid__row">
+                    <button
+                      className="expert-field-title"
+                      onClick={() => openMappingField(status.index, true)}
+                      type="button"
+                    >
+                      <strong>{status.field.label}</strong>
+                      <code>{status.field.key}</code>
+                      <span className="target-destination target-destination--compact">
+                        {targetLocations(status.field).map((location) => (
+                          <code key={location}>{location}</code>
+                        ))}
+                      </span>
+                    </button>
+                    <SearchableSelect
+                      ariaLabel={`${status.field.label}来源字段`}
+                      value={mapping[status.field.key] || ""}
+                      onChange={(next) =>
+                        setMapping((current) => ({
+                          ...current,
+                          [status.field.key]: next,
+                        }))
+                      }
+                      options={[
+                        { value: "", label: "不映射" },
+                        ...sourceFieldOptions,
+                      ]}
+                      searchPlaceholder="按字段名、注释、表名或样例值过滤"
+                    />
+                    <span
+                      className={`status-pill status-pill--${status.state === "ready" ? "ready" : status.state === "dictionary" ? "warning" : status.field.required ? "danger" : "muted"}`}
+                    >
+                      {status.label}
+                    </span>
+                    <span className="expert-row-actions">
+                      {status.dictionary && (
+                        <button
+                          className="button button--secondary"
+                          disabled={!status.sourceField}
+                          onClick={() =>
+                            setExpertDictionaryFieldKey((current) =>
+                              current === status.field.key ? "" : status.field.key,
+                            )
+                          }
+                          type="button"
+                        >
+                          字典 {status.dictionaryHandled}/{status.dictionaryTotal}
+                        </button>
+                      )}
+                      <button
+                        className="button button--ghost"
+                        onClick={() => openMappingField(status.index, true)}
+                        type="button"
+                      >
+                        详细配置
+                      </button>
+                    </span>
+                  </div>
+                  {expertDictionaryFieldKey === status.field.key &&
+                    status.dictionary &&
+                    status.sourceField && (
+                      <div className="expert-dictionary-editor">
+                        <DictionaryMappingEditor
+                          dictionary={status.dictionary}
+                          field={status.field}
+                          onAutoMap={() => autoMapDictionary(status.field)}
+                          onChange={(sourceValue, targetValue) =>
+                            setDictionaryMapping(
+                              status.field,
+                              sourceValue,
+                              targetValue,
+                            )
+                          }
+                          onClear={() => clearDictionaryMappings(status.field)}
+                          rows={status.dictionaryRows}
+                          sourceDictionary={
+                            columnMetadata[status.sourceField]?.sourceDictionary || null
+                          }
+                          valueMappingsText={
+                            rules[status.field.key]?.valueMappingsText
+                          }
+                        />
+                      </div>
+                    )}
                 </div>
               ))}
             </div>
             <div className="expert-actions">
               <button
                 className="button button--secondary"
-                onClick={() => setExpert(false)}
+                onClick={() => {
+                  setExpert(false);
+                  setExpertDictionaryFieldKey("");
+                }}
               >
                 返回引导模式
               </button>
