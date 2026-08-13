@@ -2017,6 +2017,58 @@ button:disabled {
 .dictionary-match-list {
   max-height: 270px;
   overflow: auto;
+  overflow-anchor: none;
+}
+.dictionary-match-filters {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 11px;
+  border-bottom: 1px solid #dfeae8;
+  background: #f9fcfb;
+}
+.dictionary-match-filters > div {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.dictionary-match-filters button {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid #d8e5e3;
+  border-radius: 6px;
+  color: #65777d;
+  background: #fff;
+  font-size: 11px;
+}
+.dictionary-match-filters button:hover,
+.dictionary-match-filters button.is-active {
+  border-color: #87c9c1;
+  color: #14796f;
+  background: #eaf8f5;
+}
+.dictionary-match-filters button b {
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  color: #64787c;
+  background: #edf3f2;
+  font-size: 10px;
+  text-align: center;
+}
+.dictionary-match-filters button.is-active b {
+  color: #08776d;
+  background: #d6efeb;
+}
+.dictionary-match-filters > span {
+  color: #82908f;
+  font-size: 10px;
+  white-space: nowrap;
 }
 .dictionary-load-note {
   display: flex;
@@ -2633,6 +2685,59 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 17px;
+}
+.validation-running {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 13px 15px;
+  border: 1px solid #95d6ce;
+  border-radius: 8px;
+  color: var(--teal-800);
+  background: #effaf8;
+}
+.validation-running > div {
+  display: grid;
+  gap: 3px;
+}
+.validation-running span,
+.validation-running small {
+  color: #637b7d;
+  font-size: 11px;
+}
+.validation-running small {
+  white-space: nowrap;
+}
+.validation-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 10px;
+  color: #6b7888;
+  font-size: 11px;
+}
+.validation-pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.validation-pagination button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid #cbdadd;
+  border-radius: 6px;
+  color: #40556b;
+  background: #fff;
+}
+.validation-pagination button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .validation-result__heading > div {
   flex-wrap: wrap;

@@ -125,6 +125,7 @@ const initialTargetSystemUrl = "http://10.17.18.88:8000/rbmh-phis/";
 
 export function App() {
   const fileInput = useRef(null);
+  const prepareBatchLock = useRef(false);
   const inventoryExecutionLock = useRef(false);
   const inventoryUndoLock = useRef(false);
   const [runtime, setRuntime] = useState(
@@ -213,10 +214,24 @@ export function App() {
     useState("INVALID");
   const [validationFieldContext, setValidationFieldContext] = useState(null);
   const [busy, setBusy] = useState("");
+  const [prepareElapsedSeconds, setPrepareElapsedSeconds] = useState(0);
   const [notice, setNotice] = useState(null);
   const [databaseDrivers, setDatabaseDrivers] = useState([]);
   const [driverPacks, setDriverPacks] = useState([]);
   const [phis27MappingStatus, setPhis27MappingStatus] = useState(null);
+
+  useEffect(() => {
+    if (busy !== "prepare") {
+      setPrepareElapsedSeconds(0);
+      return undefined;
+    }
+    const startedAt = Date.now();
+    const updateElapsed = () =>
+      setPrepareElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [busy]);
 
   useEffect(() => {
     command("app_health")
@@ -455,6 +470,13 @@ export function App() {
         sourceDictionaryPropertySummary,
       }),
     [columnMetadata, dictionariesById, mapping, rows, rules],
+  );
+  const unresolvedDictionaryStatuses = mappingStatuses.filter(
+    (status) => status.configured && status.dictionaryPending > 0,
+  );
+  const unresolvedDictionaryValueCount = unresolvedDictionaryStatuses.reduce(
+    (total, status) => total + status.dictionaryPending,
+    0,
   );
 
   const notify = (message, tone = "success") => {
@@ -1446,6 +1468,13 @@ export function App() {
       setFieldIndex(fieldIndex + 1);
       return;
     }
+    const unresolved = unresolvedDictionaryStatuses[0];
+    if (unresolved) {
+      setFieldIndex(unresolved.index);
+      return fail(
+        `映射阶段还有 ${unresolvedDictionaryValueCount} 个字典值待确认；已定位到“${unresolved.field.label}”，请完成匹配或明确忽略`,
+      );
+    }
     setBusy("mapping-save");
     try {
       const saved = await persistPhis27MappingProfile();
@@ -1459,6 +1488,13 @@ export function App() {
   }
 
   async function saveExpertMappingAndContinue() {
+    const unresolved = unresolvedDictionaryStatuses[0];
+    if (unresolved) {
+      setExpertDictionaryFieldKey(unresolved.field.key);
+      return fail(
+        `映射阶段还有 ${unresolvedDictionaryValueCount} 个字典值待确认；已展开“${unresolved.field.label}”的字典配置`,
+      );
+    }
     setBusy("mapping-save");
     try {
       const saved = await persistPhis27MappingProfile();
@@ -1506,24 +1542,7 @@ export function App() {
     );
     const count = Object.keys(additions).length;
     if (!count) {
-      const directCount = new Set(
-        rows
-          .map((row) => `${row[sourceField] ?? ""}`.trim())
-          .filter(Boolean),
-      );
-      const hasBlank = rows.some(
-        (row) => `${row[sourceField] ?? ""}`.trim() === "",
-      );
-      const allDirect =
-        !hasBlank &&
-        [...directCount].every((value) =>
-          dictionary.items.some(
-            (item) => dictionaryItemValue(item) === value,
-          ),
-        );
-      return allDirect
-        ? notify("来源编码已与新系统字典一致，无需额外转换")
-        : fail("没有找到可安全自动匹配的字典含义，请人工确认未匹配项");
+      return fail("没有找到含义一致的字典项；相同编码不会自动视为相同含义，请人工确认未匹配项");
     }
     setRules((current) => ({
       ...current,
@@ -1574,6 +1593,17 @@ export function App() {
   }
 
   async function prepareBatch() {
+    if (prepareBatchLock.current) return;
+    const unresolvedDictionary = mappingStatuses.find(
+      (status) => status.configured && status.dictionaryPending > 0,
+    );
+    if (unresolvedDictionary) {
+      openMappingField(unresolvedDictionary.index);
+      setStep(4);
+      return fail(
+        `${unresolvedDictionary.field.label}还有 ${unresolvedDictionary.dictionaryPending} 个来源字典值未确认，请完成匹配或明确忽略后再校验`,
+      );
+    }
     const invalidMapping = targetFields
       .map((field) => ({
         field,
@@ -1613,8 +1643,14 @@ export function App() {
             "PHIS27",
         )
       : sourceName;
+    prepareBatchLock.current = true;
     setBusy("prepare");
     try {
+      await new Promise((resolve) =>
+        window.requestAnimationFrame(() =>
+          window.requestAnimationFrame(resolve),
+        ),
+      );
       if (phis27Source) await persistPhis27MappingProfile();
       const detail = await command("prepare_migration_batch", {
         request: {
@@ -1644,6 +1680,7 @@ export function App() {
     } catch (error) {
       fail(error);
     } finally {
+      prepareBatchLock.current = false;
       setBusy("");
     }
   }
@@ -2071,7 +2108,7 @@ export function App() {
                   onClick={() => autoMapDictionary(currentField)}
                 >
                   <LinkSimple size={17} />
-                  按名称/编码自动生成转换
+                  按含义自动生成转换
                 </button>
               </div>
             )}
@@ -2303,7 +2340,9 @@ export function App() {
                     ? "正在固化映射…"
                     : fieldIndex < targetFields.length - 1
                     ? `确认，继续匹配${targetFields[fieldIndex + 1].label}`
-                    : "完成映射，进入校验"}
+                    : unresolvedDictionaryValueCount
+                      ? `处理 ${unresolvedDictionaryValueCount} 个待确认字典值`
+                      : "完成映射，进入校验"}
                   <ArrowRight />
                 </button>
               </div>
@@ -2627,9 +2666,22 @@ export function App() {
                 />
               </>
             )}
+            {busy === "prepare" && (
+              <div className="validation-running" role="status" aria-live="polite">
+                <CircleNotch className="is-spinning" size={25} weight="bold" />
+                <div>
+                  <strong>正在校验 {rows.length} 条待迁移数据</strong>
+                  <span>
+                    正在逐行转换、核对字典并保存校验结果，已用时 {prepareElapsedSeconds} 秒
+                  </span>
+                </div>
+                <small>窗口会保持响应，请勿重复点击或关闭应用</small>
+              </div>
+            )}
             <div className="screen-actions">
               <button
                 className="button button--secondary"
+                disabled={busy === "prepare"}
                 onClick={() => setStep(4)}
               >
                 <ArrowLeft />
@@ -2639,6 +2691,7 @@ export function App() {
                 {batchDetail && (
                   <button
                     className="button button--secondary"
+                    disabled={busy === "prepare"}
                     onClick={() => setBatchDetail(null)}
                   >
                     调整后重新校验
@@ -2650,7 +2703,7 @@ export function App() {
                   onClick={batchDetail ? () => setStep(6) : prepareBatch}
                 >
                   {busy === "prepare"
-                    ? "正在校验…"
+                    ? `正在校验 ${prepareElapsedSeconds} 秒`
                     : batchDetail
                       ? "确认结果，配置目标库"
                       : "开始试迁移校验"}
@@ -3152,7 +3205,11 @@ export function App() {
                 disabled={busy === "mapping-save"}
                 onClick={saveExpertMappingAndContinue}
               >
-                {busy === "mapping-save" ? "正在固化映射…" : "保存并进入校验"}
+                {busy === "mapping-save"
+                  ? "正在固化映射…"
+                  : unresolvedDictionaryValueCount
+                    ? `处理 ${unresolvedDictionaryValueCount} 个待确认字典值`
+                    : "保存并进入校验"}
               </button>
             </div>
           </aside>

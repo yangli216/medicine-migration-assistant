@@ -66,6 +66,25 @@ test("maps a legacy dictionary code through its semantic text", () => {
   );
 });
 
+test("never treats a shared code as a shared meaning", () => {
+  assert.deepEqual(
+    buildDictionaryValueMappings(
+      ["25"],
+      [{ key: "25", text: "滴剂" }],
+      [{ key: "25", text: "粉剂" }],
+    ),
+    {},
+  );
+  assert.deepEqual(
+    buildDictionaryValueMappings(
+      ["24"],
+      [{ key: "25", text: "滴剂" }],
+      [{ key: "24", text: "滴剂" }],
+    ),
+    { 24: "25" },
+  );
+});
+
 test("maps common legacy 1/2 and RX/OTC flags to target 1/0 semantics", () => {
   const sourceItems = [
     { key: "1", text: "处方药品（RX）" },
@@ -77,8 +96,12 @@ test("maps common legacy 1/2 and RX/OTC flags to target 1/0 semantics", () => {
   ];
   assert.deepEqual(
     buildDictionaryValueMappings(["1", "2"], targetItems, sourceItems),
-    { "2": "0" },
+    { "1": "1", "2": "0" },
   );
+});
+
+test("stores an explicit same-code confirmation", () => {
+  assert.equal(replaceValueMappingText("", "25", "25"), "25 = 25");
 });
 
 test("builds safe PHIS27 preset mappings for fixed and dynamic dictionaries", () => {
@@ -174,7 +197,10 @@ test("replaces or clears one visual dictionary mapping", () => {
     replaceValueMappingText("1 = A\n2 = B", "1", "C"),
     "2 = B\n1 = C",
   );
-  assert.equal(replaceValueMappingText("1 = A\n2 = B", "1", "1"), "2 = B");
+  assert.equal(
+    replaceValueMappingText("1 = A\n2 = B", "1", "1"),
+    "2 = B\n1 = 1",
+  );
   assert.equal(
     replaceValueMappingText("1 = A", null, "UNKNOWN"),
     "1 = A\n<空值> = UNKNOWN",

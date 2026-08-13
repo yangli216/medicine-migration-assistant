@@ -38,6 +38,17 @@ export function findDictionaryItem(value, items = []) {
   return matches.length === 1 ? matches[0] : null;
 }
 
+export function findDictionaryItemByMeaning(value, items = []) {
+  const source = normalized(value);
+  if (!source) return null;
+  const matches = items.filter((item) =>
+    [item.text, item.na]
+      .filter(Boolean)
+      .some((meaning) => normalized(meaning) === source),
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
+
 function booleanMeaning(value) {
   const text = normalized(value);
   if (!text) return null;
@@ -77,10 +88,12 @@ export function buildDictionaryValueMappings(
     const sourceItem = findDictionaryItem(source, sourceItems);
     const sourceMeaning = sourceItem?.text || sourceItem?.na || source;
     const item =
-      findDictionaryItem(sourceMeaning, items) ||
+      findDictionaryItemByMeaning(sourceMeaning, items) ||
       findBooleanDictionaryItem(booleanMeaning(sourceMeaning), items);
     const target = item ? dictionaryItemValue(item) : "";
-    if (target && source !== target) mappings[source] = target;
+    // Keep same-code mappings as explicit semantic confirmations. A shared key alone
+    // is not evidence that two independently maintained dictionaries mean the same thing.
+    if (target) mappings[source] = target;
   });
   return mappings;
 }
@@ -118,7 +131,7 @@ export function replaceValueMappingText(
       return normalized(lineSource) !== normalized(source);
     });
   const target = `${targetValue}`.trim();
-  if (target && target !== source) lines.push(`${source} = ${target}`);
+  if (target) lines.push(`${source} = ${target}`);
   return lines.join("\n");
 }
 

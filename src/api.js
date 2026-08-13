@@ -670,6 +670,7 @@ function mockTargetDictionaryCatalog() {
       { targetField: "sdAllergy", dictionaryId: "rbmh.base.med.sdAllergy" },
       { targetField: "sdStorage", dictionaryId: "phis.storageType" },
       { targetField: "sdRound", dictionaryId: "rbmh.base.med.roundingStrategy" },
+      { targetField: "sdDps", dictionaryId: "rbmh.base.med.dispensingMethod" },
       { targetField: "dftUsage", dictionaryId: "rbmh.base.med.usage" },
       { targetField: "dftFreq", dictionaryId: "rbmh.base.freq" },
     ],
@@ -717,6 +718,12 @@ function mockTargetDictionaryCatalog() {
         ["1", "每次发药数量取整"],
         ["2", "每天发药数量取整"],
         ["3", "不取整"],
+      ]),
+      dictionary("rbmh.base.med.dispensingMethod", [
+        ["1", "药房发药"],
+        ["2", "病区发药"],
+        ["3", "门诊发药"],
+        ["9", "其他"],
       ]),
       dictionary("rbmh.base.med.usage", [
         ["100", "口服"],

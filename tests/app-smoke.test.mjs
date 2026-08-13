@@ -91,6 +91,10 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
     new URL("../src-tauri/src/lib.rs", import.meta.url),
     "utf8",
   );
+  const localStoreSource = await readFile(
+    new URL("../src-tauri/src/local_store.rs", import.meta.url),
+    "utf8",
+  );
   assert.doesNotMatch(`${appSource}\n${selectSource}`, /<(?:select|datalist)\b/i);
   assert.match(appSource, /<SearchableSelect/);
   assert.match(appSource, /DRUG_NAME: "药品名称"/);
@@ -181,6 +185,14 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /来源为 NULL、空字符串或仅空格/);
   assert.match(appSource, /EMPTY_VALUE_MAPPING_SOURCE/);
   assert.match(appSource, /一键按含义匹配/);
+  assert.match(appSource, /字典匹配状态筛选/);
+  assert.match(appSource, /全部/);
+  assert.match(appSource, /未匹配/);
+  assert.match(appSource, /已匹配/);
+  assert.match(appSource, /已忽略/);
+  assert.match(appSource, /按来源出现顺序固定展示，操作后不重排/);
+  assert.match(appSource, /映射阶段还有/);
+  assert.match(appSource, /待确认字典值/);
   assert.match(appSource, /忽略此来源值/);
   assert.match(appSource, /已忽略，不写入新系统/);
   assert.match(appSource, /该来源值已确认忽略，不参与目标字典校验/);
@@ -286,7 +298,12 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /返回校验结果/);
   assert.match(appSource, /setMappingSampleIndex\(row\.rowNo - 1\)/);
   assert.match(appSource, /detail\.batch\.failCount > 0 \? "INVALID" : "VALIDATED"/);
-  assert.match(appSource, /当前显示 \{visibleRows\.length\} 条/);
+  assert.match(appSource, /当前显示 \{rangeStart\}–\{rangeEnd\}/);
+  assert.match(appSource, /每页最多 \{pageSize\} 条，所有结果均可逐页查看/);
+  assert.match(appSource, /正在校验 \{rows\.length\} 条待迁移数据/);
+  assert.match(appSource, /const prepareBatchLock = useRef\(false\)/);
+  assert.match(rustAppSource, /async fn prepare_migration_batch/);
+  assert.match(localStoreSource, /pub fn insert_prepared_batch/);
   assert.doesNotMatch(appSource, /batchDetail\.rows\.slice\(0, 12\)/);
   assert.match(stylesSource, /\.issue-list__row--danger p/);
   assert.match(stylesSource, /\.validation-jump-context/);

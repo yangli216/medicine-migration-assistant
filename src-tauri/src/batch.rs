@@ -181,17 +181,15 @@ pub fn prepare_batch(
         updated_at: now,
         finished_at: None,
     };
-    store.insert_batch(
+    store.insert_prepared_batch(
         &batch,
         &serde_json::to_string(&json!({
             "fieldMappings": request.mappings,
             "costMergeMappings": request.cost_merge_mappings
         }))
         .map_err(|error| error.to_string())?,
+        &rows,
     )?;
-    for row in &rows {
-        store.insert_row(row)?;
-    }
     let trace_id = new_object_id();
     store.audit_event(
         &batch_id,

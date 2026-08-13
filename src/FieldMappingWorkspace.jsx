@@ -18,6 +18,19 @@ const mappingFilters = [
   { key: "READY", label: "已完成" },
 ];
 
+const dictionaryFilters = [
+  { key: "ALL", label: "全部" },
+  { key: "UNMATCHED", label: "未匹配" },
+  { key: "MATCHED", label: "已匹配" },
+  { key: "IGNORED", label: "已忽略" },
+];
+
+function dictionaryRowState(item) {
+  if (item.ignored) return "IGNORED";
+  if (item.matched) return "MATCHED";
+  return "UNMATCHED";
+}
+
 function filterStatus(status, filter) {
   if (filter === "PENDING") {
     return ["pending", "optional"].includes(status.state);
@@ -161,8 +174,20 @@ export function DictionaryMappingEditor({
   sourceDictionary,
   valueMappingsText,
 }) {
+  const [filter, setFilter] = useState("ALL");
   if (!dictionary) return null;
   const handled = rows.filter((item) => item.matched || item.ignored).length;
+  const filterCounts = Object.fromEntries(
+    dictionaryFilters.map(({ key }) => [
+      key,
+      key === "ALL"
+        ? rows.length
+        : rows.filter((item) => dictionaryRowState(item) === key).length,
+    ]),
+  );
+  const visibleRows = rows.filter(
+    (item) => filter === "ALL" || dictionaryRowState(item) === filter,
+  );
   return (
     <section className="dictionary-match-panel">
       <div className="dictionary-match-panel__heading">
@@ -203,8 +228,25 @@ export function DictionaryMappingEditor({
           <span>{sourceDictionary.loadMessage}</span>
         </div>
       )}
+      <div className="dictionary-match-filters">
+        <div aria-label="字典匹配状态筛选" role="group">
+          {dictionaryFilters.map((item) => (
+            <button
+              aria-pressed={filter === item.key}
+              className={filter === item.key ? "is-active" : ""}
+              key={item.key}
+              onClick={() => setFilter(item.key)}
+              type="button"
+            >
+              {item.label}
+              <b>{filterCounts[item.key]}</b>
+            </button>
+          ))}
+        </div>
+        <span>按来源出现顺序固定展示，操作后不重排</span>
+      </div>
       <div className="dictionary-match-list">
-        {rows.map((item) => {
+        {visibleRows.map((item) => {
           const suggestionCode = item.suggestedTarget
             ? dictionaryItemValue(item.suggestedTarget)
             : "";
@@ -266,8 +308,12 @@ export function DictionaryMappingEditor({
             </div>
           );
         })}
-        {!rows.length && (
-          <div className="dictionary-match-empty">当前数据没有可配置的来源值。</div>
+        {!visibleRows.length && (
+          <div className="dictionary-match-empty">
+            {rows.length
+              ? `当前没有${dictionaryFilters.find((item) => item.key === filter)?.label || "符合条件的"}项。`
+              : "当前数据没有可配置的来源值。"}
+          </div>
         )}
       </div>
     </section>

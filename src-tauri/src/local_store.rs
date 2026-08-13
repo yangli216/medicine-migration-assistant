@@ -924,6 +924,83 @@ impl LocalStore {
         Ok(())
     }
 
+    pub fn insert_prepared_batch(
+        &self,
+        batch: &MigrationBatch,
+        mapping_json: &str,
+        rows: &[MigrationRow],
+    ) -> Result<(), String> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                r#"INSERT INTO migration_batch(
+                batch_id,batch_name,source_type,source_name,source_description,conflict_strategy,
+                allow_create_factory,idempotency_key,mapping_json,status,total_count,valid_count,
+                success_count,fail_count,skip_count,created_at,updated_at,finished_at
+            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)"#,
+                params![
+                    batch.batch_id,
+                    batch.batch_name,
+                    batch.source_type,
+                    batch.source_name,
+                    batch.source_description,
+                    batch.conflict_strategy,
+                    batch.allow_create_factory as i32,
+                    batch.idempotency_key,
+                    mapping_json,
+                    batch.status,
+                    batch.total_count,
+                    batch.valid_count,
+                    batch.success_count,
+                    batch.fail_count,
+                    batch.skip_count,
+                    batch.created_at,
+                    batch.updated_at,
+                    batch.finished_at
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        {
+            let mut statement = transaction
+                .prepare_cached(
+                    r#"INSERT INTO migration_row(
+                    row_id,batch_id,row_no,source_key,source_hash,status,raw_json,normalized_json,
+                    error_code,error_message,id_med,id_med_unit,id_fac,id_med_pro,retry_count,updated_at
+                ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)"#,
+                )
+                .map_err(|error| error.to_string())?;
+            for row in rows {
+                statement
+                    .execute(params![
+                        row.row_id,
+                        row.batch_id,
+                        row.row_no,
+                        row.source_key,
+                        row.source_hash,
+                        row.status,
+                        Value::Object(row.raw_data.clone()).to_string(),
+                        Value::Object(row.normalized_data.clone()).to_string(),
+                        row.error_code,
+                        row.error_message,
+                        row.id_med,
+                        row.id_med_unit,
+                        row.id_fac,
+                        row.id_med_pro,
+                        row.retry_count,
+                        row.updated_at
+                    ])
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
     pub fn update_row_result(&self, row: &MigrationRow) -> Result<(), String> {
         let connection = self
             .connection

@@ -1,4 +1,7 @@
-import { dictionaryItemValue } from "./dictionary.js";
+import {
+  dictionaryItemValue,
+  findDictionaryItemByMeaning,
+} from "./dictionary.js";
 import { defaultTransformForField } from "./migrationFields.js";
 import {
   applyFieldRule,
@@ -40,16 +43,17 @@ export function dictionaryRowsForField({
         columnMetadata[sourceField],
         sourceIsBlank ? null : sourceValue,
       );
-      const directTarget = sourceIsBlank
-        ? null
-        : findDictionaryItem(sourceValue, dictionary.items);
-      const semanticTarget = sourceItem?.text
-        ? findDictionaryItem(sourceItem.text, dictionary.items)
+      const sourceMeaning = sourceItem?.text || sourceItem?.na || "";
+      const semanticTarget = sourceMeaning
+        ? findDictionaryItemByMeaning(sourceMeaning, dictionary.items)
         : null;
-      const suggestedTarget = semanticTarget || directTarget;
+      const suggestedTarget = semanticTarget;
+      const explicitlyConfigured = Object.prototype.hasOwnProperty.call(
+        configured,
+        sourceValue,
+      );
       const ignored =
-        Object.prototype.hasOwnProperty.call(configured, sourceValue) &&
-        configured[sourceValue] === null;
+        explicitlyConfigured && configured[sourceValue] === null;
       const fieldRule = rules[field.key] || {};
       const converted = applyFieldRule(sourceIsBlank ? null : sourceValue, {
         ...fieldRule,
@@ -59,13 +63,18 @@ export function dictionaryRowsForField({
       const convertedTarget = dictionary.items.find(
         (item) => dictionaryItemValue(item) === `${converted ?? ""}`,
       );
-      const appliedTarget = convertedTarget
-        ? dictionaryItemValue(convertedTarget)
-        : "";
+      const sameCodeAndMeaning =
+        !sourceIsBlank &&
+        semanticTarget &&
+        dictionaryItemValue(semanticTarget) === sourceValue;
+      const appliedTarget =
+        convertedTarget && (explicitlyConfigured || sameCodeAndMeaning)
+          ? dictionaryItemValue(convertedTarget)
+          : "";
       return {
         sourceValue,
         sourceIsBlank,
-        sourceText: sourceItem?.text || "",
+        sourceText: sourceMeaning,
         sourceProperties: sourceDictionaryPropertySummary(sourceItem),
         count,
         appliedTarget,
@@ -73,11 +82,7 @@ export function dictionaryRowsForField({
         ignored,
         matched: Boolean(appliedTarget) && !ignored,
       };
-    })
-    .sort(
-      (a, b) =>
-        Number(a.matched || a.ignored) - Number(b.matched || b.ignored),
-    );
+    });
 }
 
 export function buildFieldMappingStatuses({

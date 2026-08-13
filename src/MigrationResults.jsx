@@ -1,4 +1,5 @@
-import { LinkSimple, ListMagnifyingGlass } from "@phosphor-icons/react";
+import { useEffect, useMemo, useState } from "react";
+import { CaretLeft, CaretRight, LinkSimple, ListMagnifyingGlass } from "@phosphor-icons/react";
 import { fieldsMentionedInValidationError } from "./migrationFields";
 import { sourceValueLabel } from "./migrationPreview";
 import { statusMeta } from "./MigrationHistory";
@@ -58,6 +59,8 @@ export function ValidationResults({
   onFilterChange,
   onEditField,
 }) {
+  const pageSize = 100;
+  const [page, setPage] = useState(0);
   const filters = [
     ["INVALID", "校验失败", detail.batch.failCount, "danger"],
     ["VALIDATED", "可迁移", detail.batch.validCount, "ready"],
@@ -66,11 +69,26 @@ export function ValidationResults({
       : []),
     ["ALL", "全部", detail.batch.totalCount, "neutral"],
   ];
-  const visibleRows =
-    filter === "ALL"
-      ? detail.rows
-      : detail.rows.filter((row) => row.status === filter);
+  const visibleRows = useMemo(
+    () =>
+      filter === "ALL"
+        ? detail.rows
+        : detail.rows.filter((row) => row.status === filter),
+    [detail.rows, filter],
+  );
+  const pageCount = Math.max(1, Math.ceil(visibleRows.length / pageSize));
+  const safePage = Math.min(page, pageCount - 1);
+  const pageRows = visibleRows.slice(
+    safePage * pageSize,
+    (safePage + 1) * pageSize,
+  );
+  const rangeStart = visibleRows.length ? safePage * pageSize + 1 : 0;
+  const rangeEnd = Math.min((safePage + 1) * pageSize, visibleRows.length);
   const hasFailures = detail.batch.failCount > 0;
+
+  useEffect(() => {
+    setPage(0);
+  }, [filter, detail.batch.batchId]);
 
   return (
     <div className="validation-result">
@@ -79,7 +97,7 @@ export function ValidationResults({
           <ListMagnifyingGlass size={20} />
           <strong>逐行校验结果</strong>
           <small>
-            当前显示 {visibleRows.length} 条，共 {detail.batch.totalCount} 条
+            当前显示 {rangeStart}–{rangeEnd}，筛选结果 {visibleRows.length} 条，共 {detail.batch.totalCount} 条
           </small>
         </div>
         <span
@@ -106,7 +124,7 @@ export function ValidationResults({
       </div>
       <div className="issue-list">
         {visibleRows.length ? (
-          visibleRows.map((row) => {
+          pageRows.map((row) => {
             const issueFields = fieldsMentionedInValidationError(
               row.errorMessage,
             );
@@ -148,6 +166,34 @@ export function ValidationResults({
           <div className="issue-list__empty">当前筛选下没有记录</div>
         )}
       </div>
+      {pageCount > 1 && (
+        <div className="validation-pagination" aria-label="校验结果分页">
+          <span>每页最多 {pageSize} 条，所有结果均可逐页查看</span>
+          <div>
+            <button
+              type="button"
+              disabled={safePage === 0}
+              onClick={() => setPage((current) => Math.max(0, current - 1))}
+              aria-label="上一页"
+            >
+              <CaretLeft size={15} />
+              上一页
+            </button>
+            <strong>{safePage + 1} / {pageCount}</strong>
+            <button
+              type="button"
+              disabled={safePage >= pageCount - 1}
+              onClick={() =>
+                setPage((current) => Math.min(pageCount - 1, current + 1))
+              }
+              aria-label="下一页"
+            >
+              下一页
+              <CaretRight size={15} />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

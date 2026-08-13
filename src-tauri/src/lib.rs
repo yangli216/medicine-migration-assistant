@@ -316,7 +316,7 @@ fn inspect_phis27_inventory(
 }
 
 #[tauri::command]
-fn prepare_migration_batch(
+async fn prepare_migration_batch(
     store: State<'_, LocalStore>,
     client: State<'_, target_system::TargetSystemClient>,
     request: PrepareBatchRequest,
