@@ -1,6 +1,7 @@
 import {
   dictionaryItemValue,
-  findDictionaryItemByMeaning,
+  findDictionarySemanticMatch,
+  rankDictionarySemanticMatches,
 } from "./dictionary.js";
 import { defaultTransformForField } from "./migrationFields.js";
 import {
@@ -44,9 +45,13 @@ export function dictionaryRowsForField({
         sourceIsBlank ? null : sourceValue,
       );
       const sourceMeaning = sourceItem?.text || sourceItem?.na || "";
-      const semanticTarget = sourceMeaning
-        ? findDictionaryItemByMeaning(sourceMeaning, dictionary.items)
+      const semanticMatch = sourceMeaning
+        ? findDictionarySemanticMatch(sourceMeaning, dictionary.items)
         : null;
+      const semanticCandidates = sourceMeaning
+        ? rankDictionarySemanticMatches(sourceMeaning, dictionary.items)
+        : [];
+      const semanticTarget = semanticMatch?.item || null;
       const suggestedTarget = semanticTarget;
       const explicitlyConfigured = Object.prototype.hasOwnProperty.call(
         configured,
@@ -79,6 +84,13 @@ export function dictionaryRowsForField({
         count,
         appliedTarget,
         suggestedTarget,
+        suggestionConfidence: semanticMatch?.score || 0,
+        suggestionReason: semanticMatch?.reason || "",
+        suggestedCandidates: semanticCandidates.map((candidate) => ({
+          target: candidate.item,
+          confidence: candidate.score,
+          reason: candidate.reason,
+        })),
         ignored,
         matched: Boolean(appliedTarget) && !ignored,
       };

@@ -1554,7 +1554,7 @@ export function App() {
         ),
       },
     }));
-    notify(`已为“${field.label}”生成 ${count} 条目标字典映射`);
+    notify(`已为“${field.label}”生成 ${count} 条高置信语义映射；歧义项仍保留人工确认`);
   }
 
   function setDictionaryMapping(field, sourceValue, targetValue) {

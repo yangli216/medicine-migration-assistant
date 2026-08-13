@@ -39,14 +39,125 @@ export function findDictionaryItem(value, items = []) {
 }
 
 export function findDictionaryItemByMeaning(value, items = []) {
-  const source = normalized(value);
-  if (!source) return null;
-  const matches = items.filter((item) =>
-    [item.text, item.na]
-      .filter(Boolean)
-      .some((meaning) => normalized(meaning) === source),
+  return findDictionarySemanticMatch(value, items)?.item || null;
+}
+
+const SAFE_MEDICAL_SEMANTIC_GROUPS = [
+  ["胶囊", "胶囊剂"],
+  ["片", "片剂"],
+  ["颗粒", "颗粒剂"],
+  ["滴丸", "滴丸剂"],
+  ["软膏", "软膏剂"],
+  ["乳膏", "乳膏剂"],
+  ["凝胶", "凝胶剂"],
+  ["喷雾", "喷雾剂"],
+  ["气雾", "气雾剂"],
+  ["贴剂", "贴膏", "贴膏剂"],
+  ["口服", "内服", "口服给药"],
+  ["直肠给药", "直肠用药", "肛门给药"],
+  ["舌下给药", "舌下含服", "舌下"],
+  ["静脉注射", "静注"],
+  ["静脉滴注", "静滴", "静脉输注", "静脉点滴"],
+  ["肌肉注射", "肌内注射", "肌注"],
+  ["皮下注射", "皮下注"],
+  ["皮内注射", "皮内注"],
+  ["吸入给药", "吸入", "雾化吸入"],
+  ["局部用药", "局部给药", "外用"],
+  ["阴道用药", "阴道给药"],
+  ["滴眼", "眼用"],
+  ["滴鼻", "鼻用"],
+  ["含化", "口含", "含服"],
+  ["每日一次", "每天一次", "一日一次", "1日1次", "qd"],
+  ["每日两次", "每天两次", "一日两次", "1日2次", "bid"],
+  ["每日三次", "每天三次", "一日三次", "1日3次", "tid"],
+  ["每日四次", "每天四次", "一日四次", "1日4次", "qid"],
+  ["隔日一次", "隔天一次", "qod"],
+  ["必要时", "需要时", "按需", "prn"],
+  ["睡前", "临睡前", "hs"],
+  ["饭前", "餐前", "ac"],
+  ["饭后", "餐后", "pc"],
+  ["上午", "早晨", "早上", "am"],
+  ["下午", "晚上", "pm"],
+  ["常温", "室温", "常温保存", "室温保存"],
+  ["冷藏", "冷藏保存"],
+  ["冷冻", "冷冻保存"],
+  ["甲", "甲类"],
+  ["乙", "乙类"],
+  ["丙", "丙类"],
+  ["处方药", "处方药品", "rx"],
+  ["非处方药", "非处方药品", "otc"],
+  ["病区发药", "住院发药"],
+  ["门诊发药", "门诊药房发药"],
+];
+
+function compactMeaning(value) {
+  return normalized(value).replace(/[\s,，.。·、/\\_\-—:：;；()（）\[\]【】]/gu, "");
+}
+
+function meaningWithoutCodeQualifier(value) {
+  return compactMeaning(
+    `${value ?? ""}`.replace(/[（(][a-z\d\s/_-]+[）)]/giu, ""),
   );
-  return matches.length === 1 ? matches[0] : null;
+}
+
+function semanticGroupKey(value) {
+  const source = compactMeaning(value);
+  if (!source) return "";
+  const index = SAFE_MEDICAL_SEMANTIC_GROUPS.findIndex((group) =>
+    group.some((alias) => compactMeaning(alias) === source),
+  );
+  return index >= 0 ? `medical-${index}` : "";
+}
+
+export function findDictionarySemanticMatch(value, items = []) {
+  const candidates = rankDictionarySemanticMatches(value, items);
+  if (!candidates.length) return null;
+  const best = candidates[0];
+  const equallyGood = candidates.filter((candidate) => candidate.score === best.score);
+  return equallyGood.length === 1 ? best : null;
+}
+
+export function rankDictionarySemanticMatches(value, items = []) {
+  const source = normalized(value);
+  if (!source) return [];
+  const sourceCompact = compactMeaning(value);
+  const sourceWithoutQualifier = meaningWithoutCodeQualifier(value);
+  const sourceGroup = semanticGroupKey(value);
+  const candidates = items.flatMap((item, sourceOrder) => {
+    const meanings = [...new Set([item.text, item.na].filter(Boolean))];
+    let best = null;
+    meanings.forEach((meaning) => {
+      let score = 0;
+      let reason = "";
+      if (normalized(meaning) === source) {
+        score = 100;
+        reason = "中文含义一致";
+      } else if (compactMeaning(meaning) === sourceCompact) {
+        score = 98;
+        reason = "忽略空格和标点后一致";
+      } else if (
+        sourceWithoutQualifier &&
+        meaningWithoutCodeQualifier(meaning) === sourceWithoutQualifier
+      ) {
+        score = 96;
+        reason = "忽略编码或缩写注释后一致";
+      } else if (
+        sourceGroup &&
+        semanticGroupKey(meaning) === sourceGroup
+      ) {
+        score = 94;
+        reason = "常用医学同义表达";
+      }
+      if (score > (best?.score || 0)) {
+        best = { item, score, reason, sourceOrder };
+      }
+    });
+    return best ? [best] : [];
+  });
+  return candidates.sort(
+    (left, right) =>
+      right.score - left.score || left.sourceOrder - right.sourceOrder,
+  );
 }
 
 function booleanMeaning(value) {
@@ -88,7 +199,7 @@ export function buildDictionaryValueMappings(
     const sourceItem = findDictionaryItem(source, sourceItems);
     const sourceMeaning = sourceItem?.text || sourceItem?.na || source;
     const item =
-      findDictionaryItemByMeaning(sourceMeaning, items) ||
+      findDictionarySemanticMatch(sourceMeaning, items)?.item ||
       findBooleanDictionaryItem(booleanMeaning(sourceMeaning), items);
     const target = item ? dictionaryItemValue(item) : "";
     // Keep same-code mappings as explicit semantic confirmations. A shared key alone

@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import { CaretDown, Check, MagnifyingGlass } from "@phosphor-icons/react";
 import { createPortal } from "react-dom";
 
@@ -10,6 +10,7 @@ function normalizeOption(option) {
       keywords: option,
       description: "",
       meta: "",
+      group: "",
     };
   }
   return {
@@ -18,6 +19,7 @@ function normalizeOption(option) {
     keywords: `${option.keywords ?? ""}`,
     description: `${option.description ?? ""}`,
     meta: `${option.meta ?? ""}`,
+    group: `${option.group ?? ""}`,
     disabled: Boolean(option.disabled),
   };
 }
@@ -219,27 +221,33 @@ export function SearchableSelect({
             </div>
             <div className="searchable-select__options" id={listboxId} role="listbox">
               {visibleOptions.map((option, index) => (
-                <button
-                  aria-disabled={option.disabled}
-                  aria-selected={option.value === `${value ?? ""}`}
-                  className={`searchable-select__option ${option.custom ? "searchable-select__option--custom" : ""} ${option.disabled ? "is-disabled" : ""}`}
-                  data-active={activeIndex === index}
-                  disabled={option.disabled}
-                  key={`${option.custom ? "custom" : "option"}-${option.value}`}
-                  onClick={() => choose(option)}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  role="option"
-                  type="button"
-                >
-                  <span className="searchable-select__option-copy">
-                    <strong>{option.label}</strong>
-                    {option.description && <small>{option.description}</small>}
-                    {option.meta && <em>{option.meta}</em>}
-                  </span>
-                  {option.value === `${value ?? ""}` && (
-                    <Check size={16} weight="bold" />
+                <Fragment key={`${option.custom ? "custom" : "option"}-${option.value}`}>
+                  {option.group && option.group !== visibleOptions[index - 1]?.group && (
+                    <div className="searchable-select__group" role="presentation">
+                      {option.group}
+                    </div>
                   )}
-                </button>
+                  <button
+                    aria-disabled={option.disabled}
+                    aria-selected={option.value === `${value ?? ""}`}
+                    className={`searchable-select__option ${option.custom ? "searchable-select__option--custom" : ""} ${option.disabled ? "is-disabled" : ""}`}
+                    data-active={activeIndex === index}
+                    disabled={option.disabled}
+                    onClick={() => choose(option)}
+                    onMouseEnter={() => setActiveIndex(index)}
+                    role="option"
+                    type="button"
+                  >
+                    <span className="searchable-select__option-copy">
+                      <strong>{option.label}</strong>
+                      {option.description && <small>{option.description}</small>}
+                      {option.meta && <em>{option.meta}</em>}
+                    </span>
+                    {option.value === `${value ?? ""}` && (
+                      <Check size={16} weight="bold" />
+                    )}
+                  </button>
+                </Fragment>
               ))}
               {!displayedOptions.length && (
                 <div className="searchable-select__empty">{emptyText}</div>

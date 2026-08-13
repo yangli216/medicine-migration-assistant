@@ -2131,6 +2131,18 @@ button:disabled {
   height: 34px;
   font-size: 12px;
 }
+.searchable-select__group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 10px 4px;
+  border-bottom: 1px solid #e4ecee;
+  color: #708190;
+  background: #f5f9f9;
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+}
 .dictionary-match-status {
   justify-self: end;
   padding: 3px 7px;

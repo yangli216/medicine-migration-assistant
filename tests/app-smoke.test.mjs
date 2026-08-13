@@ -191,6 +191,10 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /已匹配/);
   assert.match(appSource, /已忽略/);
   assert.match(appSource, /按来源出现顺序固定展示，操作后不重排/);
+  assert.match(appSource, /推荐匹配（按置信度排序）/);
+  assert.match(appSource, /其他字典项（保持原顺序）/);
+  assert.match(selectSource, /searchable-select__group/);
+  assert.match(stylesSource, /\.searchable-select__group/);
   assert.match(appSource, /映射阶段还有/);
   assert.match(appSource, /待确认字典值/);
   assert.match(appSource, /忽略此来源值/);

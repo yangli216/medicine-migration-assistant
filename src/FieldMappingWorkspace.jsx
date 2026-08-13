@@ -250,6 +250,20 @@ export function DictionaryMappingEditor({
           const suggestionCode = item.suggestedTarget
             ? dictionaryItemValue(item.suggestedTarget)
             : "";
+          const recommendedCodes = new Set(
+            (item.suggestedCandidates || []).map(({ target }) =>
+              dictionaryItemValue(target),
+            ),
+          );
+          const recommendedOptions = (item.suggestedCandidates || []).map(
+            ({ target, confidence, reason }) => ({
+              value: dictionaryItemValue(target),
+              label: `${target.text || target.na}（${dictionaryItemValue(target)}）`,
+              description: `${reason} · 置信度 ${confidence}%`,
+              keywords: `${target.py || ""} ${target.wb || ""}`,
+              group: "推荐匹配（按置信度排序）",
+            }),
+          );
           return (
             <div className="dictionary-match-row" key={item.sourceValue}>
               <span className="dictionary-match-source">
@@ -272,23 +286,35 @@ export function DictionaryMappingEditor({
                 ariaLabel={`${item.sourceIsBlank ? "空值" : item.sourceText || item.sourceValue}目标字典值`}
                 onChange={(next) => onChange(item.sourceValue, next)}
                 options={[
+                  ...recommendedOptions,
                   {
                     value: "",
                     label: suggestionCode
                       ? `未采用 · 建议 ${item.suggestedTarget.text || item.suggestedTarget.na}（${suggestionCode}）`
                       : "尚未选择目标字典值",
+                    description: suggestionCode
+                      ? `${item.suggestionReason} · 置信度 ${item.suggestionConfidence}%`
+                      : "",
+                    group: "匹配操作",
                   },
                   ...(!field.required
                     ? [{
                         value: IGNORE_VALUE_MAPPING_TARGET,
                         label: "忽略此来源值",
                         description: "目标字段留空，并记录为已人工确认忽略；该值不再触发字典校验。",
+                        group: "匹配操作",
                       }]
                     : []),
-                  ...dictionary.items.map((targetItem) => ({
+                  ...dictionary.items
+                    .filter(
+                      (targetItem) =>
+                        !recommendedCodes.has(dictionaryItemValue(targetItem)),
+                    )
+                    .map((targetItem) => ({
                     value: dictionaryItemValue(targetItem),
                     label: `${targetItem.text || targetItem.na}（${dictionaryItemValue(targetItem)}）`,
                     keywords: `${targetItem.py || ""} ${targetItem.wb || ""}`,
+                    group: "其他字典项（保持原顺序）",
                   })),
                 ]}
                 searchPlaceholder="按编码、名称或拼音查找"
@@ -302,7 +328,7 @@ export function DictionaryMappingEditor({
                   : item.matched
                     ? "已确认"
                     : suggestionCode
-                      ? "有建议"
+                      ? `${item.suggestionConfidence}% 建议`
                       : "待确认"}
               </span>
             </div>

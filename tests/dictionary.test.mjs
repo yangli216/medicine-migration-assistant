@@ -4,6 +4,8 @@ import {
   buildDictionaryValueMappings,
   buildPhis27PresetRules,
   findDictionaryItem,
+  findDictionarySemanticMatch,
+  rankDictionarySemanticMatches,
   mergeValueMappingText,
   replaceValueMappingText,
   recommendCostMergeMappings,
@@ -82,6 +84,58 @@ test("never treats a shared code as a shared meaning", () => {
       [{ key: "24", text: "滴剂" }],
     ),
     { 24: "25" },
+  );
+});
+
+test("matches safe medical synonyms without relying on shared codes", () => {
+  const targetItems = [
+    { key: "25", text: "胶囊剂" },
+    { key: "402", text: "静脉滴注" },
+    { key: "QD", text: "每日一次" },
+    { key: "2", text: "病区发药" },
+  ];
+  assert.deepEqual(
+    buildDictionaryValueMappings(
+      ["A", "B", "C", "D"],
+      targetItems,
+      [
+        { key: "A", text: "胶囊" },
+        { key: "B", text: "静滴" },
+        { key: "C", text: "每天一次" },
+        { key: "D", text: "住院发药" },
+      ],
+    ),
+    { A: "25", B: "402", C: "QD", D: "2" },
+  );
+  assert.equal(findDictionarySemanticMatch("静滴", targetItems)?.score, 94);
+  assert.equal(
+    findDictionarySemanticMatch("处方药品（RX）", [
+      { key: "1", text: "处方药品" },
+    ])?.reason,
+    "忽略编码或缩写注释后一致",
+  );
+});
+
+test("rejects ambiguous semantic suggestions", () => {
+  assert.equal(
+    findDictionarySemanticMatch("每天一次", [
+      { key: "A", text: "每日一次" },
+      { key: "B", text: "一日一次" },
+    ]),
+    null,
+  );
+});
+
+test("ranks semantic candidates by confidence and preserves dictionary order for ties", () => {
+  const ranked = rankDictionarySemanticMatches("胶囊", [
+    { key: "A", text: "胶囊剂" },
+    { key: "B", text: "胶囊" },
+    { key: "C", text: "胶囊剂" },
+    { key: "D", text: "注射剂" },
+  ]);
+  assert.deepEqual(
+    ranked.map(({ item, score }) => [item.key, score]),
+    [["B", 100], ["A", 94], ["C", 94]],
   );
 });
 

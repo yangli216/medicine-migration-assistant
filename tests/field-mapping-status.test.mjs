@@ -153,3 +153,35 @@ test("invalid dispensing method is pending during field mapping", () => {
   assert.equal(status.dictionaryRows[0].sourceValue, "6");
   assert.equal(status.dictionaryRows[0].count, 2);
 });
+
+test("dictionary suggestion exposes safe semantic confidence and reason", () => {
+  const [status] = buildFieldMappingStatuses({
+    columnMetadata: {
+      FORM_CODE: {
+        sourceDictionary: { items: [{ key: "CAP", text: "胶囊" }] },
+      },
+    },
+    dictionariesById: {
+      dose: { dicId: "dose", items: [{ key: "2", text: "胶囊剂" }] },
+    },
+    fields: [field],
+    findDictionaryItem,
+    mapping: { sdDose: "FORM_CODE" },
+    rows: [{ FORM_CODE: "CAP" }],
+    rules: { sdDose: { valueMappingsText: "" } },
+    sourceDictionaryItem: (metadata, value) =>
+      metadata.sourceDictionary.items.find((item) => item.key === value),
+    sourceDictionaryPropertySummary: () => "",
+  });
+
+  assert.equal(status.dictionaryRows[0].suggestedTarget.key, "2");
+  assert.equal(status.dictionaryRows[0].suggestionConfidence, 94);
+  assert.equal(status.dictionaryRows[0].suggestionReason, "常用医学同义表达");
+  assert.deepEqual(
+    status.dictionaryRows[0].suggestedCandidates.map((item) => [
+      item.target.key,
+      item.confidence,
+    ]),
+    [["2", 94]],
+  );
+});
