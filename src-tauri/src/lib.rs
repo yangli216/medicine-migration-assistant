@@ -338,6 +338,19 @@ async fn execute_migration_batch(
         return Err("库存批次必须使用“首次盘点”专用执行入口，已阻止误写药品基础表".into());
     }
     let (tenant_id, operator_id) = client.execution_identity()?;
+    let invalid_count = detail
+        .rows
+        .iter()
+        .filter(|row| row.status == "INVALID")
+        .count();
+    if !request.failed_only && invalid_count > 0 {
+        if !request.skip_invalid_rows {
+            return Err(format!(
+                "本批次还有 {invalid_count} 条校验失败数据；请返回校验页修正，或明确选择“仅迁移校验通过的数据”"
+            ));
+        }
+        batch::skip_invalid_rows(&store, &request.batch_id, &operator_id)?;
+    }
     // Base medicine data is tenant-wide: identity comes exclusively from the authenticated
     // system session, and organization-private scope is deliberately disabled for this task.
     request.tenant_id = tenant_id;

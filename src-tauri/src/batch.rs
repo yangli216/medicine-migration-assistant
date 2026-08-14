@@ -210,6 +210,101 @@ pub fn prepare_batch(
     store.load_batch(&batch_id)
 }
 
+pub fn skip_invalid_rows(
+    store: &LocalStore,
+    batch_id: &str,
+    operator_id: &str,
+) -> Result<BatchDetail, String> {
+    let detail = store.load_batch(batch_id)?;
+    let invalid_rows = detail
+        .rows
+        .iter()
+        .filter(|row| row.status == "INVALID")
+        .cloned()
+        .collect::<Vec<_>>();
+    if invalid_rows.is_empty() {
+        return Ok(detail);
+    }
+
+    let validation_skipped_count = invalid_rows.len();
+    let trace_id = new_object_id();
+    for mut row in invalid_rows {
+        let before = json!({
+            "status": row.status,
+            "errorCode": row.error_code,
+            "errorMessage": row.error_message
+        });
+        row.status = "SKIPPED".into();
+        row.updated_at = Utc::now().to_rfc3339();
+        store.update_row_result(&row)?;
+        store.audit_event(
+            batch_id,
+            &row.row_id,
+            "VALIDATION_SKIP",
+            "migration_row",
+            &row.row_id,
+            "SKIPPED",
+            before,
+            json!({
+                "status": "SKIPPED",
+                "reason": "USER_CONFIRMED_VALIDATION_SKIP"
+            }),
+            "用户确认仅迁移校验通过的数据，本行保留原校验原因并跳过写入",
+            operator_id,
+            &trace_id,
+        )?;
+    }
+
+    let updated = store.load_batch(batch_id)?;
+    let valid = updated
+        .rows
+        .iter()
+        .filter(|row| row.status == "VALIDATED")
+        .count();
+    let success = updated
+        .rows
+        .iter()
+        .filter(|row| row.status == "SUCCESS")
+        .count();
+    let failed = updated
+        .rows
+        .iter()
+        .filter(|row| matches!(row.status.as_str(), "FAILED" | "INVALID"))
+        .count();
+    let skipped = updated
+        .rows
+        .iter()
+        .filter(|row| row.status == "SKIPPED")
+        .count();
+    store.update_batch_counts(
+        batch_id,
+        &updated.batch.status,
+        valid,
+        success,
+        failed,
+        skipped,
+        false,
+    )?;
+    store.audit_event(
+        batch_id,
+        "",
+        "VALIDATION_SKIP_CONFIRM",
+        "migration_batch",
+        batch_id,
+        "SKIPPED",
+        json!({"invalidCount": validation_skipped_count}),
+        json!({
+            "validationSkippedCount": validation_skipped_count,
+            "totalSkippedCount": skipped,
+            "remainingFailureCount": failed
+        }),
+        "已确认跳过校验失败行，正式执行仅处理校验通过的数据",
+        operator_id,
+        &trace_id,
+    )?;
+    store.load_batch(batch_id)
+}
+
 fn source_duplicate_count(source: &serde_json::Map<String, Value>) -> usize {
     source
         .get("SOURCE_DUPLICATE_COUNT")
@@ -296,7 +391,8 @@ fn phis27_identity_errors(
 #[cfg(test)]
 mod tests {
     use super::{
-        phis27_base_merge_key, phis27_identity_errors, prepare_batch, source_duplicate_count,
+        phis27_base_merge_key, phis27_identity_errors, prepare_batch, skip_invalid_rows,
+        source_duplicate_count,
     };
     use crate::local_store::LocalStore;
     use crate::model::{MigrationBatch, MigrationRow, PrepareBatchRequest};
@@ -317,6 +413,68 @@ mod tests {
             .clone();
         assert_eq!(source_duplicate_count(&duplicate), 2);
         assert_eq!(source_duplicate_count(&ordinary), 1);
+    }
+
+    #[test]
+    fn confirmed_validation_failures_become_audited_skips() {
+        let store = LocalStore::open(Path::new(":memory:")).unwrap();
+        let valid = json!({
+            "_sourceKey":"VALID-1","naMed":"阿莫西林胶囊","sdMed":"1",
+            "idCstmg":"63aa8b1b3c6f491981ba4221","unitPre":"粒","spec":"0.25g",
+            "dose":"0.25","unitDose":"g","sdDose":"1","dftUsage":"100"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let invalid = json!({
+            "_sourceKey":"INVALID-1","sdMed":"1",
+            "idCstmg":"63aa8b1b3c6f491981ba4221","unitPre":"粒","spec":"0.25g",
+            "dose":"0.25","unitDose":"g","sdDose":"1","dftUsage":"100"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let prepared = prepare_batch(
+            &store,
+            PrepareBatchRequest {
+                batch_name: "skip-invalid".into(),
+                source_type: "DATABASE".into(),
+                source_name: "source".into(),
+                source_description: String::new(),
+                conflict_strategy: "INCREMENTAL".into(),
+                allow_create_factory: false,
+                idempotency_key: "skip-invalid-key".into(),
+                mappings: Vec::new(),
+                cost_merge_mappings: Map::new(),
+                rows: vec![valid, invalid],
+            },
+            &HashMap::new(),
+            "tenant",
+        )
+        .unwrap();
+        assert_eq!(prepared.batch.valid_count, 1);
+        assert_eq!(prepared.batch.fail_count, 1);
+
+        let updated = skip_invalid_rows(&store, &prepared.batch.batch_id, "operator").unwrap();
+        assert_eq!(updated.batch.valid_count, 1);
+        assert_eq!(updated.batch.fail_count, 0);
+        assert_eq!(updated.batch.skip_count, 1);
+        let skipped = updated
+            .rows
+            .iter()
+            .find(|row| row.source_key == "INVALID-1")
+            .unwrap();
+        assert_eq!(skipped.status, "SKIPPED");
+        assert_eq!(skipped.error_code, "VALIDATION_ERROR");
+        assert!(!skipped.error_message.is_empty());
+        assert!(updated
+            .audits
+            .iter()
+            .any(|audit| audit.operation == "VALIDATION_SKIP" && audit.row_id == skipped.row_id));
+        assert!(updated
+            .audits
+            .iter()
+            .any(|audit| audit.operation == "VALIDATION_SKIP_CONFIRM"));
     }
 
     #[test]

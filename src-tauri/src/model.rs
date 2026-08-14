@@ -160,6 +160,8 @@ pub struct ExecuteBatchRequest {
     pub selected_row_ids: Vec<String>,
     #[serde(default)]
     pub overwrite_preview_confirmed: bool,
+    #[serde(default)]
+    pub skip_invalid_rows: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

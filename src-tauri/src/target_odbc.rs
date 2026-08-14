@@ -177,6 +177,7 @@ pub fn execute_batch(
                 "failedOnly":request.failed_only,
                 "selectedRowCount":request.selected_row_ids.len(),
                 "overwritePreviewConfirmed":request.overwrite_preview_confirmed,
+                "skipInvalidRows":request.skip_invalid_rows,
                 "databaseKind":request.target.kind,
                 "targetIdentity":target_identity(&request.target)
             }),

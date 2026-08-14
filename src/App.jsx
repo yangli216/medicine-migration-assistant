@@ -40,6 +40,7 @@ import {
   ConnectionForm,
   ConnectionManager,
   ConnectionPicker,
+  Field,
   connectionEndpoint,
   connectionSupports,
   databaseKinds,
@@ -212,6 +213,8 @@ export function App() {
   const [activeResultTab, setActiveResultTab] = useState("rows");
   const [validationResultFilter, setValidationResultFilter] =
     useState("INVALID");
+  const [skipInvalidRowsOnExecute, setSkipInvalidRowsOnExecute] =
+    useState(true);
   const [validationFieldContext, setValidationFieldContext] = useState(null);
   const [busy, setBusy] = useState("");
   const [prepareElapsedSeconds, setPrepareElapsedSeconds] = useState(0);
@@ -478,6 +481,8 @@ export function App() {
     (total, status) => total + status.dictionaryPending,
     0,
   );
+  const validationFailureCount =
+    batchDetail?.rows?.filter((row) => row.status === "INVALID").length || 0;
 
   const notify = (message, tone = "success") => {
     setNotice({ message, tone });
@@ -1671,6 +1676,7 @@ export function App() {
         },
       });
       setBatchDetail(detail);
+      setSkipInvalidRowsOnExecute(true);
       setValidationResultFilter(
         detail.batch.failCount > 0 ? "INVALID" : "VALIDATED",
       );
@@ -1768,6 +1774,7 @@ export function App() {
           organizationId: "",
           selectedRowIds: overwrite ? selectedOverwriteRowIds : [],
           overwritePreviewConfirmed: overwrite && Boolean(overwritePreview),
+          skipInvalidRows: skipInvalidRowsOnExecute,
         },
       });
       setBatchDetail(detail);
@@ -2678,6 +2685,26 @@ export function App() {
                 <small>窗口会保持响应，请勿重复点击或关闭应用</small>
               </div>
             )}
+            {batchDetail && validationFailureCount > 0 && (
+              <label className="validation-skip-choice">
+                <input
+                  type="checkbox"
+                  checked={skipInvalidRowsOnExecute}
+                  onChange={(event) =>
+                    setSkipInvalidRowsOnExecute(event.target.checked)
+                  }
+                />
+                <span>
+                  <strong>
+                    仅迁移校验通过的 {batchDetail.batch.validCount} 条数据
+                  </strong>
+                  <small>
+                    跳过 {validationFailureCount} 条校验失败数据；保留完整失败原因并写入本地审计，目标库不会写入这些记录。
+                  </small>
+                </span>
+                <em>跳过 {validationFailureCount} 条</em>
+              </label>
+            )}
             <div className="screen-actions">
               <button
                 className="button button--secondary"
@@ -2699,13 +2726,19 @@ export function App() {
                 )}
                 <button
                   className="button button--primary"
-                  disabled={busy === "prepare"}
+                  disabled={
+                    busy === "prepare" ||
+                    (Boolean(batchDetail) && !batchDetail.batch.validCount) ||
+                    (validationFailureCount > 0 && !skipInvalidRowsOnExecute)
+                  }
                   onClick={batchDetail ? () => setStep(6) : prepareBatch}
                 >
                   {busy === "prepare"
                     ? `正在校验 ${prepareElapsedSeconds} 秒`
                     : batchDetail
-                      ? "确认结果，配置目标库"
+                      ? validationFailureCount > 0
+                        ? `确认跳过 ${validationFailureCount} 条，配置目标库`
+                        : "确认结果，配置目标库"
                       : "开始试迁移校验"}
                   <ArrowRight />
                 </button>
@@ -2733,6 +2766,19 @@ export function App() {
               )}
             </div>
             <SummaryCards batch={batchDetail?.batch} />
+            {batchDetail && validationFailureCount > 0 && (
+              <div className="execution-scope-notice">
+                <CheckCircle size={21} weight="fill" />
+                <div>
+                  <strong>
+                    本次只写入 {batchDetail.batch.validCount} 条校验通过数据
+                  </strong>
+                  <span>
+                    {validationFailureCount} 条校验失败数据将在执行时记为“已跳过”，不会连接目标表执行写入。
+                  </span>
+                </div>
+              </div>
+            )}
             {batchDetail &&
               !["SUCCESS", "PARTIAL", "UNDONE", "UNDO_PARTIAL"].includes(
                 batchDetail.batch.status,
@@ -2828,7 +2874,9 @@ export function App() {
                           ? `重新执行中断批次 ${batchDetail.batch.validCount} 行`
                         : batchDetail.batch.conflictStrategy === "OVERWRITE"
                           ? `执行已确认的 ${selectedOverwriteRowIds.length} 行`
-                          : `正式迁移 ${batchDetail.batch.validCount} 行`}
+                          : validationFailureCount > 0
+                            ? `正式迁移 ${batchDetail.batch.validCount} 行（跳过 ${validationFailureCount} 行）`
+                            : `正式迁移 ${batchDetail.batch.validCount} 行`}
                     </button>
                   </div>
                 </div>

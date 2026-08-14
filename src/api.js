@@ -1142,6 +1142,42 @@ function mockExecute(request) {
   const now = new Date().toISOString();
   const selected = new Set(request.selectedRowIds || []);
   const mergedMedicineIds = new Map();
+  const invalidCount = detail.rows.filter(
+    (row) => row.status === "INVALID",
+  ).length;
+  if (invalidCount && !request.skipInvalidRows) {
+    throw new Error(
+      `本批次还有 ${invalidCount} 条校验失败数据；请返回校验页修正，或明确选择“仅迁移校验通过的数据”`,
+    );
+  }
+  if (request.skipInvalidRows) {
+    detail.rows = detail.rows.map((row) => {
+      if (row.status !== "INVALID") return row;
+      detail.audits.unshift({
+        auditId: objectId(),
+        batchId: request.batchId,
+        rowId: row.rowId,
+        traceId: objectId(),
+        operation: "VALIDATION_SKIP",
+        targetTable: "migration_row",
+        targetId: row.rowId,
+        result: "SKIPPED",
+        beforeData: {
+          status: row.status,
+          errorCode: row.errorCode,
+          errorMessage: row.errorMessage,
+        },
+        afterData: {
+          status: "SKIPPED",
+          reason: "USER_CONFIRMED_VALIDATION_SKIP",
+        },
+        message: "用户确认仅迁移校验通过的数据，本行保留原校验原因并跳过写入",
+        operatorId: request.operatorId,
+        operatedAt: now,
+      });
+      return { ...row, status: "SKIPPED", updatedAt: now };
+    });
+  }
   detail.rows = detail.rows.map((row) => {
     if (selected.size && !selected.has(row.rowId)) return row;
     if (
@@ -1198,6 +1234,7 @@ function mockExecute(request) {
     status: pendingCount ? "PARTIAL" : "SUCCESS",
     validCount: pendingCount,
     successCount,
+    skipCount: detail.rows.filter((row) => row.status === "SKIPPED").length,
     failCount: detail.rows.filter((row) =>
       ["FAILED", "INVALID"].includes(row.status),
     ).length,

@@ -16,6 +16,28 @@ test("main React flow compiles as JSX", async () => {
   assert.match(result.code, /function App\(/);
 });
 
+test("target execution screen imports shared fields and root rendering has a visible fallback", async () => {
+  const appSource = await readFile(
+    new URL("../src/App.jsx", import.meta.url),
+    "utf8",
+  );
+  const mainSource = await readFile(
+    new URL("../src/main.jsx", import.meta.url),
+    "utf8",
+  );
+  const boundarySource = await readFile(
+    new URL("../src/AppErrorBoundary.jsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    appSource,
+    /import\s*\{[\s\S]*?\bField\b[\s\S]*?\}\s*from\s*["']\.\/DatabaseConnections["']/,
+  );
+  assert.match(mainSource, /<AppErrorBoundary>[\s\S]*<App \/>/);
+  assert.match(boundarySource, /页面遇到错误，没有继续执行迁移/);
+  assert.match(boundarySource, /重新加载应用/);
+});
+
 test("every used Phosphor JSX icon is explicitly imported", async () => {
   const sourceDirectory = new URL("../src/", import.meta.url);
   const files = (await readdir(sourceDirectory)).filter((file) =>
@@ -56,6 +78,7 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   const uiSourceFiles = [
     "App.jsx",
     "AppChrome.jsx",
+    "AppErrorBoundary.jsx",
     "DatabaseConnections.jsx",
     "FieldMappingWorkspace.jsx",
     "InventoryMigrationScreen.jsx",
@@ -206,6 +229,9 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /来源值药品明细/);
   assert.match(appSource, /搜索药品名称、规格、厂家、商品名或来源键/);
   assert.match(appSource, /每页最多 \{pageSize\} 条/);
+  assert.match(appSource, /仅迁移校验通过的/);
+  assert.match(appSource, /跳过 \{validationFailureCount\} 条校验失败数据/);
+  assert.match(appSource, /skipInvalidRows: skipInvalidRowsOnExecute/);
   assert.match(stylesSource, /\.dictionary-medicine-dialog/);
   assert.match(stylesSource, /\.dictionary-match-source__meta/);
   assert.match(selectSource, /startTransition/);

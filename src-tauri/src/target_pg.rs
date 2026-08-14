@@ -51,6 +51,7 @@ pub async fn execute_batch(
         json!({
             "failedOnly": request.failed_only,
             "selectedRowCount": request.selected_row_ids.len(),
+            "skipInvalidRows": request.skip_invalid_rows,
             "databaseKind": request.target.kind,
             "protocol": "postgresql-wire",
             "targetIdentity": target_identity(&request.target)

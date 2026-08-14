@@ -2916,6 +2916,111 @@ button:disabled {
 .validation-running small {
   white-space: nowrap;
 }
+.validation-skip-choice,
+.execution-scope-notice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  margin-top: 10px;
+  padding: 11px 13px;
+  border: 1px solid #9ddbd3;
+  border-radius: 10px;
+  background: #f1fbf9;
+  color: var(--navy);
+}
+.validation-skip-choice input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--teal-600);
+}
+.validation-skip-choice span,
+.execution-scope-notice > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.validation-skip-choice strong,
+.execution-scope-notice strong {
+  color: var(--navy);
+  font-size: 13px;
+}
+.validation-skip-choice small,
+.execution-scope-notice span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.validation-skip-choice em {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #fff3e8;
+  color: #a95a12;
+  font-size: 12px;
+  font-style: normal;
+  white-space: nowrap;
+}
+.execution-scope-notice {
+  grid-template-columns: auto minmax(0, 1fr);
+  margin: 10px 0 0;
+}
+.execution-scope-notice > svg {
+  color: var(--teal-600);
+}
+.fatal-error-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 28px;
+  background: #f2f8f7;
+}
+.fatal-error-card {
+  width: min(680px, 100%);
+  padding: 28px;
+  border: 1px solid #c9ddda;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 18px 60px rgb(25 69 64 / 12%);
+}
+.fatal-error-card h1 {
+  margin: 7px 0 8px;
+  color: var(--navy);
+  font-size: 24px;
+}
+.fatal-error-card > p {
+  margin: 0 0 16px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.fatal-error-summary {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #f0c5c2;
+  border-radius: 9px;
+  background: #fff7f6;
+}
+.fatal-error-summary code {
+  overflow-wrap: anywhere;
+  color: #a33d36;
+}
+.fatal-error-card details {
+  margin: 13px 0;
+  color: var(--muted);
+}
+.fatal-error-card pre {
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 8px;
+  background: #14211f;
+  color: #dceae7;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+.fatal-error-card > .button {
+  float: right;
+}
 .validation-pagination {
   display: flex;
   align-items: center;
