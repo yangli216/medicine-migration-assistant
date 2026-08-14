@@ -98,11 +98,7 @@ test("dictionary rows keep first-source occurrence order after updates", () => {
     fields: [field],
     findDictionaryItem,
     mapping: { sdDose: "FORM_CODE" },
-    rows: [
-      { FORM_CODE: "INJ" },
-      { FORM_CODE: "CAP" },
-      { FORM_CODE: "INJ" },
-    ],
+    rows: [{ FORM_CODE: "INJ" }, { FORM_CODE: "CAP" }, { FORM_CODE: "INJ" }],
     rules: { sdDose: { valueMappingsText: "INJ = 3" } },
     sourceDictionaryItem: () => null,
     sourceDictionaryPropertySummary: () => "",
@@ -183,5 +179,33 @@ test("dictionary suggestion exposes safe semantic confidence and reason", () => 
       item.confidence,
     ]),
     [["2", 94]],
+  );
+});
+
+test("compound dictionary meaning is exposed as a high-confidence suggestion", () => {
+  const [status] = buildFieldMappingStatuses({
+    columnMetadata: {
+      FORM_CODE: {
+        sourceDictionary: { items: [{ key: "7", text: "气雾剂" }] },
+      },
+    },
+    dictionariesById: {
+      dose: { dicId: "dose", items: [{ key: "62", text: "气雾剂,水雾剂" }] },
+    },
+    fields: [field],
+    findDictionaryItem,
+    mapping: { sdDose: "FORM_CODE" },
+    rows: [{ FORM_CODE: "7" }],
+    rules: { sdDose: { valueMappingsText: "" } },
+    sourceDictionaryItem: (metadata, value) =>
+      metadata.sourceDictionary.items.find((item) => item.key === value),
+    sourceDictionaryPropertySummary: () => "",
+  });
+
+  assert.equal(status.dictionaryRows[0].suggestedTarget.key, "62");
+  assert.equal(status.dictionaryRows[0].suggestionConfidence, 97);
+  assert.equal(
+    status.dictionaryRows[0].suggestionReason,
+    "目标复合含义包含来源名称",
   );
 });

@@ -43,14 +43,17 @@ test("recommends medicine cost merge by target medicine type", () => {
       ],
       costs,
     ),
-    { "1": "cost-west", "3": "cost-herb", "5": "cost-material" },
+    { 1: "cost-west", 3: "cost-herb", 5: "cost-material" },
   );
 });
 
 test("builds only safe exact dictionary mappings and keeps manual rules", () => {
-  assert.deepEqual(buildDictionaryValueMappings(["西药", "2", "不确定"], items), {
-    西药: "1",
-  });
+  assert.deepEqual(
+    buildDictionaryValueMappings(["西药", "2", "不确定"], items),
+    {
+      西药: "1",
+    },
+  );
   assert.equal(
     mergeValueMappingText("旧西药 = 1", { 西药: "1", 旧西药: "2" }),
     "旧西药 = 1\n西药 = 1",
@@ -95,16 +98,12 @@ test("matches safe medical synonyms without relying on shared codes", () => {
     { key: "2", text: "病区发药" },
   ];
   assert.deepEqual(
-    buildDictionaryValueMappings(
-      ["A", "B", "C", "D"],
-      targetItems,
-      [
-        { key: "A", text: "胶囊" },
-        { key: "B", text: "静滴" },
-        { key: "C", text: "每天一次" },
-        { key: "D", text: "住院发药" },
-      ],
-    ),
+    buildDictionaryValueMappings(["A", "B", "C", "D"], targetItems, [
+      { key: "A", text: "胶囊" },
+      { key: "B", text: "静滴" },
+      { key: "C", text: "每天一次" },
+      { key: "D", text: "住院发药" },
+    ]),
     { A: "25", B: "402", C: "QD", D: "2" },
   );
   assert.equal(findDictionarySemanticMatch("静滴", targetItems)?.score, 94);
@@ -135,7 +134,51 @@ test("ranks semantic candidates by confidence and preserves dictionary order for
   ]);
   assert.deepEqual(
     ranked.map(({ item, score }) => [item.key, score]),
-    [["B", 100], ["A", 94], ["C", 94]],
+    [
+      ["B", 100],
+      ["A", 94],
+      ["C", 94],
+    ],
+  );
+});
+
+test("matches one meaning inside a compound target dictionary label", () => {
+  const targetItems = [
+    { key: "62", text: "气雾剂,水雾剂" },
+    { key: "63", text: "吸入粉雾剂" },
+  ];
+  const ranked = rankDictionarySemanticMatches("气雾剂", targetItems);
+  assert.deepEqual(
+    ranked.map(({ item, score, reason }) => [item.key, score, reason]),
+    [["62", 97, "目标复合含义包含来源名称"]],
+  );
+  assert.equal(
+    findDictionarySemanticMatch("气雾剂", targetItems)?.item.key,
+    "62",
+  );
+});
+
+test("keeps fuzzy and ambiguous meanings as review-only candidates", () => {
+  const fuzzy = rankDictionarySemanticMatches("外用散剂", [
+    { key: "A", text: "散剂" },
+  ]);
+  assert.equal(fuzzy[0]?.item.key, "A");
+  assert.ok(fuzzy[0]?.score >= 65 && fuzzy[0]?.score <= 89);
+  assert.equal(
+    findDictionarySemanticMatch("外用散剂", [{ key: "A", text: "散剂" }]),
+    null,
+  );
+
+  const ambiguous = [
+    { key: "A", text: "气雾剂,水雾剂" },
+    { key: "B", text: "气雾剂,喷雾剂" },
+  ];
+  assert.equal(findDictionarySemanticMatch("气雾剂", ambiguous), null);
+  assert.deepEqual(
+    rankDictionarySemanticMatches("气雾剂", ambiguous).map(
+      ({ item }) => item.key,
+    ),
+    ["A", "B"],
   );
 });
 
@@ -150,7 +193,7 @@ test("maps common legacy 1/2 and RX/OTC flags to target 1/0 semantics", () => {
   ];
   assert.deepEqual(
     buildDictionaryValueMappings(["1", "2"], targetItems, sourceItems),
-    { "1": "1", "2": "0" },
+    { 1: "1", 2: "0" },
   );
 });
 
@@ -179,22 +222,32 @@ test("builds safe PHIS27 preset mappings for fixed and dynamic dictionaries", ()
   ].map(([key, dictionaryId]) => ({ key, dictionaryId }));
   const dictionariesById = {
     "rbmh.base.med.prescriptiondrugIdentification": {
-      items: [{ key: "1", text: "处方药" }, { key: "2", text: "非处方药" }],
+      items: [
+        { key: "1", text: "处方药" },
+        { key: "2", text: "非处方药" },
+      ],
     },
     "phis.medicareLevel": {
-      items: [["01", "甲类"], ["02", "乙类"], ["03", "丙类"]].map(
-        ([key, text]) => ({ key, text }),
-      ),
+      items: [
+        ["01", "甲类"],
+        ["02", "乙类"],
+        ["03", "丙类"],
+      ].map(([key, text]) => ({ key, text })),
     },
     "rbmh.base.med.sdAllergy": { items: [{ key: "1", text: "青霉素" }] },
     "phis.storageType": { items: [{ key: "1", text: "常温" }] },
     "rbmh.base.med.roundingStrategy": {
-      items: [["1", "每次发药数量取整"], ["2", "每天发药数量取整"], ["3", "不取整"]].map(
-        ([key, text]) => ({ key, text }),
-      ),
+      items: [
+        ["1", "每次发药数量取整"],
+        ["2", "每天发药数量取整"],
+        ["3", "不取整"],
+      ].map(([key, text]) => ({ key, text })),
     },
     "rbmh.base.med.usage": {
-      items: [{ key: "100", text: "口服" }, { key: "402", text: "静脉滴注" }],
+      items: [
+        { key: "100", text: "口服" },
+        { key: "402", text: "静脉滴注" },
+      ],
     },
     "rbmh.base.freq": { items: [{ key: "QD", text: "每日一次" }] },
   };
@@ -207,7 +260,9 @@ test("builds safe PHIS27 preset mappings for fixed and dynamic dictionaries", ()
         ],
       },
     },
-    FREQ_CODE: { sourceDictionary: { items: [{ key: "qd", text: "每日一次" }] } },
+    FREQ_CODE: {
+      sourceDictionary: { items: [{ key: "qd", text: "每日一次" }] },
+    },
   };
   const rules = buildPhis27PresetRules({
     rows: [

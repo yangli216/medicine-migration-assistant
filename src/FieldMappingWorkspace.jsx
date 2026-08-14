@@ -80,10 +80,14 @@ export function FieldMappingNavigator({
           <strong>字段导航</strong>
           <span>点击任意字段直接配置</span>
         </div>
-        <b title="来源字段及字典值均已完成">就绪 {readyCount}/{statuses.length}</b>
+        <b title="来源字段及字典值均已完成">
+          就绪 {readyCount}/{statuses.length}
+        </b>
       </div>
       <div className="mapping-navigator__summary">
-        <span><b>{pendingCount}</b> 待处理</span>
+        <span>
+          <b>{pendingCount}</b> 待处理
+        </span>
         <span className={dictionaryCount ? "is-warning" : ""}>
           <b>{dictionaryCount}</b> 字典待确认
         </span>
@@ -119,7 +123,9 @@ export function FieldMappingNavigator({
             </div>
             {groupStatuses.map((status) => (
               <button
-                aria-current={currentFieldKey === status.field.key ? "step" : undefined}
+                aria-current={
+                  currentFieldKey === status.field.key ? "step" : undefined
+                }
                 className={`mapping-nav-item mapping-nav-item--${status.state} ${currentFieldKey === status.field.key ? "is-current" : ""}`}
                 key={status.field.key}
                 onClick={() => onSelectField(status.index)}
@@ -148,7 +154,9 @@ export function FieldMappingNavigator({
                 </span>
                 <span className="mapping-nav-item__meta">
                   {status.dictionaryTotal > 0 && (
-                    <small>{status.dictionaryHandled}/{status.dictionaryTotal}</small>
+                    <small>
+                      {status.dictionaryHandled}/{status.dictionaryTotal}
+                    </small>
                   )}
                   <ArrowRight size={14} />
                 </span>
@@ -202,7 +210,11 @@ export function DictionaryMappingEditor({
           </span>
         </div>
         <div>
-          <button className="button button--secondary" type="button" onClick={onAutoMap}>
+          <button
+            className="button button--secondary"
+            type="button"
+            onClick={onAutoMap}
+          >
             <LinkSimple size={16} />
             一键按含义匹配
           </button>
@@ -250,6 +262,7 @@ export function DictionaryMappingEditor({
           const suggestionCode = item.suggestedTarget
             ? dictionaryItemValue(item.suggestedTarget)
             : "";
+          const candidateCount = item.suggestedCandidates?.length || 0;
           const recommendedCodes = new Set(
             (item.suggestedCandidates || []).map(({ target }) =>
               dictionaryItemValue(target),
@@ -278,7 +291,9 @@ export function DictionaryMappingEditor({
                     : `来源编码 ${item.sourceValue} · ${item.count} 条药品`}
                 </small>
                 {item.sourceProperties && (
-                  <small title={item.sourceProperties}>{item.sourceProperties}</small>
+                  <small title={item.sourceProperties}>
+                    {item.sourceProperties}
+                  </small>
                 )}
               </span>
               <ArrowRight size={17} />
@@ -291,19 +306,24 @@ export function DictionaryMappingEditor({
                     value: "",
                     label: suggestionCode
                       ? `未采用 · 建议 ${item.suggestedTarget.text || item.suggestedTarget.na}（${suggestionCode}）`
-                      : "尚未选择目标字典值",
+                      : candidateCount
+                        ? `尚未选择 · 有 ${candidateCount} 个相似候选`
+                        : "尚未选择目标字典值",
                     description: suggestionCode
                       ? `${item.suggestionReason} · 置信度 ${item.suggestionConfidence}%`
                       : "",
                     group: "匹配操作",
                   },
                   ...(!field.required
-                    ? [{
-                        value: IGNORE_VALUE_MAPPING_TARGET,
-                        label: "忽略此来源值",
-                        description: "目标字段留空，并记录为已人工确认忽略；该值不再触发字典校验。",
-                        group: "匹配操作",
-                      }]
+                    ? [
+                        {
+                          value: IGNORE_VALUE_MAPPING_TARGET,
+                          label: "忽略此来源值",
+                          description:
+                            "目标字段留空，并记录为已人工确认忽略；该值不再触发字典校验。",
+                          group: "匹配操作",
+                        },
+                      ]
                     : []),
                   ...dictionary.items
                     .filter(
@@ -311,17 +331,21 @@ export function DictionaryMappingEditor({
                         !recommendedCodes.has(dictionaryItemValue(targetItem)),
                     )
                     .map((targetItem) => ({
-                    value: dictionaryItemValue(targetItem),
-                    label: `${targetItem.text || targetItem.na}（${dictionaryItemValue(targetItem)}）`,
-                    keywords: `${targetItem.py || ""} ${targetItem.wb || ""}`,
-                    group: "其他字典项（保持原顺序）",
-                  })),
+                      value: dictionaryItemValue(targetItem),
+                      label: `${targetItem.text || targetItem.na}（${dictionaryItemValue(targetItem)}）`,
+                      keywords: `${targetItem.py || ""} ${targetItem.wb || ""}`,
+                      group: "其他字典项（保持原顺序）",
+                    })),
                 ]}
                 searchPlaceholder="按编码、名称或拼音查找"
-                value={item.ignored ? IGNORE_VALUE_MAPPING_TARGET : item.appliedTarget}
+                value={
+                  item.ignored
+                    ? IGNORE_VALUE_MAPPING_TARGET
+                    : item.appliedTarget
+                }
               />
               <span
-                className={`dictionary-match-status ${item.ignored ? "dictionary-match-status--ignored" : item.matched ? "dictionary-match-status--done" : suggestionCode ? "dictionary-match-status--suggested" : ""}`}
+                className={`dictionary-match-status ${item.ignored ? "dictionary-match-status--ignored" : item.matched ? "dictionary-match-status--done" : candidateCount ? "dictionary-match-status--suggested" : ""}`}
               >
                 {item.ignored
                   ? "已忽略"
@@ -329,7 +353,9 @@ export function DictionaryMappingEditor({
                     ? "已确认"
                     : suggestionCode
                       ? `${item.suggestionConfidence}% 建议`
-                      : "待确认"}
+                      : candidateCount
+                        ? `${candidateCount} 个候选`
+                        : "待确认"}
               </span>
             </div>
           );

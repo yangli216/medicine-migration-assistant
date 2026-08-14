@@ -91,7 +91,87 @@ const SAFE_MEDICAL_SEMANTIC_GROUPS = [
 ];
 
 function compactMeaning(value) {
-  return normalized(value).replace(/[\s,，.。·、/\\_\-—:：;；()（）\[\]【】]/gu, "");
+  return normalized(value).replace(
+    /[\s,，.。·、/\\_\-—:：;；()（）\[\]【】]/gu,
+    "",
+  );
+}
+
+const COMPOUND_MEANING_SEPARATOR = /[,，、/\\|;；]+/gu;
+
+function meaningSegments(value) {
+  const source = normalized(value);
+  if (!source) return [];
+  const segments = new Set();
+  const add = (segment) => {
+    const compact = compactMeaning(segment);
+    if (compact) segments.add(compact);
+  };
+  add(source);
+  source.split(COMPOUND_MEANING_SEPARATOR).forEach((part) => {
+    add(part);
+    add(part.replace(/[（(][^()（）]+[）)]/gu, ""));
+    for (const match of part.matchAll(/[（(]([^()（）]+)[）)]/gu)) {
+      match[1].split(COMPOUND_MEANING_SEPARATOR).forEach(add);
+    }
+  });
+  return [...segments];
+}
+
+function levenshteinDistance(left, right) {
+  const previous = Array.from(
+    { length: right.length + 1 },
+    (_, index) => index,
+  );
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      current[rightIndex] = Math.min(
+        current[rightIndex - 1] + 1,
+        previous[rightIndex] + 1,
+        previous[rightIndex - 1] +
+          (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      );
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+  return previous[right.length];
+}
+
+function bigrams(value) {
+  if (value.length < 2) return [];
+  return Array.from({ length: value.length - 1 }, (_, index) =>
+    value.slice(index, index + 2),
+  );
+}
+
+function fuzzyMeaningSimilarity(left, right) {
+  if (!left || !right || left === right) return left === right ? 1 : 0;
+  const shorter = left.length <= right.length ? left : right;
+  const longer = left.length > right.length ? left : right;
+  if (shorter.length < 2) return 0;
+  const containment = longer.includes(shorter)
+    ? 0.78 + 0.12 * (shorter.length / longer.length)
+    : 0;
+  const leftBigrams = bigrams(left);
+  const rightBigrams = bigrams(right);
+  const rightPool = [...rightBigrams];
+  let intersection = 0;
+  leftBigrams.forEach((part) => {
+    const index = rightPool.indexOf(part);
+    if (index >= 0) {
+      intersection += 1;
+      rightPool.splice(index, 1);
+    }
+  });
+  const dice =
+    leftBigrams.length + rightBigrams.length
+      ? (2 * intersection) / (leftBigrams.length + rightBigrams.length)
+      : 0;
+  if (!containment && intersection === 0) return 0;
+  const editSimilarity =
+    1 - levenshteinDistance(left, right) / Math.max(left.length, right.length);
+  return Math.max(containment, dice, editSimilarity);
 }
 
 function meaningWithoutCodeQualifier(value) {
@@ -113,8 +193,9 @@ export function findDictionarySemanticMatch(value, items = []) {
   const candidates = rankDictionarySemanticMatches(value, items);
   if (!candidates.length) return null;
   const best = candidates[0];
-  const equallyGood = candidates.filter((candidate) => candidate.score === best.score);
-  return equallyGood.length === 1 ? best : null;
+  const second = candidates[1];
+  const hasSafeMargin = !second || best.score - second.score >= 8;
+  return best.score >= 94 && hasSafeMargin ? best : null;
 }
 
 export function rankDictionarySemanticMatches(value, items = []) {
@@ -123,6 +204,7 @@ export function rankDictionarySemanticMatches(value, items = []) {
   const sourceCompact = compactMeaning(value);
   const sourceWithoutQualifier = meaningWithoutCodeQualifier(value);
   const sourceGroup = semanticGroupKey(value);
+  const sourceSegments = meaningSegments(value);
   const candidates = items.flatMap((item, sourceOrder) => {
     const meanings = [...new Set([item.text, item.na].filter(Boolean))];
     let best = null;
@@ -141,12 +223,39 @@ export function rankDictionarySemanticMatches(value, items = []) {
       ) {
         score = 96;
         reason = "忽略编码或缩写注释后一致";
-      } else if (
-        sourceGroup &&
-        semanticGroupKey(meaning) === sourceGroup
-      ) {
+      } else if (sourceGroup && semanticGroupKey(meaning) === sourceGroup) {
         score = 94;
         reason = "常用医学同义表达";
+      } else {
+        const targetSegments = meaningSegments(meaning);
+        const compoundExact = sourceSegments.some((sourceSegment) =>
+          targetSegments.some(
+            (targetSegment) =>
+              sourceSegment === targetSegment &&
+              (sourceSegments.length > 1 || targetSegments.length > 1),
+          ),
+        );
+        if (compoundExact) {
+          score = 97;
+          reason = "目标复合含义包含来源名称";
+        } else {
+          let bestSimilarity = 0;
+          sourceSegments.forEach((sourceSegment) => {
+            targetSegments.forEach((targetSegment) => {
+              bestSimilarity = Math.max(
+                bestSimilarity,
+                fuzzyMeaningSimilarity(sourceSegment, targetSegment),
+              );
+            });
+          });
+          if (bestSimilarity >= 0.65) {
+            score = Math.min(89, Math.round(bestSimilarity * 100));
+            reason =
+              bestSimilarity >= 0.78
+                ? "名称存在包含或近似关系，需人工确认"
+                : "名称相似，需人工确认";
+          }
+        }
       }
       if (score > (best?.score || 0)) {
         best = { item, score, reason, sourceOrder };
@@ -164,13 +273,45 @@ function booleanMeaning(value) {
   const text = normalized(value);
   if (!text) return null;
   if (
-    ["0", "2", "false", "no", "否", "n", "off", "停用", "无", "不需要", "无需", "无效", "otc", "非处方药", "非处方药品"].includes(text) ||
+    [
+      "0",
+      "2",
+      "false",
+      "no",
+      "否",
+      "n",
+      "off",
+      "停用",
+      "无",
+      "不需要",
+      "无需",
+      "无效",
+      "otc",
+      "非处方药",
+      "非处方药品",
+    ].includes(text) ||
     text.includes("非处方") ||
     text.includes("otc")
   )
     return false;
   if (
-    ["1", "true", "yes", "是", "y", "on", "启用", "有", "需要", "需", "有效", "正常", "rx", "处方药", "处方药品"].includes(text) ||
+    [
+      "1",
+      "true",
+      "yes",
+      "是",
+      "y",
+      "on",
+      "启用",
+      "有",
+      "需要",
+      "需",
+      "有效",
+      "正常",
+      "rx",
+      "处方药",
+      "处方药品",
+    ].includes(text) ||
     (text.includes("处方") && !text.includes("非处方"))
   )
     return true;
@@ -195,7 +336,8 @@ export function buildDictionaryValueMappings(
   const mappings = {};
   values.forEach((rawValue) => {
     const source = `${rawValue ?? ""}`.trim();
-    if (!source || Object.prototype.hasOwnProperty.call(mappings, source)) return;
+    if (!source || Object.prototype.hasOwnProperty.call(mappings, source))
+      return;
     const sourceItem = findDictionaryItem(source, sourceItems);
     const sourceMeaning = sourceItem?.text || sourceItem?.na || source;
     const item =
@@ -231,8 +373,7 @@ export function replaceValueMappingText(
   sourceValue = "",
   targetValue = "",
 ) {
-  const source =
-    `${sourceValue ?? ""}`.trim() || EMPTY_VALUE_MAPPING_SOURCE;
+  const source = `${sourceValue ?? ""}`.trim() || EMPTY_VALUE_MAPPING_SOURCE;
   const lines = `${text}`
     .split(/\r?\n/u)
     .map((line) => line.trim())
@@ -308,7 +449,9 @@ function usageSemanticKey(value) {
   const text = normalized(value).replace(/[\s()（）]/gu, "");
   if (!text || /\d/u.test(text)) return "";
   const groupIndex = USAGE_SEMANTIC_GROUPS.findIndex((group) =>
-    group.some((alias) => normalized(alias).replace(/[\s()（）]/gu, "") === text),
+    group.some(
+      (alias) => normalized(alias).replace(/[\s()（）]/gu, "") === text,
+    ),
   );
   return groupIndex >= 0 ? `usage-${groupIndex}` : text;
 }
@@ -317,15 +460,20 @@ function buildUsageValueMappings(values = [], items = [], sourceItems = []) {
   const mappings = buildDictionaryValueMappings(values, items, sourceItems);
   values.forEach((rawValue) => {
     const source = `${rawValue ?? ""}`.trim();
-    if (!source || Object.prototype.hasOwnProperty.call(mappings, source)) return;
+    if (!source || Object.prototype.hasOwnProperty.call(mappings, source))
+      return;
     const sourceItem = findDictionaryItem(source, sourceItems);
     if (!sourceItem) return;
     const meanings = [
       sourceItem.text,
       sourceItem.na,
-      STANDARD_USAGE_TEXT_BY_CODE[`${sourceItem.properties?.BZYF ?? ""}`.trim()],
+      STANDARD_USAGE_TEXT_BY_CODE[
+        `${sourceItem.properties?.BZYF ?? ""}`.trim()
+      ],
     ].filter(Boolean);
-    const semanticKeys = new Set(meanings.map(usageSemanticKey).filter(Boolean));
+    const semanticKeys = new Set(
+      meanings.map(usageSemanticKey).filter(Boolean),
+    );
     const matches = items.filter((item) =>
       semanticKeys.has(usageSemanticKey(item.text || item.na)),
     );
@@ -385,7 +533,11 @@ export function buildPhis27PresetRules({
     const additions =
       field.key === "dftUsage"
         ? buildUsageValueMappings(sourceValues, dictionary.items, sourceItems)
-        : buildDictionaryValueMappings(sourceValues, dictionary.items, sourceItems);
+        : buildDictionaryValueMappings(
+            sourceValues,
+            dictionary.items,
+            sourceItems,
+          );
     if (
       field.key === "dftUsage" &&
       sourceValues.some((value) => `${value ?? ""}`.trim() === "9")
@@ -425,7 +577,8 @@ export function recommendCostMergeMappings(articleItems = [], costItems = []) {
       const articleKey = dictionaryItemValue(article);
       const costName = preferredName(`${article.text || article.na || ""}`);
       const matches = costItems.filter(
-        (cost) => cost.active !== false && `${cost.text || ""}`.trim() === costName,
+        (cost) =>
+          cost.active !== false && `${cost.text || ""}`.trim() === costName,
       );
       return articleKey && matches.length === 1
         ? [[articleKey, `${matches[0].key || ""}`.trim()]]
