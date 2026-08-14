@@ -56,7 +56,9 @@ pub async fn execute(
         &new_object_id(),
     )?;
 
-    if crate::odbc::is_odbc_kind(&request.target.kind) {
+    if crate::pg_protocol::uses_native_connection(&request.target) {
+        execute_pg_groups(store, tenant_id, operator_id, &detail, &request, groups).await?;
+    } else if crate::odbc::is_odbc_kind(&request.target.kind) {
         execute_odbc_groups(store, tenant_id, operator_id, &detail, &request, groups)?;
     } else {
         execute_mysql_groups(store, tenant_id, operator_id, &detail, &request, groups).await?;
@@ -72,13 +74,21 @@ pub async fn preview_undo(
 ) -> Result<InventoryUndoPreview, String> {
     let detail = store.load_batch(&request.batch_id)?;
     let plan = inventory_undo_plan(&detail, &request.target)?;
-    if crate::odbc::is_odbc_kind(&request.target.kind) {
+    if crate::pg_protocol::uses_native_connection(&request.target) {
+        let pool = crate::pg_protocol::connect(&request.target).await?;
+        validate_inventory_schema_pg(&pool).await?;
+        let preview =
+            inspect_inventory_undo_pg(&pool, tenant_id, &request.batch_id, &plan).await;
+        pool.close().await;
+        preview
+    } else if crate::odbc::is_odbc_kind(&request.target.kind) {
         with_connection(&request.target, |connection| {
             configure_target_session(connection, &request.target)?;
             inspect_inventory_undo_odbc(connection, tenant_id, &request.batch_id, &plan)
         })
     } else {
         let pool = connect_mysql(&request.target).await?;
+        validate_inventory_schema_mysql(&pool).await?;
         let preview =
             inspect_inventory_undo_mysql(&pool, tenant_id, &request.batch_id, &plan).await;
         pool.close().await;
@@ -108,7 +118,9 @@ pub async fn undo(
         operator_id,
         &trace_id,
     )?;
-    let result = if crate::odbc::is_odbc_kind(&request.target.kind) {
+    let result = if crate::pg_protocol::uses_native_connection(&request.target) {
+        undo_inventory_pg(&request.target, tenant_id, &request.batch_id, &plan).await
+    } else if crate::odbc::is_odbc_kind(&request.target.kind) {
         undo_inventory_odbc(&request.target, tenant_id, &request.batch_id, &plan)
     } else {
         undo_inventory_mysql(&request.target, tenant_id, &request.batch_id, &plan).await
@@ -618,6 +630,7 @@ async fn undo_inventory_mysql(
     storages: &[InventoryUndoStorage],
 ) -> Result<(), String> {
     let pool = connect_mysql(profile).await?;
+    validate_inventory_schema_mysql(&pool).await?;
     let mut tx = pool
         .begin()
         .await

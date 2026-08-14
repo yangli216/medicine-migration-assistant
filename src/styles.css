@@ -4437,15 +4437,35 @@ button:disabled {
   padding: 12px 18px;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 9px;
   font-size: 13px;
+}
+.toast__message {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.toast__close {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: currentColor;
+  background: rgba(255, 255, 255, 0.1);
+}
+.toast__close:hover {
+  background: rgba(255, 255, 255, 0.18);
 }
 .toast svg {
   color: #65dbbd;
 }
 .toast--danger {
   background: #5c2929;
+  max-width: min(900px, calc(100vw - 48px));
 }
 .toast--danger svg {
   color: #ff9d9d;

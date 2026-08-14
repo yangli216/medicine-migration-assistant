@@ -129,6 +129,7 @@ export function App() {
   const prepareBatchLock = useRef(false);
   const inventoryExecutionLock = useRef(false);
   const inventoryUndoLock = useRef(false);
+  const noticeTimerRef = useRef(null);
   const [runtime, setRuntime] = useState(
     isDesktop ? "tauri-rust" : "browser-preview",
   );
@@ -222,6 +223,15 @@ export function App() {
   const [databaseDrivers, setDatabaseDrivers] = useState([]);
   const [driverPacks, setDriverPacks] = useState([]);
   const [phis27MappingStatus, setPhis27MappingStatus] = useState(null);
+
+  useEffect(
+    () => () => {
+      if (noticeTimerRef.current) {
+        window.clearTimeout(noticeTimerRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (busy !== "prepare") {
@@ -484,9 +494,24 @@ export function App() {
   const validationFailureCount =
     batchDetail?.rows?.filter((row) => row.status === "INVALID").length || 0;
 
+  const dismissNotice = () => {
+    if (noticeTimerRef.current) {
+      window.clearTimeout(noticeTimerRef.current);
+      noticeTimerRef.current = null;
+    }
+    setNotice(null);
+  };
+
   const notify = (message, tone = "success") => {
+    if (noticeTimerRef.current) {
+      window.clearTimeout(noticeTimerRef.current);
+    }
     setNotice({ message, tone });
-    window.setTimeout(() => setNotice(null), 3000);
+    const duration = tone === "danger" ? 15_000 : 4_000;
+    noticeTimerRef.current = window.setTimeout(() => {
+      noticeTimerRef.current = null;
+      setNotice(null);
+    }, duration);
   };
   const fail = (error) =>
     notify(
@@ -3285,13 +3310,26 @@ export function App() {
         onSelect={loadHistoryBatch}
       />
       {notice && (
-        <div className={`toast toast--${notice.tone}`}>
+        <div
+          className={`toast toast--${notice.tone}`}
+          role={notice.tone === "danger" ? "alert" : "status"}
+        >
           {notice.tone === "danger" ? (
             <Warning weight="fill" />
           ) : (
             <CheckCircle weight="fill" />
           )}
-          {notice.message}
+          <span className="toast__message">{notice.message}</span>
+          {notice.tone === "danger" && (
+            <button
+              type="button"
+              className="toast__close"
+              aria-label="关闭错误提示"
+              onClick={dismissNotice}
+            >
+              <X size={16} />
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -100,14 +100,14 @@ fn load_target_storages_odbc(
         configure_target_session(connection, profile)?;
         connection
             .execute(
-                "SELECT id_sto,na_sto,sd_sto,sds_sto_pro,id_org FROM hi_sto_dept WHERE 1=0",
+                "SELECT id_sto,na_sto,sd_sto,id_org,id_tet,fg_active FROM hi_sto_dept WHERE 1=0",
                 (),
                 Some(30),
             )
             .map_err(|error| format!("目标仓储表结构检查失败：{error}"))?;
         let rows = query_rows_strings(
             connection,
-            "SELECT id_sto,na_sto,sd_sto,sds_sto_pro,id_org FROM hi_sto_dept \
+            "SELECT id_sto,na_sto,sd_sto,id_org FROM hi_sto_dept \
              WHERE id_tet=? AND fg_active='1' ORDER BY sd_sto,na_sto",
             vec![tenant_id.into()],
             2_000,
@@ -128,8 +128,8 @@ fn load_target_storages_odbc(
                     name: value(1),
                     storage_type_name: storage_type_name(&storage_type),
                     storage_type,
-                    product_types: value(3),
-                    organization_id: value(4),
+                    product_types: String::new(),
+                    organization_id: value(3),
                 }
             })
             .collect())
@@ -398,8 +398,8 @@ fn storage_type_name(value: &str) -> String {
 mod tests {
     use super::{
         group_inventory, inventory_undo_preview, is_single_minimum_unit_package, next_check_number,
-        select_inventory_items, storage_type_name, InventoryUndoRow, InventoryUndoStorage,
-        Phis27InventoryStockItem,
+        select_inventory_items, storage_type_name, inventory_date_parameter_sql,
+        InventoryUndoRow, InventoryUndoStorage, Phis27InventoryStockItem,
     };
     use rust_decimal::Decimal;
     use std::collections::HashSet;
@@ -520,6 +520,15 @@ mod tests {
     }
 
     #[test]
+    fn inventory_date_binding_uses_the_selected_database_dialect() {
+        assert!(inventory_date_parameter_sql("oracle").starts_with("TO_DATE"));
+        assert!(inventory_date_parameter_sql("DM8").starts_with("TO_DATE"));
+        assert!(inventory_date_parameter_sql("postgresql").starts_with("CAST"));
+        assert!(inventory_date_parameter_sql("GBase-8a").starts_with("CAST"));
+        assert!(inventory_date_parameter_sql("GBase-8s").contains("%Y-%m-%d"));
+    }
+
+    #[test]
     fn inventory_undo_preview_blocks_the_entire_batch_when_one_storage_changed() {
         let storages = vec![InventoryUndoStorage {
             id_sto: "sto-1".into(),
@@ -547,12 +556,53 @@ mod tests {
 
     #[test]
     fn inventory_undo_uses_reverse_dependency_order_and_retains_storage_medicine() {
-        let source = concat!(include_str!("write.rs"), include_str!("undo.rs"));
+        let source = concat!(
+            include_str!("write.rs"),
+            include_str!("undo.rs"),
+            include_str!("pg.rs")
+        );
         let log = source.find("DELETE FROM hi_sto_inv_log").unwrap();
         let detail = source.find("DELETE FROM hi_sto_check_sub").unwrap();
         let inventory = source.find("DELETE FROM hi_sto_inv WHERE").unwrap();
         let header = source.find("DELETE FROM hi_sto_check WHERE").unwrap();
         assert!(log < detail && detail < inventory && inventory < header);
         assert!(source.contains("\"retainedTable\":\"hi_sto_med\""));
+    }
+
+    #[test]
+    fn inventory_contract_covers_every_business_write_and_undo_table() {
+        let contract = super::INVENTORY_TARGET_TABLE_PROJECTIONS;
+        for table in [
+            "hi_sto_dept",
+            "hi_bd_med_unit",
+            "hi_bd_med_pro",
+            "hi_sto_med",
+            "hi_sto_check",
+            "hi_sto_check_sub",
+            "hi_sto_inv",
+            "hi_sto_inv_log",
+        ] {
+            assert!(contract.iter().any(|(candidate, _)| *candidate == table));
+        }
+        let inventory = contract
+            .iter()
+            .find(|(table, _)| *table == "hi_sto_inv")
+            .unwrap()
+            .1;
+        assert!(inventory.contains("price_sale"));
+        assert!(inventory.contains("dt_effect"));
+        assert!(!inventory.contains("memo"));
+    }
+
+    #[test]
+    fn native_pg_inventory_uses_pg_placeholders_and_safe_undo_order() {
+        let source = include_str!("pg.rs");
+        assert!(source.contains("id_tet=$1"));
+        assert!(!source.contains("id_tet=?"));
+        let log = source.find("DELETE FROM hi_sto_inv_log").unwrap();
+        let detail = source.find("DELETE FROM hi_sto_check_sub").unwrap();
+        let inventory = source.find("DELETE FROM hi_sto_inv WHERE").unwrap();
+        let header = source.find("DELETE FROM hi_sto_check WHERE").unwrap();
+        assert!(log < detail && detail < inventory && inventory < header);
     }
 }

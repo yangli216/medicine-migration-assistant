@@ -14,6 +14,8 @@ test("main React flow compiles as JSX", async () => {
     jsx: "automatic",
   });
   assert.match(result.code, /function App\(/);
+  assert.match(source, /tone === "danger" \? 15_000 : 4_000/);
+  assert.match(source, /aria-label="关闭错误提示"/);
 });
 
 test("target execution screen imports shared fields and root rendering has a visible fallback", async () => {

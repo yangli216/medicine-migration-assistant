@@ -18,8 +18,49 @@ use sqlx_core::query::query;
 use sqlx_core::query_scalar::query_scalar;
 use sqlx_core::row::Row;
 use sqlx_mysql::{MySql, MySqlPool, MySqlTransaction};
+use sqlx_postgres::{PgPool, PgTransaction, Postgres};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
+
+const INVENTORY_TARGET_TABLE_PROJECTIONS: &[(&str, &str)] = &[
+    (
+        "hi_sto_dept",
+        "id_sto,na_sto,id_org,id_tet,sd_sto,fg_active",
+    ),
+    (
+        "hi_bd_med_unit",
+        "id_med_unit,id_med,na_unit,unit_factor,id_tet",
+    ),
+    ("hi_bd_med_pro", "id_med_pro,id_med,id_tet,fg_active"),
+    (
+        "hi_sto_med",
+        "id_sto_med,id_med,id_med_pro,id_med_unit,unit_sale,spec_sale,price_sale,price_pur,\
+         unit_sale_factor,fg_active,id_sto,id_org,id_tet,revision,\
+         insert_user,insert_time",
+    ),
+    (
+        "hi_sto_check",
+        "id_sto_check,id_sto,cd_sto_check,dt_check_begin,dt_check_end,fg_sto_check,sd_pol,\
+         sd_check,des_sto_check,id_org,id_tet,revision,insert_user,insert_time",
+    ),
+    (
+        "hi_sto_check_sub",
+        "id,id_sto_check,id_med_pro,id_sto_inv,cd_batch,dt_effect,amt_check_bgn,amt_check_end,\
+         amt_change,id_org,id_tet,revision,insert_user,insert_time,price_sale,price_pur,\
+         unit_sale,unit_sale_factor",
+    ),
+    (
+        "hi_sto_inv",
+        "id_sto_inv,id_med_pro,amount,price_sale,price_pur,cd_batch,dt_effect,fg_active,id_sto,\
+         id_org,id_tet,revision,insert_user,insert_time",
+    ),
+    (
+        "hi_sto_inv_log",
+        "id_inv_log,id_sto_inv,id_med_pro,sd_amt_change,des_reason,id_biz_ori,amt_change,\
+         amt_before,amt_after,unit_sale,unit_sale_factor,id_sto,id_org,id_tet,revision,\
+         insert_user,insert_time,price_sale,price_pur",
+    ),
+];
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -156,4 +197,5 @@ struct InventoryGroup {
 include!("inventory/prepare.rs");
 include!("inventory/undo.rs");
 include!("inventory/write.rs");
+include!("inventory/pg.rs");
 include!("inventory/support.rs");

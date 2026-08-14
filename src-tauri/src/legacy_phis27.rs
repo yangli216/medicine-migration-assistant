@@ -212,7 +212,8 @@ pub fn load(request: &LoadPhis27Request) -> Result<SourcePreview, String> {
     ensure_oracle(&request.connection)?;
     let schema = source_schema(&request.connection)?;
     let scope = normalize_scope(&request.scope)?;
-    let physical_columns = load_physical_columns(&request.connection, &schema);
+    let physical_columns = load_physical_columns(&request.connection, &schema)?;
+    validate_medicine_source_columns(&physical_columns, scope)?;
     let query = medicine_query_with_physical_columns(&schema, scope, &physical_columns);
     let mut preview =
         odbc::preview_source(&request.connection, &query, request.limit.clamp(1, 10_000))?;
@@ -244,18 +245,27 @@ pub fn inspect_inventory(
     if !has_warehouse_stock && !has_pharmacy_stock {
         return Err("当前老库无法读取 YK_KCMX 或 YF_KCMX，不能检查机构库存".into());
     }
+    let physical_columns = load_physical_columns(&request.connection, &schema)?;
+    validate_inventory_source_columns(&physical_columns, has_warehouse_stock, has_pharmacy_stock)?;
+    let has_warehouse_list = inspection
+        .checked_tables
+        .iter()
+        .any(|item| item == "YK_YKLB")
+        && has_physical_column(&physical_columns, "YK_YKLB", "YKSB")
+        && has_physical_column(&physical_columns, "YK_YKLB", "JGID");
+    let has_pharmacy_list = inspection
+        .checked_tables
+        .iter()
+        .any(|item| item == "YF_YFLB")
+        && has_physical_column(&physical_columns, "YF_YFLB", "YFSB")
+        && has_physical_column(&physical_columns, "YF_YFLB", "JGID");
     let query = inventory_group_query(
         &schema,
         has_warehouse_stock,
         has_pharmacy_stock,
-        inspection
-            .checked_tables
-            .iter()
-            .any(|item| item == "YK_YKLB"),
-        inspection
-            .checked_tables
-            .iter()
-            .any(|item| item == "YF_YFLB"),
+        has_warehouse_list,
+        has_pharmacy_list,
+        &physical_columns,
     );
     let preview = odbc::preview_source(&request.connection, &query, 10_000)
         .map_err(|error| format!("读取二系列phis非零库存失败：{error}"))?;
@@ -276,6 +286,7 @@ pub fn load_inventory_reference_catalog(
     ensure_oracle(profile)?;
     let schema = source_schema(profile)?;
     let inspection = inspect(profile)?;
+    let physical_columns = load_physical_columns(profile, &schema)?;
     if !inspection
         .checked_tables
         .iter()
@@ -283,12 +294,40 @@ pub fn load_inventory_reference_catalog(
     {
         return Err("老系统无法读取 SYS_ORGANIZATION，不能建立机构对应关系".into());
     }
+    validate_source_columns(
+        &physical_columns,
+        &[
+            ("SYS_ORGANIZATION", "ORGANIZCODE"),
+            ("SYS_ORGANIZATION", "ORGANIZNAME"),
+        ],
+        "机构映射",
+    )?;
+    let parent_id = optional_source_expression(
+        &physical_columns,
+        "SYS_ORGANIZATION",
+        "PARENTID",
+        "CAST(PARENTID AS NVARCHAR2(128))",
+        "CAST(NULL AS NVARCHAR2(128))",
+    );
+    let organization_type = optional_source_expression(
+        &physical_columns,
+        "SYS_ORGANIZATION",
+        "ORGANIZTYPE",
+        "CAST(ORGANIZTYPE AS NVARCHAR2(64))",
+        "CAST(NULL AS NVARCHAR2(64))",
+    );
+    let active_flag = optional_source_expression(
+        &physical_columns,
+        "SYS_ORGANIZATION",
+        "LOGOFF",
+        "CASE WHEN NVL(CAST(LOGOFF AS NVARCHAR2(8)),N'0') IN (N'0',N'false',N'FALSE') THEN N'1' ELSE N'0' END",
+        "N'1'",
+    );
     let organization_sql = format!(
         "SELECT CAST(ORGANIZCODE AS NVARCHAR2(128)) AS ORGANIZATION_ID,\
          CAST(ORGANIZNAME AS NVARCHAR2(200)) AS ORGANIZATION_NAME,\
-         CAST(PARENTID AS NVARCHAR2(128)) AS PARENT_ID,\
-         CAST(ORGANIZTYPE AS NVARCHAR2(64)) AS ORGANIZATION_TYPE,\
-         CASE WHEN NVL(CAST(LOGOFF AS NVARCHAR2(8)),N'0') IN (N'0',N'false',N'FALSE') THEN N'1' ELSE N'0' END AS ACTIVE_FLAG \
+         {parent_id} AS PARENT_ID,{organization_type} AS ORGANIZATION_TYPE,\
+         {active_flag} AS ACTIVE_FLAG \
          FROM {} ORDER BY ORGANIZCODE",
         table_name(&schema, "SYS_ORGANIZATION")
     );
@@ -325,11 +364,30 @@ pub fn load_inventory_reference_catalog(
         .iter()
         .any(|table| table == "YK_YKLB")
     {
+        validate_source_columns(
+            &physical_columns,
+            &[("YK_YKLB", "YKSB"), ("YK_YKLB", "JGID")],
+            "药库映射",
+        )?;
+        let warehouse_name = optional_source_expression(
+            &physical_columns,
+            "YK_YKLB",
+            "YKMC",
+            "CAST(YKMC AS NVARCHAR2(200))",
+            "N'药库 '||TO_NCHAR(YKSB)",
+        );
+        let warehouse_category = optional_source_expression(
+            &physical_columns,
+            "YK_YKLB",
+            "YKLB",
+            "NVL(TO_NCHAR(YKLB),N'')",
+            "N''",
+        );
         let sql = format!(
             "SELECT N'WAREHOUSE' AS SOURCE_KIND,N'YK:'||TO_NCHAR(YKSB) AS LOCATION_KEY,\
-             TO_NCHAR(YKSB) AS LOCATION_ID,CAST(YKMC AS NVARCHAR2(200)) AS LOCATION_NAME,\
+             TO_NCHAR(YKSB) AS LOCATION_ID,{warehouse_name} AS LOCATION_NAME,\
              CAST(JGID AS NVARCHAR2(128)) AS ORGANIZATION_ID,\
-             NVL(TO_NCHAR(YKLB),N'') AS CATEGORY,N'1' AS ACTIVE_FLAG \
+             {warehouse_category} AS CATEGORY,N'1' AS ACTIVE_FLAG \
              FROM {} ORDER BY JGID,YKSB",
             table_name(&schema, "YK_YKLB")
         );
@@ -359,11 +417,30 @@ pub fn load_inventory_reference_catalog(
         .iter()
         .any(|table| table == "YF_YFLB")
     {
+        validate_source_columns(
+            &physical_columns,
+            &[("YF_YFLB", "YFSB"), ("YF_YFLB", "JGID")],
+            "药房映射",
+        )?;
+        let pharmacy_name = optional_source_expression(
+            &physical_columns,
+            "YF_YFLB",
+            "YFMC",
+            "CAST(YFMC AS NVARCHAR2(200))",
+            "N'药房 '||TO_NCHAR(YFSB)",
+        );
+        let pharmacy_active = optional_source_expression(
+            &physical_columns,
+            "YF_YFLB",
+            "ZXBZ",
+            "CASE WHEN NVL(TO_NCHAR(ZXBZ),N'0')=N'0' THEN N'1' ELSE N'0' END",
+            "N'1'",
+        );
         let sql = format!(
             "SELECT N'PHARMACY' AS SOURCE_KIND,N'YF:'||TO_NCHAR(YFSB) AS LOCATION_KEY,\
-             TO_NCHAR(YFSB) AS LOCATION_ID,CAST(YFMC AS NVARCHAR2(200)) AS LOCATION_NAME,\
+             TO_NCHAR(YFSB) AS LOCATION_ID,{pharmacy_name} AS LOCATION_NAME,\
              CAST(JGID AS NVARCHAR2(128)) AS ORGANIZATION_ID,N'' AS CATEGORY,\
-             CASE WHEN NVL(TO_NCHAR(ZXBZ),N'0')=N'0' THEN N'1' ELSE N'0' END AS ACTIVE_FLAG \
+             {pharmacy_active} AS ACTIVE_FLAG \
              FROM {} ORDER BY JGID,YFSB",
             table_name(&schema, "YF_YFLB")
         );
@@ -450,18 +527,27 @@ pub fn load_inventory_stock_items(
     if !has_warehouse_stock && !has_pharmacy_stock {
         return Err("老系统未发现可读取的 YK_KCMX 或 YF_KCMX 库存明细表".into());
     }
+    let physical_columns = load_physical_columns(profile, &schema)?;
+    validate_inventory_source_columns(&physical_columns, has_warehouse_stock, has_pharmacy_stock)?;
+    let has_warehouse_list = inspection
+        .checked_tables
+        .iter()
+        .any(|item| item == "YK_YKLB")
+        && has_physical_column(&physical_columns, "YK_YKLB", "YKSB")
+        && has_physical_column(&physical_columns, "YK_YKLB", "JGID");
+    let has_pharmacy_list = inspection
+        .checked_tables
+        .iter()
+        .any(|item| item == "YF_YFLB")
+        && has_physical_column(&physical_columns, "YF_YFLB", "YFSB")
+        && has_physical_column(&physical_columns, "YF_YFLB", "JGID");
     let query = inventory_detail_query(
         &schema,
         has_warehouse_stock,
         has_pharmacy_stock,
-        inspection
-            .checked_tables
-            .iter()
-            .any(|item| item == "YK_YKLB"),
-        inspection
-            .checked_tables
-            .iter()
-            .any(|item| item == "YF_YFLB"),
+        has_warehouse_list,
+        has_pharmacy_list,
+        &physical_columns,
     );
     let preview = odbc::preview_source(profile, &query, 10_000)
         .map_err(|error| format!("读取二系列phis库存明细失败：{error}"))?;
@@ -481,12 +567,64 @@ fn inventory_detail_query(
     has_pharmacy_stock: bool,
     has_warehouse_list: bool,
     has_pharmacy_list: bool,
+    physical_columns: &[LegacyPhysicalColumn],
 ) -> String {
     let mut queries = Vec::new();
+    let specification = optional_source_expression(
+        physical_columns,
+        "YK_TYPK",
+        "YPGG",
+        "CAST(t.YPGG AS NVARCHAR2(200))",
+        "CAST(NULL AS NVARCHAR2(200))",
+    );
+    let dosage_form = optional_source_expression(
+        physical_columns,
+        "YK_TYPK",
+        "YPSX",
+        "CAST(t.YPSX AS NVARCHAR2(80))",
+        "CAST(NULL AS NVARCHAR2(80))",
+    );
+    let product_sale_unit = optional_source_expression(
+        physical_columns,
+        "YK_TYPK",
+        "YFDW",
+        "CAST(t.YFDW AS NVARCHAR2(80))",
+        "CAST(NULL AS NVARCHAR2(80))",
+    );
+    let product_unit_sale_factor = optional_source_expression(
+        physical_columns,
+        "YK_TYPK",
+        "YFBZ",
+        "CAST(t.YFBZ AS NVARCHAR2(80))",
+        "CAST(NULL AS NVARCHAR2(80))",
+    );
+    let factory_name = match (
+        has_physical_column(physical_columns, "YK_CDDZ", "CDQC"),
+        has_physical_column(physical_columns, "YK_CDDZ", "CDMC"),
+    ) {
+        (true, true) => "CAST(COALESCE(f.CDQC,f.CDMC) AS NVARCHAR2(300))",
+        (true, false) => "CAST(f.CDQC AS NVARCHAR2(300))",
+        (false, true) => "CAST(f.CDMC AS NVARCHAR2(300))",
+        (false, false) => "CAST(NULL AS NVARCHAR2(300))",
+    };
+    let product_name = optional_source_expression(
+        physical_columns,
+        "YK_YPCD",
+        "YBSPMC",
+        "CAST(NVL(p.YBSPMC,t.YPMC) AS NVARCHAR2(200))",
+        "CAST(t.YPMC AS NVARCHAR2(200))",
+    );
     if has_warehouse_stock {
+        let warehouse_location_name = optional_source_expression(
+            physical_columns,
+            "YK_YKLB",
+            "YKMC",
+            "MAX(CAST(YKMC AS NVARCHAR2(200)))",
+            "N'药库 '||MAX(TO_NCHAR(YKSB))",
+        );
         let location_join = if has_warehouse_list {
             format!(
-                "LEFT JOIN (SELECT JGID,COUNT(*) AS OPTION_COUNT,MAX(TO_NCHAR(YKSB)) AS LOCATION_ID,MAX(CAST(YKMC AS NVARCHAR2(200))) AS LOCATION_NAME FROM {} GROUP BY JGID) l ON l.JGID=k.JGID",
+                "LEFT JOIN (SELECT JGID,COUNT(*) AS OPTION_COUNT,MAX(TO_NCHAR(YKSB)) AS LOCATION_ID,{warehouse_location_name} AS LOCATION_NAME FROM {} GROUP BY JGID) l ON l.JGID=k.JGID",
                 table_name(schema, "YK_YKLB")
             )
         } else {
@@ -502,19 +640,47 @@ fn inventory_detail_query(
         } else {
             "N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128))"
         };
+        let purchase_total = optional_source_expression(
+            physical_columns,
+            "YK_KCMX",
+            "JHJE",
+            "CAST(k.JHJE AS NVARCHAR2(80))",
+            "CAST(k.KCSL*k.JHJG AS NVARCHAR2(80))",
+        );
+        let retail_total = optional_source_expression(
+            physical_columns,
+            "YK_KCMX",
+            "LSJE",
+            "CAST(k.LSJE AS NVARCHAR2(80))",
+            "CAST(k.KCSL*k.LSJG AS NVARCHAR2(80))",
+        );
+        let batch_code = optional_source_expression(
+            physical_columns,
+            "YK_KCMX",
+            "YPPH",
+            "CAST(k.YPPH AS NVARCHAR2(200))",
+            "CAST(NULL AS NVARCHAR2(200))",
+        );
+        let effective_date = optional_source_expression(
+            physical_columns,
+            "YK_KCMX",
+            "YPXQ",
+            "TO_NCHAR(k.YPXQ,'YYYY-MM-DD')",
+            "CAST(NULL AS NVARCHAR2(10))",
+        );
         queries.push(format!(
             "SELECT N'WAREHOUSE' AS SOURCE_KIND,CAST(k.SBXH AS NVARCHAR2(64)) AS SOURCE_RECORD_ID,\
              {location_key} AS LOCATION_KEY,{location_name} AS LOCATION_NAME,\
              CAST(k.JGID AS NVARCHAR2(128)) AS ORGANIZATION_ID,CAST(k.YPXH AS NVARCHAR2(64))||N':'||CAST(k.YPCD AS NVARCHAR2(64)) AS SOURCE_KEY,\
-             CAST(t.YPMC AS NVARCHAR2(200)) AS DRUG_NAME,CAST(t.YPGG AS NVARCHAR2(200)) AS SPECIFICATION,\
-             CAST(t.YPSX AS NVARCHAR2(80)) AS DOSAGE_FORM,CAST(t.ZXDW AS NVARCHAR2(80)) AS MINIMUM_UNIT,\
-             CAST(t.YPDW AS NVARCHAR2(80)) AS SALE_UNIT,CAST(t.YPGG AS NVARCHAR2(200)) AS SALE_SPECIFICATION,\
-             CAST(t.ZXBZ AS NVARCHAR2(80)) AS UNIT_SALE_FACTOR,CAST(t.YFDW AS NVARCHAR2(80)) AS PRODUCT_SALE_UNIT,\
-             CAST(t.YFBZ AS NVARCHAR2(80)) AS PRODUCT_UNIT_SALE_FACTOR,CAST(COALESCE(f.CDQC,f.CDMC) AS NVARCHAR2(300)) AS FACTORY_NAME,\
-             CAST(NVL(p.YBSPMC,t.YPMC) AS NVARCHAR2(200)) AS PRODUCT_NAME,\
+             CAST(t.YPMC AS NVARCHAR2(200)) AS DRUG_NAME,{specification} AS SPECIFICATION,\
+             {dosage_form} AS DOSAGE_FORM,CAST(t.ZXDW AS NVARCHAR2(80)) AS MINIMUM_UNIT,\
+             CAST(t.YPDW AS NVARCHAR2(80)) AS SALE_UNIT,{specification} AS SALE_SPECIFICATION,\
+             CAST(t.ZXBZ AS NVARCHAR2(80)) AS UNIT_SALE_FACTOR,{product_sale_unit} AS PRODUCT_SALE_UNIT,\
+             {product_unit_sale_factor} AS PRODUCT_UNIT_SALE_FACTOR,{factory_name} AS FACTORY_NAME,\
+             {product_name} AS PRODUCT_NAME,\
              CAST(k.KCSL AS NVARCHAR2(80)) AS AMOUNT,CAST(k.JHJG AS NVARCHAR2(80)) AS PRICE_PUR,CAST(k.LSJG AS NVARCHAR2(80)) AS PRICE_SALE,\
-             CAST(k.JHJE AS NVARCHAR2(80)) AS PURCHASE_TOTAL,CAST(k.LSJE AS NVARCHAR2(80)) AS RETAIL_TOTAL,\
-             CAST(k.YPPH AS NVARCHAR2(200)) AS BATCH_CODE,TO_NCHAR(k.YPXQ,'YYYY-MM-DD') AS EFFECTIVE_DATE \
+             {purchase_total} AS PURCHASE_TOTAL,{retail_total} AS RETAIL_TOTAL,\
+             {batch_code} AS BATCH_CODE,{effective_date} AS EFFECTIVE_DATE \
              FROM {} k INNER JOIN {} t ON t.YPXH=k.YPXH \
              LEFT JOIN {} p ON p.YPXH=k.YPXH AND p.YPCD=k.YPCD \
              LEFT JOIN {} f ON f.YPCD=k.YPCD {location_join} WHERE NVL(k.KCSL,0)<>0",
@@ -525,6 +691,13 @@ fn inventory_detail_query(
         ));
     }
     if has_pharmacy_stock {
+        let pharmacy_location_name = optional_source_expression(
+            physical_columns,
+            "YF_YFLB",
+            "YFMC",
+            "NVL(CAST(l.YFMC AS NVARCHAR2(200)),N'未命名药房')",
+            "N'药房 '||CAST(k.YFSB AS NVARCHAR2(128))",
+        );
         let location_join = if has_pharmacy_list {
             format!(
                 "LEFT JOIN {} l ON l.YFSB=k.YFSB",
@@ -534,23 +707,58 @@ fn inventory_detail_query(
             String::new()
         };
         let location_name = if has_pharmacy_list {
-            "NVL(CAST(l.YFMC AS NVARCHAR2(200)),N'未命名药房')"
+            pharmacy_location_name
         } else {
             "N'未命名药房'"
         };
+        let pharmacy_specification = optional_source_expression(
+            physical_columns,
+            "YF_YPXX",
+            "YFGG",
+            "CAST(y.YFGG AS NVARCHAR2(200))",
+            specification,
+        );
+        let purchase_total = optional_source_expression(
+            physical_columns,
+            "YF_KCMX",
+            "JHJE",
+            "CAST(k.JHJE AS NVARCHAR2(80))",
+            "CAST(k.YPSL*k.JHJG AS NVARCHAR2(80))",
+        );
+        let retail_total = optional_source_expression(
+            physical_columns,
+            "YF_KCMX",
+            "LSJE",
+            "CAST(k.LSJE AS NVARCHAR2(80))",
+            "CAST(k.YPSL*k.LSJG AS NVARCHAR2(80))",
+        );
+        let batch_code = optional_source_expression(
+            physical_columns,
+            "YF_KCMX",
+            "YPPH",
+            "CAST(k.YPPH AS NVARCHAR2(200))",
+            "CAST(NULL AS NVARCHAR2(200))",
+        );
+        let effective_date = optional_source_expression(
+            physical_columns,
+            "YF_KCMX",
+            "YPXQ",
+            "TO_NCHAR(k.YPXQ,'YYYY-MM-DD')",
+            "CAST(NULL AS NVARCHAR2(10))",
+        );
         queries.push(format!(
             "SELECT N'PHARMACY' AS SOURCE_KIND,CAST(k.SBXH AS NVARCHAR2(64)) AS SOURCE_RECORD_ID,\
              N'YF:'||CAST(k.YFSB AS NVARCHAR2(128)) AS LOCATION_KEY,{location_name} AS LOCATION_NAME,\
              CAST(k.JGID AS NVARCHAR2(128)) AS ORGANIZATION_ID,CAST(k.YPXH AS NVARCHAR2(64))||N':'||CAST(k.YPCD AS NVARCHAR2(64)) AS SOURCE_KEY,\
-             CAST(t.YPMC AS NVARCHAR2(200)) AS DRUG_NAME,CAST(t.YPGG AS NVARCHAR2(200)) AS SPECIFICATION,\
-             CAST(t.YPSX AS NVARCHAR2(80)) AS DOSAGE_FORM,CAST(t.ZXDW AS NVARCHAR2(80)) AS MINIMUM_UNIT,\
-             CAST(y.YFDW AS NVARCHAR2(80)) AS SALE_UNIT,CAST(y.YFGG AS NVARCHAR2(200)) AS SALE_SPECIFICATION,\
-             CAST(y.YFBZ AS NVARCHAR2(80)) AS UNIT_SALE_FACTOR,CAST(t.YFDW AS NVARCHAR2(80)) AS PRODUCT_SALE_UNIT,\
-             CAST(t.YFBZ AS NVARCHAR2(80)) AS PRODUCT_UNIT_SALE_FACTOR,CAST(COALESCE(f.CDQC,f.CDMC) AS NVARCHAR2(300)) AS FACTORY_NAME,\
-             CAST(NVL(p.YBSPMC,t.YPMC) AS NVARCHAR2(200)) AS PRODUCT_NAME,\
+             CAST(t.YPMC AS NVARCHAR2(200)) AS DRUG_NAME,{specification} AS SPECIFICATION,\
+             {dosage_form} AS DOSAGE_FORM,CAST(t.ZXDW AS NVARCHAR2(80)) AS MINIMUM_UNIT,\
+             CAST(y.YFDW AS NVARCHAR2(80)) AS SALE_UNIT,{pharmacy_specification} AS SALE_SPECIFICATION,\
+             CAST(y.YFBZ AS NVARCHAR2(80)) AS UNIT_SALE_FACTOR,{product_sale_unit} AS PRODUCT_SALE_UNIT,\
+             {product_unit_sale_factor} AS PRODUCT_UNIT_SALE_FACTOR,{factory_name} AS FACTORY_NAME,\
+             {product_name} AS PRODUCT_NAME,\
              CAST(k.YPSL AS NVARCHAR2(80)) AS AMOUNT,CAST(k.JHJG AS NVARCHAR2(80)) AS PRICE_PUR,CAST(k.LSJG AS NVARCHAR2(80)) AS PRICE_SALE,\
-             CAST(k.JHJE AS NVARCHAR2(80)) AS PURCHASE_TOTAL,CAST(k.LSJE AS NVARCHAR2(80)) AS RETAIL_TOTAL,\
-             CAST(k.YPPH AS NVARCHAR2(200)) AS BATCH_CODE,TO_NCHAR(k.YPXQ,'YYYY-MM-DD') AS EFFECTIVE_DATE \
+             {purchase_total} AS PURCHASE_TOTAL,{retail_total} AS RETAIL_TOTAL,\
+             {batch_code} AS BATCH_CODE,{effective_date} AS EFFECTIVE_DATE \
              FROM {} k INNER JOIN {} t ON t.YPXH=k.YPXH \
              LEFT JOIN {} y ON y.JGID=k.JGID AND y.YFSB=k.YFSB AND y.YPXH=k.YPXH \
              LEFT JOIN {} p ON p.YPXH=k.YPXH AND p.YPCD=k.YPCD \
@@ -623,12 +831,20 @@ fn inventory_group_query(
     has_pharmacy_stock: bool,
     has_warehouse_list: bool,
     has_pharmacy_list: bool,
+    physical_columns: &[LegacyPhysicalColumn],
 ) -> String {
     let mut queries = Vec::new();
     if has_warehouse_stock {
+        let warehouse_location_name = optional_source_expression(
+            physical_columns,
+            "YK_YKLB",
+            "YKMC",
+            "MAX(CAST(YKMC AS NVARCHAR2(200)))",
+            "N'药库 '||MAX(TO_NCHAR(YKSB))",
+        );
         let location_join = if has_warehouse_list {
             format!(
-                "LEFT JOIN (SELECT JGID,COUNT(*) AS OPTION_COUNT,MAX(TO_NCHAR(YKSB)) AS LOCATION_ID,MAX(CAST(YKMC AS NVARCHAR2(200))) AS LOCATION_NAME FROM {} GROUP BY JGID) l ON l.JGID=k.JGID",
+                "LEFT JOIN (SELECT JGID,COUNT(*) AS OPTION_COUNT,MAX(TO_NCHAR(YKSB)) AS LOCATION_ID,{warehouse_location_name} AS LOCATION_NAME FROM {} GROUP BY JGID) l ON l.JGID=k.JGID",
                 table_name(schema, "YK_YKLB")
             )
         } else {
@@ -657,6 +873,13 @@ fn inventory_group_query(
         ));
     }
     if has_pharmacy_stock {
+        let pharmacy_location_name = optional_source_expression(
+            physical_columns,
+            "YF_YFLB",
+            "YFMC",
+            "NVL(CAST(l.YFMC AS NVARCHAR2(200)),N'未命名药房')",
+            "N'药房 '||CAST(k.YFSB AS NVARCHAR2(128))",
+        );
         let location_join = if has_pharmacy_list {
             format!(
                 "LEFT JOIN {} l ON l.YFSB=k.YFSB",
@@ -666,7 +889,7 @@ fn inventory_group_query(
             String::new()
         };
         let location_name = if has_pharmacy_list {
-            "NVL(CAST(l.YFMC AS NVARCHAR2(200)),N'未命名药房')"
+            pharmacy_location_name
         } else {
             "N'未命名药房'"
         };
@@ -867,6 +1090,9 @@ fn inspect_connection(
         });
     }
 
+    let physical_columns = load_physical_columns_from_connection(connection, schema)?;
+    validate_medicine_source_columns(&physical_columns, Scope::UsedAll)?;
+
     let typk = table_name(schema, "YK_TYPK");
     let ypcd = table_name(schema, "YK_YPCD");
     let cdxx = table_name(schema, "YK_CDXX");
@@ -880,25 +1106,43 @@ fn inspect_connection(
             "SELECT COUNT(DISTINCT t.YPXH) FROM {typk} t WHERE EXISTS (SELECT 1 FROM {cdxx} c WHERE c.YPXH=t.YPXH)"
         ),
     )?;
+    let active_predicate =
+        expanded_scope_predicate_with_columns(schema, Scope::UsedActive, &physical_columns);
     let active_configured_medicines = count(
         connection,
-        &format!(
-            "SELECT COUNT(DISTINCT t.YPXH) FROM {typk} t WHERE EXISTS (SELECT 1 FROM {cdxx} c WHERE c.YPXH=t.YPXH AND NVL(c.ZFPB,0)=0)"
-        ),
+        &format!("SELECT COUNT(DISTINCT t.YPXH) FROM {typk} t WHERE {active_predicate}"),
     )?;
     let product_rows = count(connection, &format!("SELECT COUNT(*) FROM {ypcd}"))?;
-    let active_rows = count(connection, &scope_count_query(schema, Scope::UsedActive))?;
-    let configured_rows = count(connection, &scope_count_query(schema, Scope::UsedAll))?;
-    let all_medicine_rows = count(connection, &scope_count_query(schema, Scope::AllMedicines))?;
-    let duplicate_business_groups = count(
+    let active_rows = count(
         connection,
-        &format!(
-            "SELECT COUNT(*) FROM (SELECT t.YPMC,t.YPGG,t.ZXDW FROM {typk} t WHERE EXISTS (SELECT 1 FROM {cdxx} c WHERE c.YPXH=t.YPXH) GROUP BY t.YPMC,t.YPGG,t.ZXDW HAVING COUNT(*)>1)"
-        ),
+        &scope_count_query_with_columns(schema, Scope::UsedActive, &physical_columns),
     )?;
+    let configured_rows = count(
+        connection,
+        &scope_count_query_with_columns(schema, Scope::UsedAll, &physical_columns),
+    )?;
+    let all_medicine_rows = count(
+        connection,
+        &scope_count_query_with_columns(schema, Scope::AllMedicines, &physical_columns),
+    )?;
+    let can_merge_by_business_key = ["YPMC", "YPGG", "ZXDW"]
+        .iter()
+        .all(|column| has_physical_column(&physical_columns, "YK_TYPK", column));
+    let duplicate_business_groups = if can_merge_by_business_key {
+        count(
+            connection,
+            &format!(
+                "SELECT COUNT(*) FROM (SELECT t.YPMC,t.YPGG,t.ZXDW FROM {typk} t WHERE EXISTS (SELECT 1 FROM {cdxx} c WHERE c.YPXH=t.YPXH) GROUP BY t.YPMC,t.YPGG,t.ZXDW HAVING COUNT(*)>1)"
+            ),
+        )?
+    } else {
+        0
+    };
 
     let stock_medicines = if checked_tables.contains(&"YK_KCMX".to_string())
         && checked_tables.contains(&"YF_KCMX".to_string())
+        && has_physical_column(&physical_columns, "YK_KCMX", "YPXH")
+        && has_physical_column(&physical_columns, "YF_KCMX", "YPXH")
     {
         count(
             connection,
@@ -912,6 +1156,33 @@ fn inspect_connection(
     let orphan_pharmacy_configs = 0;
 
     let mut warnings = Vec::new();
+    let missing_optional_columns = phis27_column_definitions()
+        .into_iter()
+        .filter(|(_, table, column, _, _)| {
+            !table.is_empty()
+                && !column.contains(':')
+                && !has_physical_column(&physical_columns, table, column)
+        })
+        .map(|(_, table, column, _, _)| format!("{table}.{column}"))
+        .collect::<Vec<_>>();
+    if !missing_optional_columns.is_empty() {
+        warnings.push(format!(
+            "检测到项目化字段差异：{}。标准读取会对缺失的可选字段返回空值，并继续提供表中其他实际字段供人工映射",
+            missing_optional_columns.join("、")
+        ));
+    }
+    if !can_merge_by_business_key {
+        warnings.push(
+            "YK_TYPK 缺少 YPMC/YPGG/ZXDW 中的部分字段，本批不会按名称、规格、最小单位自动合并；请先核对实际替代字段"
+                .into(),
+        );
+    }
+    if !has_physical_column(&physical_columns, "YK_CDXX", "ZFPB") {
+        warnings.push(
+            "YK_CDXX 不含 ZFPB，“机构在用药品”暂按全部机构配置药品读取，请在迁移范围确认时人工复核"
+                .into(),
+        );
+    }
     if duplicate_business_groups > 0 {
         warnings.push(format!(
             "YK_CDXX 机构配置范围发现{duplicate_business_groups}组名称、规格、单位一致的药品；迁移时会自动复用同一新药品，并分别保留每个 YPXH:YPCD 的来源映射"
@@ -1007,8 +1278,29 @@ fn expanded_scope_predicate(schema: &str, scope: Scope) -> String {
     scope_predicate(scope).replace("{YK_CDXX}", &table_name(schema, "YK_CDXX"))
 }
 
-fn scope_count_query(schema: &str, scope: Scope) -> String {
-    let predicate = expanded_scope_predicate(schema, scope);
+fn expanded_scope_predicate_with_columns(
+    schema: &str,
+    scope: Scope,
+    physical_columns: &[LegacyPhysicalColumn],
+) -> String {
+    if matches!(scope, Scope::UsedActive)
+        && !has_physical_column(physical_columns, "YK_CDXX", "ZFPB")
+    {
+        format!(
+            "EXISTS (SELECT 1 FROM {} c WHERE c.YPXH=t.YPXH)",
+            table_name(schema, "YK_CDXX")
+        )
+    } else {
+        expanded_scope_predicate(schema, scope)
+    }
+}
+
+fn scope_count_query_with_columns(
+    schema: &str,
+    scope: Scope,
+    physical_columns: &[LegacyPhysicalColumn],
+) -> String {
+    let predicate = expanded_scope_predicate_with_columns(schema, scope, physical_columns);
     format!(
         "SELECT COUNT(*) FROM {} t LEFT JOIN {} p ON p.YPXH=t.YPXH WHERE {predicate}",
         table_name(schema, "YK_TYPK"),
@@ -1018,7 +1310,178 @@ fn scope_count_query(schema: &str, scope: Scope) -> String {
 
 #[cfg(test)]
 fn medicine_query(schema: &str, scope: Scope) -> String {
-    medicine_query_with_physical_columns(schema, scope, &[])
+    let physical_columns = phis27_column_definitions()
+        .into_iter()
+        .filter(|(_, table, column, _, _)| !table.is_empty() && !column.contains(':'))
+        .map(|(_, table, column, _, _)| LegacyPhysicalColumn {
+            table: table.into(),
+            column: column.into(),
+            data_type: "NVARCHAR2".into(),
+            comment: String::new(),
+        })
+        .chain(
+            [
+                ("YK_YPCD", "YPXH"),
+                ("YK_CDDZ", "YPCD"),
+                ("YK_CDXX", "YPXH"),
+                ("YK_CDXX", "ZFPB"),
+            ]
+            .into_iter()
+            .map(|(table, column)| LegacyPhysicalColumn {
+                table: table.into(),
+                column: column.into(),
+                data_type: "NUMBER".into(),
+                comment: String::new(),
+            }),
+        )
+        .collect::<Vec<_>>();
+    medicine_query_with_physical_columns(schema, scope, &physical_columns)
+}
+
+fn has_physical_column(
+    physical_columns: &[LegacyPhysicalColumn],
+    table: &str,
+    column: &str,
+) -> bool {
+    physical_columns
+        .iter()
+        .any(|item| item.table == table && item.column == column)
+}
+
+fn optional_source_expression<'a>(
+    physical_columns: &[LegacyPhysicalColumn],
+    table: &str,
+    column: &str,
+    available: &'a str,
+    missing: &'a str,
+) -> &'a str {
+    if has_physical_column(physical_columns, table, column) {
+        available
+    } else {
+        missing
+    }
+}
+
+fn validate_source_columns(
+    physical_columns: &[LegacyPhysicalColumn],
+    required: &[(&str, &str)],
+    stage: &str,
+) -> Result<(), String> {
+    let missing = required
+        .iter()
+        .filter(|(table, column)| !has_physical_column(physical_columns, table, column))
+        .map(|(table, column)| format!("{table}.{column}"))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "二系列phis{stage}缺少核心字段或当前账号不可见：{}。请核对实际表结构或字段权限",
+            missing.join("、")
+        ))
+    }
+}
+
+fn validate_inventory_source_columns(
+    physical_columns: &[LegacyPhysicalColumn],
+    has_warehouse_stock: bool,
+    has_pharmacy_stock: bool,
+) -> Result<(), String> {
+    let mut required = vec![
+        ("YK_TYPK", "YPXH"),
+        ("YK_TYPK", "YPMC"),
+        ("YK_TYPK", "ZXDW"),
+    ];
+    if has_warehouse_stock {
+        required.extend([
+            ("YK_TYPK", "YPDW"),
+            ("YK_TYPK", "ZXBZ"),
+            ("YK_KCMX", "SBXH"),
+            ("YK_KCMX", "JGID"),
+            ("YK_KCMX", "YPXH"),
+            ("YK_KCMX", "YPCD"),
+            ("YK_KCMX", "KCSL"),
+            ("YK_KCMX", "JHJG"),
+            ("YK_KCMX", "LSJG"),
+        ]);
+    }
+    if has_pharmacy_stock {
+        required.extend([
+            ("YF_KCMX", "SBXH"),
+            ("YF_KCMX", "YFSB"),
+            ("YF_KCMX", "JGID"),
+            ("YF_KCMX", "YPXH"),
+            ("YF_KCMX", "YPCD"),
+            ("YF_KCMX", "YPSL"),
+            ("YF_KCMX", "JHJG"),
+            ("YF_KCMX", "LSJG"),
+            ("YF_YPXX", "JGID"),
+            ("YF_YPXX", "YFSB"),
+            ("YF_YPXX", "YPXH"),
+            ("YF_YPXX", "YFBZ"),
+            ("YF_YPXX", "YFDW"),
+        ]);
+    }
+    required.sort_unstable();
+    required.dedup();
+    validate_source_columns(physical_columns, &required, "库存读取")
+}
+
+fn validate_medicine_source_columns(
+    physical_columns: &[LegacyPhysicalColumn],
+    scope: Scope,
+) -> Result<(), String> {
+    let mut required = vec![
+        ("YK_TYPK", "YPXH"),
+        ("YK_TYPK", "YPMC"),
+        ("YK_YPCD", "YPXH"),
+        ("YK_YPCD", "YPCD"),
+        ("YK_CDDZ", "YPCD"),
+    ];
+    if !matches!(scope, Scope::AllMedicines) {
+        required.push(("YK_CDXX", "YPXH"));
+    }
+    let missing = required
+        .into_iter()
+        .filter(|(table, column)| !has_physical_column(physical_columns, table, column))
+        .map(|(table, column)| format!("{table}.{column}"))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "二系列phis核心关联字段缺失或当前账号不可见：{}。请核对实际表结构或为读取账号补充字段权限",
+            missing.join("、")
+        ))
+    }
+}
+
+fn optional_projection(
+    physical_columns: &[LegacyPhysicalColumn],
+    table: &str,
+    column: &str,
+    expression: &str,
+    result_alias: &str,
+) -> String {
+    if has_physical_column(physical_columns, table, column) {
+        format!("{expression} AS {result_alias}")
+    } else {
+        format!("CAST(NULL AS NVARCHAR2(4000)) AS {result_alias}")
+    }
+}
+
+fn optional_product_projection(
+    physical_columns: &[LegacyPhysicalColumn],
+    table: &str,
+    column: &str,
+    expression: &str,
+    result_alias: &str,
+) -> String {
+    if has_physical_column(physical_columns, table, column) {
+        format!("CASE WHEN p.YPCD IS NOT NULL THEN {expression} END AS {result_alias}")
+    } else {
+        format!("CAST(NULL AS NVARCHAR2(4000)) AS {result_alias}")
+    }
 }
 
 fn medicine_query_with_physical_columns(
@@ -1029,7 +1492,83 @@ fn medicine_query_with_physical_columns(
     let typk = table_name(schema, "YK_TYPK");
     let ypcd = table_name(schema, "YK_YPCD");
     let cddz = table_name(schema, "YK_CDDZ");
-    let predicate = expanded_scope_predicate(schema, scope);
+    let predicate = expanded_scope_predicate_with_columns(schema, scope, physical_columns);
+    let duplicate_spec = if has_physical_column(physical_columns, "YK_TYPK", "YPGG") {
+        "t.YPGG"
+    } else {
+        "CAST(NULL AS NVARCHAR2(1))"
+    };
+    let duplicate_unit = if has_physical_column(physical_columns, "YK_TYPK", "ZXDW") {
+        "t.ZXDW"
+    } else {
+        "CAST(NULL AS NVARCHAR2(1))"
+    };
+    let projection = |table, column, expression, alias| {
+        optional_projection(physical_columns, table, column, expression, alias)
+    };
+    let product_projection = |table, column, expression, alias| {
+        optional_product_projection(physical_columns, table, column, expression, alias)
+    };
+    let drug_type = projection("YK_TYPK", "TYPE", "TO_CHAR(t.TYPE)", "DRUG_TYPE");
+    let form_code = projection("YK_TYPK", "YPSX", "TO_CHAR(t.YPSX)", "FORM_CODE");
+    let pre_unit = projection("YK_TYPK", "ZXDW", "t.ZXDW", "PRE_UNIT");
+    let dose = projection("YK_TYPK", "YPJL", "t.YPJL", "DOSE");
+    let dose_unit = projection("YK_TYPK", "JLDW", "t.JLDW", "DOSE_UNIT");
+    let spec = projection("YK_TYPK", "YPGG", "t.YPGG", "SPEC");
+    let usage_code = projection("YK_TYPK", "GYFF", "TO_CHAR(t.GYFF)", "USAGE_CODE");
+    let freq_code = projection("YK_TYPK", "MRYF", "TO_CHAR(t.MRYF)", "FREQ_CODE");
+    let dose_once = projection("YK_TYPK", "YCJL", "t.YCJL", "DOSE_ONCE");
+    let round_code = projection("YK_TYPK", "QZCL", "TO_CHAR(t.QZCL)", "ROUND_CODE");
+    let dispense_code = projection("YK_TYPK", "FYFS", "TO_CHAR(t.FYFS)", "DISPENSE_CODE");
+    let source_product_id = projection("YK_YPCD", "YPLSH", "TO_CHAR(p.YPLSH)", "SOURCE_PRODUCT_ID");
+    let factory_name_expression = match (
+        has_physical_column(physical_columns, "YK_CDDZ", "CDQC"),
+        has_physical_column(physical_columns, "YK_CDDZ", "CDMC"),
+    ) {
+        (true, true) => "COALESCE(f.CDQC,f.CDMC)",
+        (true, false) => "f.CDQC",
+        (false, true) => "f.CDMC",
+        (false, false) => "CAST(NULL AS NVARCHAR2(4000))",
+    };
+    let factory_name =
+        format!("CASE WHEN p.YPCD IS NOT NULL THEN {factory_name_expression} END AS FACTORY_NAME");
+    let factory_short_name = product_projection("YK_CDDZ", "CDMC", "f.CDMC", "FACTORY_SHORT_NAME");
+    let factory_pinyin = product_projection("YK_CDDZ", "PYDM", "f.PYDM", "FACTORY_PINYIN");
+    let product_name_expression = if has_physical_column(physical_columns, "YK_YPCD", "YBSPMC") {
+        "NVL(p.YBSPMC,t.YPMC)"
+    } else {
+        "t.YPMC"
+    };
+    let product_name =
+        format!("CASE WHEN p.YPCD IS NOT NULL THEN {product_name_expression} END AS PRODUCT_NAME");
+    let sale_unit = product_projection("YK_TYPK", "YFDW", "t.YFDW", "SALE_UNIT");
+    let pack_factor = product_projection("YK_TYPK", "YFBZ", "t.YFBZ", "PACK_FACTOR");
+    let sale_spec_expression = match (
+        has_physical_column(physical_columns, "YK_TYPK", "YFGG"),
+        has_physical_column(physical_columns, "YK_TYPK", "YPGG"),
+    ) {
+        (true, true) => "NVL(t.YFGG,t.YPGG)",
+        (true, false) => "t.YFGG",
+        (false, true) => "t.YPGG",
+        (false, false) => "CAST(NULL AS NVARCHAR2(4000))",
+    };
+    let sale_spec =
+        format!("CASE WHEN p.YPCD IS NOT NULL THEN {sale_spec_expression} END AS SALE_SPEC");
+    let buy_price = projection("YK_YPCD", "JHJG", "p.JHJG", "BUY_PRICE");
+    let retail_price = projection("YK_YPCD", "LSJG", "p.LSJG", "RETAIL_PRICE");
+    let approval_no = projection("YK_YPCD", "PZWH", "p.PZWH", "APPROVAL_NO");
+    let barcode = projection("YK_YPCD", "YPTM", "p.YPTM", "BARCODE");
+    let rx_flag = projection("YK_TYPK", "CFYP", "TO_CHAR(t.CFYP)", "RX_FLAG");
+    let basic_drug_type = projection("YK_TYPK", "JYLX", "TO_CHAR(t.JYLX)", "BASIC_DRUG_TYPE");
+    let insurance_level = projection("YK_TYPK", "YBFL", "TO_CHAR(t.YBFL)", "INSURANCE_LEVEL");
+    let origin_type = projection("YK_TYPK", "YPDC", "TO_CHAR(t.YPDC)", "ORIGIN_TYPE");
+    let storage_code = projection("YK_TYPK", "YPZC", "TO_CHAR(t.YPZC)", "STORAGE_CODE");
+    let special_drug_type = projection("YK_TYPK", "TSYP", "TO_CHAR(t.TSYP)", "SPECIAL_DRUG_TYPE");
+    let allergy_code = projection("YK_TYPK", "GMYWLB", "TO_CHAR(t.GMYWLB)", "ALLERGY_CODE");
+    let anti_approval = projection("YK_TYPK", "SFSP", "TO_CHAR(t.SFSP)", "ANTI_APPROVAL");
+    let antibiotic_flag = projection("YK_TYPK", "KSBZ", "TO_CHAR(t.KSBZ)", "ANTIBIOTIC_FLAG");
+    let daily_limit = projection("YK_TYPK", "YCYL", "t.YCYL", "DAILY_LIMIT");
+    let source_stop_flag = projection("YK_TYPK", "ZFPB", "TO_CHAR(t.ZFPB)", "SOURCE_STOP_FLAG");
     let additional_columns = additional_physical_columns(physical_columns)
         .into_iter()
         .map(|column| {
@@ -1044,7 +1583,7 @@ fn medicine_query_with_physical_columns(
     format!(
         r#"WITH selected_med AS (
             SELECT t.*,
-                   COUNT(*) OVER (PARTITION BY t.YPMC,t.YPGG,t.ZXDW) AS SOURCE_DUPLICATE_COUNT
+                   COUNT(*) OVER (PARTITION BY t.YPMC,{duplicate_spec},{duplicate_unit}) AS SOURCE_DUPLICATE_COUNT
             FROM {typk} t
             WHERE {predicate}
         )
@@ -1053,43 +1592,43 @@ fn medicine_query_with_physical_columns(
             TO_CHAR(t.YPXH) AS SOURCE_MED_ID,
             t.SOURCE_DUPLICATE_COUNT,
             t.YPMC AS DRUG_NAME,
-            TO_CHAR(t.TYPE) AS DRUG_TYPE,
-            TO_CHAR(t.YPSX) AS FORM_CODE,
-            t.ZXDW AS PRE_UNIT,
-            t.YPJL AS DOSE,
-            t.JLDW AS DOSE_UNIT,
-            t.YPGG AS SPEC,
-            TO_CHAR(t.GYFF) AS USAGE_CODE,
-            TO_CHAR(t.MRYF) AS FREQ_CODE,
-            t.YCJL AS DOSE_ONCE,
-            TO_CHAR(t.QZCL) AS ROUND_CODE,
-            TO_CHAR(t.FYFS) AS DISPENSE_CODE,
+            {drug_type},
+            {form_code},
+            {pre_unit},
+            {dose},
+            {dose_unit},
+            {spec},
+            {usage_code},
+            {freq_code},
+            {dose_once},
+            {round_code},
+            {dispense_code},
             TO_CHAR(p.YPCD) AS SOURCE_FACTORY_ID,
-            TO_CHAR(p.YPLSH) AS SOURCE_PRODUCT_ID,
+            {source_product_id},
             CASE WHEN p.YPCD IS NOT NULL THEN TO_CHAR(t.YPXH)||':'||TO_CHAR(p.YPCD) END AS SOURCE_MED_PRO_KEY,
-            CASE WHEN p.YPCD IS NOT NULL THEN COALESCE(f.CDQC,f.CDMC) END AS FACTORY_NAME,
-            CASE WHEN p.YPCD IS NOT NULL THEN f.CDMC END AS FACTORY_SHORT_NAME,
-            CASE WHEN p.YPCD IS NOT NULL THEN f.PYDM END AS FACTORY_PINYIN,
-            CASE WHEN p.YPCD IS NOT NULL THEN NVL(p.YBSPMC,t.YPMC) END AS PRODUCT_NAME,
-            CASE WHEN p.YPCD IS NOT NULL THEN t.YFDW END AS SALE_UNIT,
-            CASE WHEN p.YPCD IS NOT NULL THEN t.YFBZ END AS PACK_FACTOR,
-            CASE WHEN p.YPCD IS NOT NULL THEN NVL(t.YFGG,t.YPGG) END AS SALE_SPEC,
-            p.JHJG AS BUY_PRICE,
-            p.LSJG AS RETAIL_PRICE,
-            p.PZWH AS APPROVAL_NO,
-            p.YPTM AS BARCODE,
+            {factory_name},
+            {factory_short_name},
+            {factory_pinyin},
+            {product_name},
+            {sale_unit},
+            {pack_factor},
+            {sale_spec},
+            {buy_price},
+            {retail_price},
+            {approval_no},
+            {barcode},
             CASE WHEN p.YPCD IS NOT NULL THEN TO_CHAR(t.YPXH)||':'||TO_CHAR(p.YPCD) END AS CD_MED_PRO,
-            TO_CHAR(t.CFYP) AS RX_FLAG,
-            TO_CHAR(t.JYLX) AS BASIC_DRUG_TYPE,
-            TO_CHAR(t.YBFL) AS INSURANCE_LEVEL,
-            TO_CHAR(t.YPDC) AS ORIGIN_TYPE,
-            TO_CHAR(t.YPZC) AS STORAGE_CODE,
-            TO_CHAR(t.TSYP) AS SPECIAL_DRUG_TYPE,
-            TO_CHAR(t.GMYWLB) AS ALLERGY_CODE,
-            TO_CHAR(t.SFSP) AS ANTI_APPROVAL,
-            TO_CHAR(t.KSBZ) AS ANTIBIOTIC_FLAG,
-            t.YCYL AS DAILY_LIMIT,
-            TO_CHAR(t.ZFPB) AS SOURCE_STOP_FLAG{additional_columns}
+            {rx_flag},
+            {basic_drug_type},
+            {insurance_level},
+            {origin_type},
+            {storage_code},
+            {special_drug_type},
+            {allergy_code},
+            {anti_approval},
+            {antibiotic_flag},
+            {daily_limit},
+            {source_stop_flag}{additional_columns}
         FROM selected_med t
         LEFT JOIN {ypcd} p ON p.YPXH=t.YPXH
         LEFT JOIN {cddz} f ON f.YPCD=p.YPCD
@@ -1097,40 +1636,50 @@ fn medicine_query_with_physical_columns(
     )
 }
 
-fn load_physical_columns(profile: &ConnectionProfile, schema: &str) -> Vec<LegacyPhysicalColumn> {
+fn load_physical_columns(
+    profile: &ConnectionProfile,
+    schema: &str,
+) -> Result<Vec<LegacyPhysicalColumn>, String> {
+    odbc::with_connection(profile, |connection| {
+        load_physical_columns_from_connection(connection, schema)
+    })
+}
+
+fn load_physical_columns_from_connection(
+    connection: &Connection<'_>,
+    schema: &str,
+) -> Result<Vec<LegacyPhysicalColumn>, String> {
     let comment_query = format!(
         "SELECT c.TABLE_NAME,c.COLUMN_NAME,c.DATA_TYPE,m.COMMENTS \
          FROM ALL_TAB_COLUMNS c \
          LEFT JOIN ALL_COL_COMMENTS m ON m.OWNER=c.OWNER AND m.TABLE_NAME=c.TABLE_NAME AND m.COLUMN_NAME=c.COLUMN_NAME \
-         WHERE c.OWNER='{schema}' AND c.TABLE_NAME IN ('YK_TYPK','YK_YPCD','YK_CDDZ') \
+         WHERE c.OWNER='{schema}' AND c.TABLE_NAME IN (\
+         'YK_TYPK','YK_YPCD','YK_CDDZ','YK_CDXX','YK_KCMX','YK_YKLB',\
+         'YF_YPXX','YF_KCMX','YF_YFLB','SYS_ORGANIZATION') \
          ORDER BY DECODE(c.TABLE_NAME,'YK_TYPK',1,'YK_YPCD',2,3),c.COLUMN_ID"
     );
-    odbc::preview_source(profile, &comment_query, 1_000)
-        .ok()
-        .map(|preview| {
-            preview
-                .rows
-                .into_iter()
-                .filter_map(|row| {
-                    let table = row.get("TABLE_NAME")?.as_str()?.trim().to_string();
-                    let column = row.get("COLUMN_NAME")?.as_str()?.trim().to_string();
-                    let data_type = row.get("DATA_TYPE")?.as_str()?.trim().to_string();
-                    let comment = row
-                        .get("COMMENTS")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .trim()
-                        .to_string();
-                    Some(LegacyPhysicalColumn {
-                        table,
-                        column,
-                        data_type,
-                        comment,
-                    })
-                })
-                .collect()
+    let rows = odbc::query_rows_strings(connection, &comment_query, Vec::new(), 5_000)
+        .map_err(|error| format!("读取 {schema} 实际表字段失败：{error}"))?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let table = row.first()?.as_deref()?.trim().to_ascii_uppercase();
+            let column = row.get(1)?.as_deref()?.trim().to_ascii_uppercase();
+            let data_type = row.get(2)?.as_deref()?.trim().to_string();
+            let comment = row
+                .get(3)
+                .and_then(|value| value.as_deref())
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            Some(LegacyPhysicalColumn {
+                table,
+                column,
+                data_type,
+                comment,
+            })
         })
-        .unwrap_or_default()
+        .collect())
 }
 
 fn phis27_column_metadata(
@@ -1152,16 +1701,23 @@ fn phis27_column_metadata(
         .into_iter()
         .map(
             |(name, table, column, fallback_comment, mapping_eligible)| {
+                let physical_field_exists = table.is_empty()
+                    || column.contains(':')
+                    || has_physical_column(physical_columns, table, column);
                 let database_comment = comments
                     .get(&(table.to_string(), column.to_string()))
                     .filter(|comment| !comment.is_empty())
                     .cloned();
                 SourceColumnMetadata {
                     name: name.into(),
-                    comment: database_comment.unwrap_or_else(|| fallback_comment.into()),
+                    comment: if physical_field_exists {
+                        database_comment.unwrap_or_else(|| fallback_comment.into())
+                    } else {
+                        format!("{fallback_comment}（当前实际表无此字段，标准查询以空值占位）")
+                    },
                     source_table: table.into(),
                     source_column: column.into(),
-                    mapping_eligible,
+                    mapping_eligible: mapping_eligible && physical_field_exists,
                     source_dictionary: phis27_source_dictionary(name, profile, schema),
                 }
             },
@@ -1667,7 +2223,8 @@ mod tests {
     use super::{
         additional_physical_columns, inventory_detail_query, inventory_group_query, medicine_query,
         medicine_query_with_physical_columns, normalize_scope, phis27_column_definitions,
-        phis27_source_dictionary, source_schema, table_dictionary_query, LegacyPhysicalColumn,
+        phis27_source_dictionary, source_schema, table_dictionary_query,
+        validate_inventory_source_columns, validate_medicine_source_columns, LegacyPhysicalColumn,
         Scope,
     };
     use crate::model::ConnectionProfile;
@@ -1685,6 +2242,69 @@ mod tests {
             driver: "Oracle 19 ODBC driver".into(),
             connection_string: String::new(),
         }
+    }
+
+    fn inventory_physical_columns() -> Vec<LegacyPhysicalColumn> {
+        [
+            ("YK_TYPK", "YPXH"),
+            ("YK_TYPK", "YPMC"),
+            ("YK_TYPK", "YPGG"),
+            ("YK_TYPK", "YPSX"),
+            ("YK_TYPK", "ZXDW"),
+            ("YK_TYPK", "YPDW"),
+            ("YK_TYPK", "ZXBZ"),
+            ("YK_TYPK", "YFDW"),
+            ("YK_TYPK", "YFBZ"),
+            ("YK_YPCD", "YPXH"),
+            ("YK_YPCD", "YPCD"),
+            ("YK_YPCD", "YBSPMC"),
+            ("YK_CDDZ", "YPCD"),
+            ("YK_CDDZ", "CDQC"),
+            ("YK_CDDZ", "CDMC"),
+            ("YK_KCMX", "SBXH"),
+            ("YK_KCMX", "JGID"),
+            ("YK_KCMX", "YPXH"),
+            ("YK_KCMX", "YPCD"),
+            ("YK_KCMX", "KCSL"),
+            ("YK_KCMX", "JHJG"),
+            ("YK_KCMX", "LSJG"),
+            ("YK_KCMX", "JHJE"),
+            ("YK_KCMX", "LSJE"),
+            ("YK_KCMX", "YPPH"),
+            ("YK_KCMX", "YPXQ"),
+            ("YK_YKLB", "YKSB"),
+            ("YK_YKLB", "JGID"),
+            ("YK_YKLB", "YKMC"),
+            ("YF_KCMX", "SBXH"),
+            ("YF_KCMX", "YFSB"),
+            ("YF_KCMX", "JGID"),
+            ("YF_KCMX", "YPXH"),
+            ("YF_KCMX", "YPCD"),
+            ("YF_KCMX", "YPSL"),
+            ("YF_KCMX", "JHJG"),
+            ("YF_KCMX", "LSJG"),
+            ("YF_KCMX", "JHJE"),
+            ("YF_KCMX", "LSJE"),
+            ("YF_KCMX", "YPPH"),
+            ("YF_KCMX", "YPXQ"),
+            ("YF_YPXX", "JGID"),
+            ("YF_YPXX", "YFSB"),
+            ("YF_YPXX", "YPXH"),
+            ("YF_YPXX", "YFBZ"),
+            ("YF_YPXX", "YFDW"),
+            ("YF_YPXX", "YFGG"),
+            ("YF_YFLB", "YFSB"),
+            ("YF_YFLB", "JGID"),
+            ("YF_YFLB", "YFMC"),
+        ]
+        .into_iter()
+        .map(|(table, column)| LegacyPhysicalColumn {
+            table: table.into(),
+            column: column.into(),
+            data_type: "NVARCHAR2".into(),
+            comment: String::new(),
+        })
+        .collect()
     }
 
     #[test]
@@ -1754,6 +2374,42 @@ mod tests {
     }
 
     #[test]
+    fn project_specific_missing_optional_columns_use_null_projections_instead_of_invalid_sql() {
+        let physical_columns = [
+            ("YK_TYPK", "YPXH"),
+            ("YK_TYPK", "YPMC"),
+            ("YK_YPCD", "YPXH"),
+            ("YK_YPCD", "YPCD"),
+            ("YK_CDDZ", "YPCD"),
+            ("YK_CDXX", "YPXH"),
+        ]
+        .into_iter()
+        .map(|(table, column)| LegacyPhysicalColumn {
+            table: table.into(),
+            column: column.into(),
+            data_type: "NVARCHAR2".into(),
+            comment: String::new(),
+        })
+        .collect::<Vec<_>>();
+
+        validate_medicine_source_columns(&physical_columns, Scope::UsedActive).unwrap();
+        let query =
+            medicine_query_with_physical_columns("PHIS27", Scope::UsedActive, &physical_columns);
+        assert!(!query.contains("t.MRYF"));
+        assert!(query.contains("CAST(NULL AS NVARCHAR2(4000)) AS FREQ_CODE"));
+        assert!(!query.contains("c.ZFPB"));
+        assert!(query.contains("EXISTS (SELECT 1 FROM PHIS27.YK_CDXX c WHERE c.YPXH=t.YPXH)"));
+    }
+
+    #[test]
+    fn missing_core_relation_columns_are_reported_before_query_execution() {
+        let error = validate_medicine_source_columns(&[], Scope::UsedActive).unwrap_err();
+        assert!(error.contains("YK_TYPK.YPXH"));
+        assert!(error.contains("YK_YPCD.YPCD"));
+        assert!(error.contains("YK_CDXX.YPXH"));
+    }
+
+    #[test]
     fn only_known_scopes_are_accepted() {
         assert!(normalize_scope("USED_ACTIVE").is_ok());
         assert!(normalize_scope("USED_ALL").is_ok());
@@ -1782,7 +2438,8 @@ mod tests {
 
     #[test]
     fn inventory_preflight_reads_both_stock_ledgers_by_composite_product_key() {
-        let query = inventory_group_query("PHIS27", true, true, true, true);
+        let physical_columns = inventory_physical_columns();
+        let query = inventory_group_query("PHIS27", true, true, true, true, &physical_columns);
         assert!(query.contains("PHIS27.YK_KCMX"));
         assert!(query.contains("PHIS27.YF_KCMX"));
         assert!(query.contains("NVL(k.KCSL,0)<>0"));
@@ -1800,7 +2457,7 @@ mod tests {
         assert!(!query.contains("YF_YPXX"));
         assert!(!query.contains(';'));
 
-        let detail = inventory_detail_query("PHIS27", true, true, true, true);
+        let detail = inventory_detail_query("PHIS27", true, true, true, true, &physical_columns);
         assert!(detail.contains("N'YK:'||l.LOCATION_ID"));
         assert!(detail.contains("N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128))"));
         assert!(detail.contains("CAST(k.YPPH AS NVARCHAR2(200)) AS BATCH_CODE"));
@@ -1813,6 +2470,42 @@ mod tests {
         assert!(detail.contains("CAST(k.JHJE AS NVARCHAR2(80)) AS PURCHASE_TOTAL"));
         assert!(detail.contains("CAST(k.LSJE AS NVARCHAR2(80)) AS RETAIL_TOTAL"));
         assert!(!detail.contains("NVL(k.YPPH,'')"));
+    }
+
+    #[test]
+    fn inventory_optional_columns_do_not_generate_invalid_identifiers() {
+        let physical_columns = inventory_physical_columns()
+            .into_iter()
+            .filter(|column| {
+                !matches!(
+                    (column.table.as_str(), column.column.as_str()),
+                    ("YK_KCMX", "JHJE")
+                        | ("YK_KCMX", "LSJE")
+                        | ("YK_KCMX", "YPPH")
+                        | ("YK_KCMX", "YPXQ")
+                        | ("YF_KCMX", "JHJE")
+                        | ("YF_KCMX", "LSJE")
+                        | ("YF_KCMX", "YPPH")
+                        | ("YF_KCMX", "YPXQ")
+                        | ("YF_YPXX", "YFGG")
+                        | ("YK_CDDZ", "CDQC")
+                        | ("YK_CDDZ", "CDMC")
+                        | ("YK_YPCD", "YBSPMC")
+                )
+            })
+            .collect::<Vec<_>>();
+        validate_inventory_source_columns(&physical_columns, true, true).unwrap();
+        let detail = inventory_detail_query("PHIS27", true, true, true, true, &physical_columns);
+        assert!(!detail.contains("k.JHJE"));
+        assert!(!detail.contains("k.LSJE"));
+        assert!(!detail.contains("k.YPPH"));
+        assert!(!detail.contains("k.YPXQ"));
+        assert!(!detail.contains("y.YFGG"));
+        assert!(!detail.contains("f.CDQC"));
+        assert!(!detail.contains("f.CDMC"));
+        assert!(!detail.contains("p.YBSPMC"));
+        assert!(detail.contains("k.KCSL*k.JHJG"));
+        assert!(detail.contains("k.YPSL*k.LSJG"));
     }
 
     #[test]
@@ -1930,6 +2623,8 @@ mod tests {
         assert!(!reference_catalog.organizations.is_empty());
         assert!(!reference_catalog.locations.is_empty());
         let schema = source_schema(&live).expect("PHIS27 schema");
+        let physical_columns =
+            super::load_physical_columns(&live, &schema).expect("PHIS27 physical columns");
         let inventory_query = inventory_group_query(
             &schema,
             inspection
@@ -1948,6 +2643,7 @@ mod tests {
                 .checked_tables
                 .iter()
                 .any(|table| table == "YF_YFLB"),
+            &physical_columns,
         );
         let inventory_preview = crate::odbc::preview_source(&live, &inventory_query, 10_000)
             .expect("PHIS27 inventory preflight");
@@ -1973,6 +2669,7 @@ mod tests {
                 .checked_tables
                 .iter()
                 .any(|table| table == "YF_YFLB"),
+            &physical_columns,
         );
         let inventory_detail_preview = crate::odbc::preview_source(&live, &inventory_detail, 1)
             .expect("PHIS27 inventory detail");

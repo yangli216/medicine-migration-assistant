@@ -395,7 +395,7 @@ export function ConnectionForm({
               />
               <small>
                 {value.kind === "oracle"
-                  ? "Windows 安装版会自动使用应用专用的内置驱动；也可选择电脑上已有的 Oracle 驱动"
+                  ? "内置 Oracle 19.31 支持服务端 11.2.0.4 及以上；更早的 11g 请安装匹配的 64 位 Oracle ODBC 驱动并在此选择"
                   : drivers.length
                   ? `已检测到 ${drivers.length} 个 ODBC 驱动`
                   : "未检测到本机驱动；连接测试时会给出安装或导入提示"}

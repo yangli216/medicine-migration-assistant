@@ -26,7 +26,7 @@
     "licenseNote": "Windows x64 安装包内置未经修改的 Oracle Instant Client 19.31 Basic 与 ODBC，并随包保留 Oracle 许可文件；无需另行下载客户端。",
     "officialUrl": "https://www.oracle.com/database/technologies/instant-client/winx64-64-downloads.html",
     "protocol": "odbc",
-    "installGuide": "Windows x64：安装程序会申请管理员权限，并用应用专用名称自动登记内置 ODBC 驱动，不覆盖电脑上已有的 Oracle 驱动。卸载应用时会移除该专用登记。macOS 继续使用应用已带的对应架构 Instant Client。",
+    "installGuide": "Windows x64：安装程序会申请管理员权限，并用应用专用名称自动登记内置 ODBC 驱动，不覆盖电脑上已有的 Oracle 驱动。内置 19.31 客户端支持 Oracle Database 11.2.0.4 及以上；更早的 11g 请升级数据库补丁，或安装匹配的本机 64 位 Oracle ODBC 驱动后在连接表单中选择。ORA-01017 表示已到达数据库服务，应核对密码大小写、Service Name 和账号 PASSWORD_VERSIONS。卸载应用时会移除该专用登记。macOS 继续使用应用已带的对应架构 Instant Client。",
     "platformPriority": ["windows-x64", "macos-arm64", "macos-x64"]
   },
   {

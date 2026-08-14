@@ -2,12 +2,14 @@ pub async fn load_target_storages(
     profile: &ConnectionProfile,
     tenant_id: &str,
 ) -> Result<TargetStorageCatalog, String> {
-    let storages = if crate::odbc::is_odbc_kind(&profile.kind) {
+    let storages = if crate::pg_protocol::uses_native_connection(profile) {
+        load_target_storages_pg(profile, tenant_id).await?
+    } else if crate::odbc::is_odbc_kind(&profile.kind) {
         load_target_storages_odbc(profile, tenant_id)?
     } else {
         let pool = connect_mysql(profile).await?;
         let rows = query::<MySql>(
-            "SELECT id_sto,na_sto,sd_sto,sds_sto_pro,id_org FROM hi_sto_dept \
+            "SELECT id_sto,na_sto,sd_sto,id_org FROM hi_sto_dept \
              WHERE id_tet=? AND fg_active='1' ORDER BY sd_sto,na_sto",
         )
         .bind(tenant_id)
@@ -29,8 +31,8 @@ pub async fn load_target_storages(
                     name: value(1),
                     storage_type_name: storage_type_name(&storage_type),
                     storage_type,
-                    product_types: value(3),
-                    organization_id: value(4),
+                    product_types: String::new(),
+                    organization_id: value(3),
                 }
             })
             .collect()

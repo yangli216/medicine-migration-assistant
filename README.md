@@ -7,7 +7,7 @@
 - 新系统门禁：验证目标系统访问地址，先通过 `/logon/myRoles` 取得并验证 `system` 的 `tenantSystem` 角色，再调用 `/logon/myApps` 完成角色登录；只有返回成功并下发非空 `tk` Cookie 后才允许进入和执行迁移。
 - 任务入口：药品基础信息同步、机构库存首次盘点均已开放。库存任务支持机构/库房映射、逐行核对、金额汇总、空库防重、首次盘点写入和安全撤销。
 - 来源：CSV、JSON、MySQL、Oracle、达梦 DM8、Gauss/openGauss、海量 Vastbase、南大通用 GBase 8c/8a/8s、人大金仓 KingbaseES、PostgreSQL 只读查询；单批最多读取 10,000 行。
-- 二系列phis适配：以 `YK_TYPK`、`YK_YPCD` 为药品主表，厂家读取 `YK_CDDZ`；提供“机构在用药品”“机构全部配置药品”“全部通用药品”三个范围。“机构在用”仅以有效 `YK_CDXX` 判断，库存读取 `YK_KCMX` / `YF_KCMX`。
+- 二系列phis适配：以 `YK_TYPK`、`YK_YPCD` 为药品主表，厂家读取 `YK_CDDZ`；提供“机构在用药品”“机构全部配置药品”“全部通用药品”三个范围。“机构在用”仅以有效 `YK_CDXX` 判断，库存读取 `YK_KCMX` / `YF_KCMX`。标准药品、机构和库存查询会先读取实际字段，核心关联字段缺失时给出明确清单，批号、效期、来源金额合计及描述字段缺失时使用空值或安全计算值继续核对。
 - 映射：推荐映射、逐字段确认、完整映射专家模式；支持可视化“旧值 → 新值”字典、默认值、大小写、空白清洗、整数/小数、布尔和日期标准化。
 - 在线字典：依据 `HiBdMed` 的 `@Dictionary(id=...)` 白名单，在 system 登录后复用 `tk` Cookie，以最多 6 路并发读取当前租户真实字典；界面展示编码与名称，可按编码、名称、拼音及常见组合格式生成安全映射，预校验会拒绝已加载字典范围外的编码。
 - 费用归并：登录后调用 `api/base.tenantDicService/medicineCostMerge` 读取当前租户归并项目；按药品类型推荐“西药→西药费、草药→草药费、疫苗→疫苗费、耗材→卫生材料费、中药/民族药/院内制剂→成药费”，由对接人员逐项确认后写入 `hi_bd_med.id_cstmg`。
@@ -86,7 +86,7 @@ npm run test:drivers
 
 MySQL 使用应用内置原生协议。PostgreSQL 兼容家族优先使用应用内置的 PostgreSQL 前端协议：PostgreSQL、openGauss/GaussDB、海量 Vastbase G100、南大通用 GBase 8c 和人大金仓 KingbaseES；连接测试、只读查询、表清单、目标结构检查、药品基础数据增量写入和安全撤销均不依赖本机 ODBC。每条药品来源记录在同一事务中完成药品、别名、包装单位、厂家和厂家商品写入，任一步失败整行回滚。特殊版本可在连接表单的高级区域显式配置厂商 ODBC 回退。
 
-Oracle、达梦 DM8、南大通用 GBase 8a/8s 默认使用 64 位 ODBC。其中 Windows x64 的 Oracle 19.31 驱动已内置并自动登记；保存的 `Oracle 19 ODBC driver` 配置会自动解析为应用专用驱动，不覆盖电脑原有 Oracle 客户端。GBase 产品必须选择具体分支，不能把 8a/8s 当作 8c 的 PostgreSQL 协议连接。PG 通用协议当前开放药品基础数据增量写入，不开放覆盖写入；机构库存首次盘点仍需按目标数据库版本完成方言验收。目标表结构或字段约束变化时，应同步调整 `src-tauri/src/target.rs`、`src-tauri/src/target_pg.rs`、`src-tauri/src/target_odbc.rs` 和库存写入语句。
+Oracle、达梦 DM8、南大通用 GBase 8a/8s 默认使用 64 位 ODBC。其中 Windows x64 的 Oracle 19.31 驱动已内置并自动登记；保存的 `Oracle 19 ODBC driver` 配置会自动解析为应用专用驱动，不覆盖电脑原有 Oracle 客户端。该内置客户端支持 Oracle Database 11.2.0.4 及以上；更早的 11g 小版本需要升级数据库补丁，或在 Windows 安装匹配的 64 位 Oracle ODBC 驱动并在连接中明确选择。`ORA-01017` 表示已经到达数据库服务但账号认证失败，应核对密码大小写、Service Name 和账号密码验证器，而不是重新安装驱动。GBase 产品必须选择具体分支，不能把 8a/8s 当作 8c 的 PostgreSQL 协议连接。PG 通用协议已覆盖药品基础数据增量写入与安全撤销，以及机构库存的库房读取、首次盘点和安全撤销；覆盖写入仍需显式使用已验收的厂商 ODBC。首次盘点在正式写入前会验证所有业务字段，ODBC 回退按数据库家族选择日期表达式，不再统一套用 Oracle 语法。
 
 ## 驱动预置策略
 

@@ -171,7 +171,7 @@ pub fn with_connection<T>(
         )
         .map_err(|error| {
             let detail = odbc_error(error);
-            if detail.to_ascii_lowercase().contains("driver") {
+            if odbc_driver_load_failure(&detail) {
                 format!(
                     "{}；请确认已安装与应用位数一致的 {} 官方 ODBC 驱动",
                     detail,
@@ -182,6 +182,16 @@ pub fn with_connection<T>(
             }
         })?;
     operation(&connection)
+}
+
+fn odbc_driver_load_failure(detail: &str) -> bool {
+    let normalized = detail.to_ascii_lowercase();
+    normalized.contains("sqlstate: im002")
+        || normalized.contains("sqlstate: im003")
+        || normalized.contains("sqlstate: im004")
+        || normalized.contains("data source name not found")
+        || normalized.contains("specified driver could not be loaded")
+        || normalized.contains("can't open lib")
 }
 
 fn configure_odbc_runtime() {
@@ -668,8 +678,8 @@ fn oracle_error_diagnosis(code: &str) -> Option<(&'static str, &'static str)> {
             "检查是否重复迁移；优先查看目标业务主键和本地来源映射台账",
         )),
         "ORA-00904" => Some((
-            "SQL 使用了目标库中不存在或无效的字段",
-            "确认数据库版本、Schema 和字段注释是否与当前迁移模板一致",
+            "SQL 引用了当前数据库中不存在或不可见的字段",
+            "二系列phis标准读取会先按实际表字段生成兼容查询；若仍出现，请核对错误发生阶段、Schema、表名和读取账号的字段权限",
         )),
         "ORA-00933" => Some((
             "SQL 语句结构不符合当前 Oracle 版本要求",
@@ -682,6 +692,10 @@ fn oracle_error_diagnosis(code: &str) -> Option<(&'static str, &'static str)> {
         "ORA-01031" => Some((
             "当前数据库账号权限不足",
             "为连接账号补充所需表的 SELECT 或 INSERT/UPDATE 权限后重试",
+        )),
+        "ORA-01017" => Some((
+            "账号认证失败；应用已经到达 Oracle 数据库服务，并非驱动缺失",
+            "核对账号、密码大小写和 Service Name；Oracle 11g 使用内置 19.31 客户端时，服务端应为 11.2.0.4 或以上，并请管理员确认该账号的 PASSWORD_VERSIONS 包含 11G",
         )),
         "ORA-01400" => Some((
             "目标必填字段不允许写入空值",
@@ -722,6 +736,10 @@ fn oracle_error_diagnosis(code: &str) -> Option<(&'static str, &'static str)> {
         "ORA-12704" => Some((
             "查询表达式字符集不匹配，通常是 NVARCHAR2 与 VARCHAR2 在 UNION、CASE 或 NVL 中混用",
             "统一相关表达式的字符类型；应用内置库存查询已改为显式 NVARCHAR2 转换",
+        )),
+        "ORA-28040" => Some((
+            "数据库与客户端没有可共同使用的密码认证协议",
+            "Oracle 11g 请确认服务端至少为 11.2.0.4，并让管理员检查账号的 PASSWORD_VERSIONS；更早版本应升级补丁或改用与该数据库匹配的本机 64 位 Oracle ODBC 驱动",
         )),
         "ORA-12899" => Some((
             "写入值超过目标字段允许长度",
@@ -873,6 +891,27 @@ mod tests {
         let error = odbc_error("State: 42S02, Native error: 942, Message: ��");
         assert!(error.contains("Oracle ORA-00942"));
         assert!(error.contains("表或视图不存在"));
+    }
+
+    #[test]
+    fn invalid_column_error_does_not_mislabel_a_source_query_as_target_database() {
+        let error = odbc_error(
+            "State: 42S22, Native error: 904, Message: [Oracle][ODBC][Ora]ORA-00904: invalid identifier",
+        );
+        assert!(error.contains("当前数据库中不存在或不可见"));
+        assert!(error.contains("按实际表字段生成兼容查询"));
+        assert!(!error.contains("目标库"));
+    }
+
+    #[test]
+    fn oracle_login_failure_explains_11g_compatibility_without_blame_driver_installation() {
+        let error = odbc_error(
+            "State: 28000, Native error: 1017, Message: [Oracle][ODBC][Ora]ORA-01017: invalid username/password; logon denied",
+        );
+        assert!(error.contains("已经到达 Oracle 数据库服务"));
+        assert!(error.contains("11.2.0.4"));
+        assert!(error.contains("PASSWORD_VERSIONS"));
+        assert!(!super::odbc_driver_load_failure(&error));
     }
 
     #[test]
