@@ -189,6 +189,97 @@ function semanticGroupKey(value) {
   return index >= 0 ? `medical-${index}` : "";
 }
 
+const dictionarySemanticRankingCache = new WeakMap();
+
+function cachedDictionarySemanticRanking(value, items) {
+  if (!Array.isArray(items) || !items.length) return [];
+  const source = normalized(value);
+  if (!source) {
+    return items.map((item, sourceOrder) => ({
+      item,
+      score: 0,
+      reason: "",
+      sourceOrder,
+    }));
+  }
+  let rankingsBySource = dictionarySemanticRankingCache.get(items);
+  if (!rankingsBySource) {
+    rankingsBySource = new Map();
+    dictionarySemanticRankingCache.set(items, rankingsBySource);
+  }
+  if (rankingsBySource.has(source)) return rankingsBySource.get(source);
+
+  const sourceCompact = compactMeaning(value);
+  const sourceWithoutQualifier = meaningWithoutCodeQualifier(value);
+  const sourceGroup = semanticGroupKey(value);
+  const sourceSegments = meaningSegments(value);
+  const ranking = items
+    .map((item, sourceOrder) => {
+      const meanings = [...new Set([item.text, item.na].filter(Boolean))];
+      let best = { item, score: 0, reason: "", sourceOrder };
+      meanings.forEach((meaning) => {
+        let score = 0;
+        let reason = "";
+        if (normalized(meaning) === source) {
+          score = 100;
+          reason = "中文含义一致";
+        } else if (compactMeaning(meaning) === sourceCompact) {
+          score = 98;
+          reason = "忽略空格和标点后一致";
+        } else if (
+          sourceWithoutQualifier &&
+          meaningWithoutCodeQualifier(meaning) === sourceWithoutQualifier
+        ) {
+          score = 96;
+          reason = "忽略编码或缩写注释后一致";
+        } else if (sourceGroup && semanticGroupKey(meaning) === sourceGroup) {
+          score = 94;
+          reason = "常用医学同义表达";
+        } else {
+          const targetSegments = meaningSegments(meaning);
+          const compoundExact = sourceSegments.some((sourceSegment) =>
+            targetSegments.some(
+              (targetSegment) =>
+                sourceSegment === targetSegment &&
+                (sourceSegments.length > 1 || targetSegments.length > 1),
+            ),
+          );
+          if (compoundExact) {
+            score = 97;
+            reason = "目标复合含义包含来源名称";
+          } else {
+            let bestSimilarity = 0;
+            sourceSegments.forEach((sourceSegment) => {
+              targetSegments.forEach((targetSegment) => {
+                bestSimilarity = Math.max(
+                  bestSimilarity,
+                  fuzzyMeaningSimilarity(sourceSegment, targetSegment),
+                );
+              });
+            });
+            if (bestSimilarity > 0) {
+              score = Math.min(89, Math.round(bestSimilarity * 100));
+              reason =
+                bestSimilarity >= 0.78
+                  ? "名称存在包含或近似关系，需人工确认"
+                  : bestSimilarity >= 0.65
+                    ? "名称相似，需人工确认"
+                    : "弱相似，仅用于候选排序";
+            }
+          }
+        }
+        if (score > best.score) best = { item, score, reason, sourceOrder };
+      });
+      return best;
+    })
+    .sort(
+      (left, right) =>
+        right.score - left.score || left.sourceOrder - right.sourceOrder,
+    );
+  rankingsBySource.set(source, ranking);
+  return ranking;
+}
+
 export function findDictionarySemanticMatch(value, items = []) {
   const candidates = rankDictionarySemanticMatches(value, items);
   if (!candidates.length) return null;
@@ -199,74 +290,13 @@ export function findDictionarySemanticMatch(value, items = []) {
 }
 
 export function rankDictionarySemanticMatches(value, items = []) {
-  const source = normalized(value);
-  if (!source) return [];
-  const sourceCompact = compactMeaning(value);
-  const sourceWithoutQualifier = meaningWithoutCodeQualifier(value);
-  const sourceGroup = semanticGroupKey(value);
-  const sourceSegments = meaningSegments(value);
-  const candidates = items.flatMap((item, sourceOrder) => {
-    const meanings = [...new Set([item.text, item.na].filter(Boolean))];
-    let best = null;
-    meanings.forEach((meaning) => {
-      let score = 0;
-      let reason = "";
-      if (normalized(meaning) === source) {
-        score = 100;
-        reason = "中文含义一致";
-      } else if (compactMeaning(meaning) === sourceCompact) {
-        score = 98;
-        reason = "忽略空格和标点后一致";
-      } else if (
-        sourceWithoutQualifier &&
-        meaningWithoutCodeQualifier(meaning) === sourceWithoutQualifier
-      ) {
-        score = 96;
-        reason = "忽略编码或缩写注释后一致";
-      } else if (sourceGroup && semanticGroupKey(meaning) === sourceGroup) {
-        score = 94;
-        reason = "常用医学同义表达";
-      } else {
-        const targetSegments = meaningSegments(meaning);
-        const compoundExact = sourceSegments.some((sourceSegment) =>
-          targetSegments.some(
-            (targetSegment) =>
-              sourceSegment === targetSegment &&
-              (sourceSegments.length > 1 || targetSegments.length > 1),
-          ),
-        );
-        if (compoundExact) {
-          score = 97;
-          reason = "目标复合含义包含来源名称";
-        } else {
-          let bestSimilarity = 0;
-          sourceSegments.forEach((sourceSegment) => {
-            targetSegments.forEach((targetSegment) => {
-              bestSimilarity = Math.max(
-                bestSimilarity,
-                fuzzyMeaningSimilarity(sourceSegment, targetSegment),
-              );
-            });
-          });
-          if (bestSimilarity >= 0.65) {
-            score = Math.min(89, Math.round(bestSimilarity * 100));
-            reason =
-              bestSimilarity >= 0.78
-                ? "名称存在包含或近似关系，需人工确认"
-                : "名称相似，需人工确认";
-          }
-        }
-      }
-      if (score > (best?.score || 0)) {
-        best = { item, score, reason, sourceOrder };
-      }
-    });
-    return best ? [best] : [];
-  });
-  return candidates.sort(
-    (left, right) =>
-      right.score - left.score || left.sourceOrder - right.sourceOrder,
+  return cachedDictionarySemanticRanking(value, items).filter(
+    (candidate) => candidate.score >= 65,
   );
+}
+
+export function rankDictionaryTargetsBySimilarity(value, items = []) {
+  return cachedDictionarySemanticRanking(value, items);
 }
 
 function booleanMeaning(value) {

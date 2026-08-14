@@ -5,7 +5,10 @@ import { transformWithEsbuild } from "vite";
 import * as phosphorIcons from "@phosphor-icons/react";
 
 test("main React flow compiles as JSX", async () => {
-  const source = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+  const source = await readFile(
+    new URL("../src/App.jsx", import.meta.url),
+    "utf8",
+  );
   const result = await transformWithEsbuild(source, "App.jsx", {
     loader: "jsx",
     jsx: "automatic",
@@ -95,7 +98,10 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
     new URL("../src-tauri/src/local_store.rs", import.meta.url),
     "utf8",
   );
-  assert.doesNotMatch(`${appSource}\n${selectSource}`, /<(?:select|datalist)\b/i);
+  assert.doesNotMatch(
+    `${appSource}\n${selectSource}`,
+    /<(?:select|datalist)\b/i,
+  );
   assert.match(appSource, /<SearchableSelect/);
   assert.match(appSource, /DRUG_NAME: "药品名称"/);
   assert.match(appSource, /SPEC: "制剂规格"/);
@@ -179,7 +185,10 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /就绪 \{readyCount\}\/\{statuses\.length\}/);
   assert.match(appSource, /全部字段配置总览/);
   assert.match(appSource, /来源字段和字典项都可在此维护/);
-  assert.match(appSource, /字典 \{status\.dictionaryHandled\}\/\{status\.dictionaryTotal\}/);
+  assert.match(
+    appSource,
+    /字典 \{status\.dictionaryHandled\}\/\{status\.dictionaryTotal\}/,
+  );
   assert.match(appSource, /详细配置/);
   assert.match(appSource, /DictionaryMappingEditor/);
   assert.match(appSource, /来源为 NULL、空字符串或仅空格/);
@@ -192,7 +201,14 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /已忽略/);
   assert.match(appSource, /按来源出现顺序固定展示，操作后不重排/);
   assert.match(appSource, /推荐匹配（按置信度排序）/);
-  assert.match(appSource, /其他字典项（保持原顺序）/);
+  assert.match(appSource, /全部字典项（按相似度排序）/);
+  assert.match(appSource, /其他字典项（按相似度排序）/);
+  assert.match(appSource, /来源值药品明细/);
+  assert.match(appSource, /搜索药品名称、规格、厂家、商品名或来源键/);
+  assert.match(appSource, /每页最多 \{pageSize\} 条/);
+  assert.match(stylesSource, /\.dictionary-medicine-dialog/);
+  assert.match(stylesSource, /\.dictionary-match-source__meta/);
+  assert.match(selectSource, /startTransition/);
   assert.match(selectSource, /searchable-select__group/);
   assert.match(stylesSource, /\.searchable-select__group/);
   assert.match(appSource, /映射阶段还有/);
@@ -206,7 +222,10 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /每日次数/);
   assert.match(appSource, /candidate\.score >= 70/);
   assert.match(appSource, /\.\.\.sourceFieldOptions/);
-  assert.match(appSource, /metadataByName\[column\]\?\.mappingEligible !== false/);
+  assert.match(
+    appSource,
+    /metadataByName\[column\]\?\.mappingEligible !== false/,
+  );
   assert.match(appSource, /lengthSimilarity >= 0\.8/);
   assert.match(appSource, /label: sourceFieldDisplayName\(column, metadata\)/);
   assert.match(appSource, /sourceFieldPhysicalOrigin/);
@@ -278,9 +297,18 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   );
   assert.match(appSource, /const createEntry = \(\) =>/);
   assert.match(appSource, /className="connection-editor__content"/);
-  assert.match(appSource, /draft\.connectionId[\s\S]*\? "更新连接"[\s\S]*: "保存连接"/);
-  assert.match(stylesSource, /\.searchable-select__menu\s*\{[\s\S]*?z-index: 200/);
-  assert.match(stylesSource, /\.connection-editor__actions\s*\{[\s\S]*?flex: 0 0 auto/);
+  assert.match(
+    appSource,
+    /draft\.connectionId[\s\S]*\? "更新连接"[\s\S]*: "保存连接"/,
+  );
+  assert.match(
+    stylesSource,
+    /\.searchable-select__menu\s*\{[\s\S]*?z-index: 200/,
+  );
+  assert.match(
+    stylesSource,
+    /\.connection-editor__actions\s*\{[\s\S]*?flex: 0 0 auto/,
+  );
   const connectionActionStyles =
     stylesSource.match(/\.connection-editor__actions\s*\{([^}]*)\}/)?.[1] || "";
   assert.doesNotMatch(connectionActionStyles, /position:\s*sticky/);
@@ -301,7 +329,10 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /从校验失败定位：第/);
   assert.match(appSource, /返回校验结果/);
   assert.match(appSource, /setMappingSampleIndex\(row\.rowNo - 1\)/);
-  assert.match(appSource, /detail\.batch\.failCount > 0 \? "INVALID" : "VALIDATED"/);
+  assert.match(
+    appSource,
+    /detail\.batch\.failCount > 0 \? "INVALID" : "VALIDATED"/,
+  );
   assert.match(appSource, /当前显示 \{rangeStart\}–\{rangeEnd\}/);
   assert.match(appSource, /每页最多 \{pageSize\} 条，所有结果均可逐页查看/);
   assert.match(appSource, /正在校验 \{rows\.length\} 条待迁移数据/);
@@ -333,7 +364,10 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /save_phis27_mapping_profile/);
   assert.match(appSource, /已恢复固化映射/);
   assert.match(appSource, /数据库注释仍按本次连接实时刷新/);
-  assert.match(appSource, /Object\.prototype\.hasOwnProperty\.call\(restoredMapping/);
+  assert.match(
+    appSource,
+    /Object\.prototype\.hasOwnProperty\.call\(restoredMapping/,
+  );
   assert.match(appSource, /自动记住连接参数/);
   assert.match(appSource, /同时记住密码（本地加密）/);
   assert.match(appSource, /忘记已保存连接/);

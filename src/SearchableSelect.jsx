@@ -1,4 +1,12 @@
-import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  startTransition,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { CaretDown, Check, MagnifyingGlass } from "@phosphor-icons/react";
 import { createPortal } from "react-dom";
 
@@ -112,7 +120,9 @@ export function SearchableSelect({
       ),
     );
     updateMenuPosition();
-    const focusTimer = window.requestAnimationFrame(() => searchRef.current?.focus());
+    const focusTimer = window.requestAnimationFrame(() =>
+      searchRef.current?.focus(),
+    );
     const closeWhenClickingOutside = (event) => {
       if (
         !rootRef.current?.contains(event.target) &&
@@ -147,10 +157,12 @@ export function SearchableSelect({
 
   const choose = (option) => {
     if (option.disabled) return;
-    onChange(option.value);
     setOpen(false);
     setQuery("");
-    window.requestAnimationFrame(() => rootRef.current?.querySelector("button")?.focus());
+    window.requestAnimationFrame(() =>
+      rootRef.current?.querySelector("button")?.focus(),
+    );
+    startTransition(() => onChange(option.value));
   };
 
   const handleKeyboard = (event) => {
@@ -162,8 +174,9 @@ export function SearchableSelect({
       }
       if (!visibleOptions.length) return;
       const direction = event.key === "ArrowDown" ? 1 : -1;
-      setActiveIndex((current) =>
-        (current + direction + visibleOptions.length) % visibleOptions.length,
+      setActiveIndex(
+        (current) =>
+          (current + direction + visibleOptions.length) % visibleOptions.length,
       );
       return;
     }
@@ -219,14 +232,24 @@ export function SearchableSelect({
                 value={query}
               />
             </div>
-            <div className="searchable-select__options" id={listboxId} role="listbox">
+            <div
+              className="searchable-select__options"
+              id={listboxId}
+              role="listbox"
+            >
               {visibleOptions.map((option, index) => (
-                <Fragment key={`${option.custom ? "custom" : "option"}-${option.value}`}>
-                  {option.group && option.group !== visibleOptions[index - 1]?.group && (
-                    <div className="searchable-select__group" role="presentation">
-                      {option.group}
-                    </div>
-                  )}
+                <Fragment
+                  key={`${option.custom ? "custom" : "option"}-${option.value}`}
+                >
+                  {option.group &&
+                    option.group !== visibleOptions[index - 1]?.group && (
+                      <div
+                        className="searchable-select__group"
+                        role="presentation"
+                      >
+                        {option.group}
+                      </div>
+                    )}
                   <button
                     aria-disabled={option.disabled}
                     aria-selected={option.value === `${value ?? ""}`}
@@ -240,7 +263,9 @@ export function SearchableSelect({
                   >
                     <span className="searchable-select__option-copy">
                       <strong>{option.label}</strong>
-                      {option.description && <small>{option.description}</small>}
+                      {option.description && (
+                        <small>{option.description}</small>
+                      )}
                       {option.meta && <em>{option.meta}</em>}
                     </span>
                     {option.value === `${value ?? ""}` && (
@@ -254,7 +279,8 @@ export function SearchableSelect({
               )}
               {displayedOptions.length > visibleOptions.length && (
                 <div className="searchable-select__more">
-                  还有 {displayedOptions.length - visibleOptions.length} 项，请继续输入关键词缩小范围
+                  还有 {displayedOptions.length - visibleOptions.length}{" "}
+                  项，请继续输入关键词缩小范围
                 </div>
               )}
             </div>

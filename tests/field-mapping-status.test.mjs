@@ -108,6 +108,11 @@ test("dictionary rows keep first-source occurrence order after updates", () => {
     status.dictionaryRows.map((item) => item.sourceValue),
     ["INJ", "CAP"],
   );
+  assert.deepEqual(
+    status.dictionaryRows[0].medicines.map((item) => item.rowIndex),
+    [0, 2],
+  );
+  assert.equal(status.dictionaryRows[0].medicines[0].row.FORM_CODE, "INJ");
 });
 
 test("invalid dispensing method is pending during field mapping", () => {
@@ -207,5 +212,11 @@ test("compound dictionary meaning is exposed as a high-confidence suggestion", (
   assert.equal(
     status.dictionaryRows[0].suggestionReason,
     "目标复合含义包含来源名称",
+  );
+  assert.deepEqual(
+    status.dictionaryRows[0].targetSimilarityRanking.map(
+      ({ item }) => item.key,
+    ),
+    ["62"],
   );
 });

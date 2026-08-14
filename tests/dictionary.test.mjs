@@ -6,6 +6,7 @@ import {
   findDictionaryItem,
   findDictionarySemanticMatch,
   rankDictionarySemanticMatches,
+  rankDictionaryTargetsBySimilarity,
   mergeValueMappingText,
   replaceValueMappingText,
   recommendCostMergeMappings,
@@ -179,6 +180,25 @@ test("keeps fuzzy and ambiguous meanings as review-only candidates", () => {
       ({ item }) => item.key,
     ),
     ["A", "B"],
+  );
+});
+
+test("sorts all target values by weak similarity when no recommendation is safe", () => {
+  const targetItems = [
+    { key: "A", text: "完全不同" },
+    { key: "B", text: "浓缩颗粒" },
+    { key: "C", text: "其他类型" },
+  ];
+  const ranked = rankDictionaryTargetsBySimilarity("浓缩丸", targetItems);
+  assert.equal(rankDictionarySemanticMatches("浓缩丸", targetItems).length, 0);
+  assert.deepEqual(
+    ranked.map(({ item }) => item.key),
+    ["B", "A", "C"],
+  );
+  assert.ok(ranked[0].score > 0 && ranked[0].score < 65);
+  assert.equal(
+    rankDictionaryTargetsBySimilarity("浓缩丸", targetItems),
+    ranked,
   );
 });
 

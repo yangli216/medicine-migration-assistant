@@ -1,13 +1,17 @@
-import { useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
+  CaretLeft,
+  CaretRight,
   CheckCircle,
   Info,
   LinkSimple,
   MagnifyingGlass,
   Warning,
+  X,
 } from "@phosphor-icons/react";
 import { dictionaryItemValue } from "./dictionary";
+import { firstPresentValue } from "./migrationPreview";
 import { SearchableSelect } from "./SearchableSelect";
 import { IGNORE_VALUE_MAPPING_TARGET } from "./transforms";
 
@@ -38,6 +42,216 @@ function filterStatus(status, filter) {
   if (filter === "DICTIONARY") return status.state === "dictionary";
   if (filter === "READY") return status.state === "ready";
   return true;
+}
+
+function toMedicineListItem(entry) {
+  const row = entry.row || {};
+  return {
+    rowIndex: entry.rowIndex,
+    sourceKey: firstPresentValue(row, [
+      "SOURCE_KEY",
+      "SOURCE_MED_PRO_KEY",
+      "DRUG_CODE",
+      "_sourceKey",
+    ]),
+    name: firstPresentValue(row, [
+      "DRUG_NAME",
+      "YPMC",
+      "GENERIC_NAME",
+      "naMed",
+    ]),
+    specification: firstPresentValue(row, [
+      "SPEC",
+      "YPGG",
+      "DRUG_SPEC",
+      "spec",
+    ]),
+    dosageForm: firstPresentValue(row, [
+      "FORM_CODE",
+      "YPSX",
+      "DOSE_FORM",
+      "sdDose",
+    ]),
+    unit: firstPresentValue(row, [
+      "PRE_UNIT",
+      "ZXDW",
+      "YPDW",
+      "MIN_UNIT",
+      "unitPre",
+    ]),
+    manufacturer: firstPresentValue(row, [
+      "FACTORY_NAME",
+      "CDQC",
+      "CDMC",
+      "MANUFACTURER",
+      "naFac",
+    ]),
+    productName: firstPresentValue(row, [
+      "PRODUCT_NAME",
+      "YBSPMC",
+      "BRAND_NAME",
+      "naMedPro",
+    ]),
+  };
+}
+
+function SourceValueMedicineDialog({ field, item, onClose }) {
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(0);
+  const deferredQuery = useDeferredValue(
+    query.trim().toLocaleLowerCase("zh-CN"),
+  );
+  const medicines = useMemo(
+    () => (item.medicines || []).map(toMedicineListItem),
+    [item.medicines],
+  );
+  const filtered = useMemo(() => {
+    if (!deferredQuery) return medicines;
+    return medicines.filter((medicine) =>
+      Object.values(medicine)
+        .join(" ")
+        .toLocaleLowerCase("zh-CN")
+        .includes(deferredQuery),
+    );
+  }, [deferredQuery, medicines]);
+  const pageSize = 40;
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(page, pageCount - 1);
+  const visible = filtered.slice(
+    safePage * pageSize,
+    (safePage + 1) * pageSize,
+  );
+
+  useEffect(() => {
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  const sourceLabel = item.sourceIsBlank
+    ? "空值"
+    : item.sourceText || `来源编码 ${item.sourceValue}`;
+
+  return (
+    <div
+      className="dictionary-medicine-backdrop"
+      onMouseDown={onClose}
+      role="presentation"
+    >
+      <section
+        aria-label={`${sourceLabel}对应药品列表`}
+        aria-modal="true"
+        className="dictionary-medicine-dialog"
+        onMouseDown={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <header className="dictionary-medicine-dialog__header">
+          <div>
+            <span className="eyebrow">来源值药品明细</span>
+            <h2>{sourceLabel}</h2>
+            <p>
+              {field.label} ·{" "}
+              {item.sourceIsBlank ? "来源为空" : `来源编码 ${item.sourceValue}`}{" "}
+              · 共 {item.count} 条药品
+            </p>
+          </div>
+          <button
+            aria-label="关闭药品列表"
+            className="icon-button"
+            onClick={onClose}
+            type="button"
+          >
+            <X size={19} />
+          </button>
+        </header>
+        <div className="dictionary-medicine-dialog__toolbar">
+          <label>
+            <MagnifyingGlass size={16} />
+            <input
+              aria-label="搜索对应药品"
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setPage(0);
+              }}
+              placeholder="搜索药品名称、规格、厂家、商品名或来源键"
+              type="search"
+              value={query}
+            />
+          </label>
+          <span>
+            当前显示 <b>{filtered.length}</b> / {medicines.length} 条
+          </span>
+        </div>
+        <div className="dictionary-medicine-table-wrap">
+          <table className="dictionary-medicine-table">
+            <thead>
+              <tr>
+                <th>来源</th>
+                <th>药品名称</th>
+                <th>规格 / 剂型</th>
+                <th>单位</th>
+                <th>厂家 / 商品名</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((medicine) => (
+                <tr key={`${medicine.rowIndex}-${medicine.sourceKey}`}>
+                  <td>
+                    <strong>第 {medicine.rowIndex + 1} 行</strong>
+                    <small>{medicine.sourceKey || "—"}</small>
+                  </td>
+                  <td>{medicine.name || "未命名药品"}</td>
+                  <td>
+                    <strong>{medicine.specification || "—"}</strong>
+                    <small>{medicine.dosageForm || "剂型未提供"}</small>
+                  </td>
+                  <td>{medicine.unit || "—"}</td>
+                  <td>
+                    <strong>{medicine.manufacturer || "—"}</strong>
+                    <small>{medicine.productName || "商品名未提供"}</small>
+                  </td>
+                </tr>
+              ))}
+              {!visible.length && (
+                <tr>
+                  <td className="dictionary-medicine-table__empty" colSpan="5">
+                    没有符合搜索条件的药品
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <footer className="dictionary-medicine-dialog__footer">
+          <span>
+            第 {safePage + 1} / {pageCount} 页 · 每页最多 {pageSize} 条
+          </span>
+          <div>
+            <button
+              className="button button--secondary"
+              disabled={safePage === 0}
+              onClick={() => setPage((current) => Math.max(0, current - 1))}
+              type="button"
+            >
+              <CaretLeft size={15} /> 上一页
+            </button>
+            <button
+              className="button button--secondary"
+              disabled={safePage >= pageCount - 1}
+              onClick={() =>
+                setPage((current) => Math.min(pageCount - 1, current + 1))
+              }
+              type="button"
+            >
+              下一页 <CaretRight size={15} />
+            </button>
+          </div>
+        </footer>
+      </section>
+    </div>
+  );
 }
 
 export function FieldMappingNavigator({
@@ -183,6 +397,7 @@ export function DictionaryMappingEditor({
   valueMappingsText,
 }) {
   const [filter, setFilter] = useState("ALL");
+  const [selectedMedicineGroup, setSelectedMedicineGroup] = useState(null);
   if (!dictionary) return null;
   const handled = rows.filter((item) => item.matched || item.ignored).length;
   const filterCounts = Object.fromEntries(
@@ -197,177 +412,210 @@ export function DictionaryMappingEditor({
     (item) => filter === "ALL" || dictionaryRowState(item) === filter,
   );
   return (
-    <section className="dictionary-match-panel">
-      <div className="dictionary-match-panel__heading">
-        <div>
-          <strong>二系列字典 → 新系统字典</strong>
-          <span>
-            {sourceDictionary?.name || "来源字段值"}
-            {sourceDictionary?.entry
-              ? ` · ${sourceDictionary.entry}.${sourceDictionary.keyField} → ${sourceDictionary.textField}`
-              : ""}
-            {` · 本次数据出现 ${rows.length} 类值${rows.some((item) => item.sourceIsBlank) ? "（含空值）" : ""} · 已处理 ${handled} 个`}
-          </span>
-        </div>
-        <div>
-          <button
-            className="button button--secondary"
-            type="button"
-            onClick={onAutoMap}
-          >
-            <LinkSimple size={16} />
-            一键按含义匹配
-          </button>
-          <button
-            className="button button--ghost"
-            disabled={!valueMappingsText}
-            onClick={onClear}
-            type="button"
-          >
-            清空转换
-          </button>
-        </div>
-      </div>
-      {sourceDictionary?.loadStatus === "unavailable" && (
-        <div className="dictionary-load-note dictionary-load-note--warning">
-          <Warning size={16} weight="fill" />
-          <span>{sourceDictionary.loadMessage}</span>
-        </div>
-      )}
-      {sourceDictionary?.loadStatus === "empty" && (
-        <div className="dictionary-load-note">
-          <Info size={16} />
-          <span>{sourceDictionary.loadMessage}</span>
-        </div>
-      )}
-      <div className="dictionary-match-filters">
-        <div aria-label="字典匹配状态筛选" role="group">
-          {dictionaryFilters.map((item) => (
+    <>
+      <section className="dictionary-match-panel">
+        <div className="dictionary-match-panel__heading">
+          <div>
+            <strong>二系列字典 → 新系统字典</strong>
+            <span>
+              {sourceDictionary?.name || "来源字段值"}
+              {sourceDictionary?.entry
+                ? ` · ${sourceDictionary.entry}.${sourceDictionary.keyField} → ${sourceDictionary.textField}`
+                : ""}
+              {` · 本次数据出现 ${rows.length} 类值${rows.some((item) => item.sourceIsBlank) ? "（含空值）" : ""} · 已处理 ${handled} 个`}
+            </span>
+          </div>
+          <div>
             <button
-              aria-pressed={filter === item.key}
-              className={filter === item.key ? "is-active" : ""}
-              key={item.key}
-              onClick={() => setFilter(item.key)}
+              className="button button--secondary"
+              type="button"
+              onClick={onAutoMap}
+            >
+              <LinkSimple size={16} />
+              一键按含义匹配
+            </button>
+            <button
+              className="button button--ghost"
+              disabled={!valueMappingsText}
+              onClick={onClear}
               type="button"
             >
-              {item.label}
-              <b>{filterCounts[item.key]}</b>
+              清空转换
             </button>
-          ))}
+          </div>
         </div>
-        <span>按来源出现顺序固定展示，操作后不重排</span>
-      </div>
-      <div className="dictionary-match-list">
-        {visibleRows.map((item) => {
-          const suggestionCode = item.suggestedTarget
-            ? dictionaryItemValue(item.suggestedTarget)
-            : "";
-          const candidateCount = item.suggestedCandidates?.length || 0;
-          const recommendedCodes = new Set(
-            (item.suggestedCandidates || []).map(({ target }) =>
-              dictionaryItemValue(target),
-            ),
-          );
-          const recommendedOptions = (item.suggestedCandidates || []).map(
-            ({ target, confidence, reason }) => ({
-              value: dictionaryItemValue(target),
-              label: `${target.text || target.na}（${dictionaryItemValue(target)}）`,
-              description: `${reason} · 置信度 ${confidence}%`,
-              keywords: `${target.py || ""} ${target.wb || ""}`,
-              group: "推荐匹配（按置信度排序）",
-            }),
-          );
-          return (
-            <div className="dictionary-match-row" key={item.sourceValue}>
-              <span className="dictionary-match-source">
-                <strong>
-                  {item.sourceIsBlank
-                    ? "空值"
-                    : item.sourceText || "待补充来源含义"}
-                </strong>
-                <small>
-                  {item.sourceIsBlank
-                    ? `来源为 NULL、空字符串或仅空格 · ${item.count} 条药品`
-                    : `来源编码 ${item.sourceValue} · ${item.count} 条药品`}
-                </small>
-                {item.sourceProperties && (
-                  <small title={item.sourceProperties}>
-                    {item.sourceProperties}
-                  </small>
-                )}
-              </span>
-              <ArrowRight size={17} />
-              <SearchableSelect
-                ariaLabel={`${item.sourceIsBlank ? "空值" : item.sourceText || item.sourceValue}目标字典值`}
-                onChange={(next) => onChange(item.sourceValue, next)}
-                options={[
-                  ...recommendedOptions,
-                  {
-                    value: "",
-                    label: suggestionCode
-                      ? `未采用 · 建议 ${item.suggestedTarget.text || item.suggestedTarget.na}（${suggestionCode}）`
-                      : candidateCount
-                        ? `尚未选择 · 有 ${candidateCount} 个相似候选`
-                        : "尚未选择目标字典值",
-                    description: suggestionCode
-                      ? `${item.suggestionReason} · 置信度 ${item.suggestionConfidence}%`
-                      : "",
-                    group: "匹配操作",
-                  },
-                  ...(!field.required
-                    ? [
-                        {
-                          value: IGNORE_VALUE_MAPPING_TARGET,
-                          label: "忽略此来源值",
-                          description:
-                            "目标字段留空，并记录为已人工确认忽略；该值不再触发字典校验。",
-                          group: "匹配操作",
-                        },
-                      ]
-                    : []),
-                  ...dictionary.items
-                    .filter(
-                      (targetItem) =>
-                        !recommendedCodes.has(dictionaryItemValue(targetItem)),
-                    )
-                    .map((targetItem) => ({
-                      value: dictionaryItemValue(targetItem),
-                      label: `${targetItem.text || targetItem.na}（${dictionaryItemValue(targetItem)}）`,
-                      keywords: `${targetItem.py || ""} ${targetItem.wb || ""}`,
-                      group: "其他字典项（保持原顺序）",
-                    })),
-                ]}
-                searchPlaceholder="按编码、名称或拼音查找"
-                value={
-                  item.ignored
-                    ? IGNORE_VALUE_MAPPING_TARGET
-                    : item.appliedTarget
-                }
-              />
-              <span
-                className={`dictionary-match-status ${item.ignored ? "dictionary-match-status--ignored" : item.matched ? "dictionary-match-status--done" : candidateCount ? "dictionary-match-status--suggested" : ""}`}
-              >
-                {item.ignored
-                  ? "已忽略"
-                  : item.matched
-                    ? "已确认"
-                    : suggestionCode
-                      ? `${item.suggestionConfidence}% 建议`
-                      : candidateCount
-                        ? `${candidateCount} 个候选`
-                        : "待确认"}
-              </span>
-            </div>
-          );
-        })}
-        {!visibleRows.length && (
-          <div className="dictionary-match-empty">
-            {rows.length
-              ? `当前没有${dictionaryFilters.find((item) => item.key === filter)?.label || "符合条件的"}项。`
-              : "当前数据没有可配置的来源值。"}
+        {sourceDictionary?.loadStatus === "unavailable" && (
+          <div className="dictionary-load-note dictionary-load-note--warning">
+            <Warning size={16} weight="fill" />
+            <span>{sourceDictionary.loadMessage}</span>
           </div>
         )}
-      </div>
-    </section>
+        {sourceDictionary?.loadStatus === "empty" && (
+          <div className="dictionary-load-note">
+            <Info size={16} />
+            <span>{sourceDictionary.loadMessage}</span>
+          </div>
+        )}
+        <div className="dictionary-match-filters">
+          <div aria-label="字典匹配状态筛选" role="group">
+            {dictionaryFilters.map((item) => (
+              <button
+                aria-pressed={filter === item.key}
+                className={filter === item.key ? "is-active" : ""}
+                key={item.key}
+                onClick={() => setFilter(item.key)}
+                type="button"
+              >
+                {item.label}
+                <b>{filterCounts[item.key]}</b>
+              </button>
+            ))}
+          </div>
+          <span>按来源出现顺序固定展示，操作后不重排</span>
+        </div>
+        <div className="dictionary-match-list">
+          {visibleRows.map((item) => {
+            const suggestionCode = item.suggestedTarget
+              ? dictionaryItemValue(item.suggestedTarget)
+              : "";
+            const candidateCount = item.suggestedCandidates?.length || 0;
+            const recommendedCodes = new Set(
+              (item.suggestedCandidates || []).map(({ target }) =>
+                dictionaryItemValue(target),
+              ),
+            );
+            const recommendedOptions = (item.suggestedCandidates || []).map(
+              ({ target, confidence, reason }) => ({
+                value: dictionaryItemValue(target),
+                label: `${target.text || target.na}（${dictionaryItemValue(target)}）`,
+                description: `${reason} · 置信度 ${confidence}%`,
+                keywords: `${target.py || ""} ${target.wb || ""}`,
+                group: "推荐匹配（按置信度排序）",
+              }),
+            );
+            const similarityOrderedTargets =
+              item.targetSimilarityRanking ||
+              dictionary.items.map((target, sourceOrder) => ({
+                item: target,
+                score: 0,
+                reason: "",
+                sourceOrder,
+              }));
+            return (
+              <div className="dictionary-match-row" key={item.sourceValue}>
+                <span className="dictionary-match-source">
+                  <strong>
+                    {item.sourceIsBlank
+                      ? "空值"
+                      : item.sourceText || "待补充来源含义"}
+                  </strong>
+                  <small className="dictionary-match-source__meta">
+                    <span>
+                      {item.sourceIsBlank
+                        ? "来源为 NULL、空字符串或仅空格"
+                        : `来源编码 ${item.sourceValue}`}
+                    </span>
+                    <button
+                      aria-label={`查看${item.sourceIsBlank ? "空值" : item.sourceText || item.sourceValue}对应的 ${item.count} 条药品`}
+                      onClick={() => setSelectedMedicineGroup(item)}
+                      title="查看该来源值对应的药品明细"
+                      type="button"
+                    >
+                      {item.count} 条药品 <ArrowRight size={12} />
+                    </button>
+                  </small>
+                  {item.sourceProperties && (
+                    <small title={item.sourceProperties}>
+                      {item.sourceProperties}
+                    </small>
+                  )}
+                </span>
+                <ArrowRight size={17} />
+                <SearchableSelect
+                  ariaLabel={`${item.sourceIsBlank ? "空值" : item.sourceText || item.sourceValue}目标字典值`}
+                  onChange={(next) => onChange(item.sourceValue, next)}
+                  options={[
+                    ...recommendedOptions,
+                    {
+                      value: "",
+                      label: suggestionCode
+                        ? `未采用 · 建议 ${item.suggestedTarget.text || item.suggestedTarget.na}（${suggestionCode}）`
+                        : candidateCount
+                          ? `尚未选择 · 有 ${candidateCount} 个相似候选`
+                          : "尚未选择目标字典值",
+                      description: suggestionCode
+                        ? `${item.suggestionReason} · 置信度 ${item.suggestionConfidence}%`
+                        : "",
+                      group: "匹配操作",
+                    },
+                    ...(!field.required
+                      ? [
+                          {
+                            value: IGNORE_VALUE_MAPPING_TARGET,
+                            label: "忽略此来源值",
+                            description:
+                              "目标字段留空，并记录为已人工确认忽略；该值不再触发字典校验。",
+                            group: "匹配操作",
+                          },
+                        ]
+                      : []),
+                    ...similarityOrderedTargets
+                      .filter(
+                        ({ item: targetItem }) =>
+                          !recommendedCodes.has(
+                            dictionaryItemValue(targetItem),
+                          ),
+                      )
+                      .map(({ item: targetItem, score, reason }) => ({
+                        value: dictionaryItemValue(targetItem),
+                        label: `${targetItem.text || targetItem.na}（${dictionaryItemValue(targetItem)}）`,
+                        keywords: `${targetItem.py || ""} ${targetItem.wb || ""}`,
+                        description:
+                          score > 0 ? `${reason} · 相似度 ${score}%` : "",
+                        group: candidateCount
+                          ? "其他字典项（按相似度排序）"
+                          : "全部字典项（按相似度排序）",
+                      })),
+                  ]}
+                  searchPlaceholder="按编码、名称或拼音查找"
+                  value={
+                    item.ignored
+                      ? IGNORE_VALUE_MAPPING_TARGET
+                      : item.appliedTarget
+                  }
+                />
+                <span
+                  className={`dictionary-match-status ${item.ignored ? "dictionary-match-status--ignored" : item.matched ? "dictionary-match-status--done" : candidateCount ? "dictionary-match-status--suggested" : ""}`}
+                >
+                  {item.ignored
+                    ? "已忽略"
+                    : item.matched
+                      ? "已确认"
+                      : suggestionCode
+                        ? `${item.suggestionConfidence}% 建议`
+                        : candidateCount
+                          ? `${candidateCount} 个候选`
+                          : "待确认"}
+                </span>
+              </div>
+            );
+          })}
+          {!visibleRows.length && (
+            <div className="dictionary-match-empty">
+              {rows.length
+                ? `当前没有${dictionaryFilters.find((item) => item.key === filter)?.label || "符合条件的"}项。`
+                : "当前数据没有可配置的来源值。"}
+            </div>
+          )}
+        </div>
+      </section>
+      {selectedMedicineGroup && (
+        <SourceValueMedicineDialog
+          field={field}
+          item={selectedMedicineGroup}
+          onClose={() => setSelectedMedicineGroup(null)}
+        />
+      )}
+    </>
   );
 }
