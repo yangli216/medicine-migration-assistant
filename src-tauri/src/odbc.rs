@@ -681,6 +681,10 @@ fn oracle_error_diagnosis(code: &str) -> Option<(&'static str, &'static str)> {
             "SQL 引用了当前数据库中不存在或不可见的字段",
             "二系列phis标准读取会先按实际表字段生成兼容查询；若仍出现，请核对错误发生阶段、Schema、表名和读取账号的字段权限",
         )),
+        "ORA-00910" => Some((
+            "SQL 中声明的字符类型长度超过了当前 Oracle 版本允许的上限",
+            "检查动态查询中的 VARCHAR2/NVARCHAR2 长度；Oracle 11g 标准配置下 NVARCHAR2 最长为 2000 字符，缺失字段应使用短长度的类型化空值占位",
+        )),
         "ORA-00933" => Some((
             "SQL 语句结构不符合当前 Oracle 版本要求",
             "检查语句末尾、分页语法和数据库方言配置",
@@ -901,6 +905,17 @@ mod tests {
         assert!(error.contains("当前数据库中不存在或不可见"));
         assert!(error.contains("按实际表字段生成兼容查询"));
         assert!(!error.contains("目标库"));
+    }
+
+    #[test]
+    fn oracle_11g_oversized_character_declaration_has_actionable_diagnosis() {
+        let error = odbc_error(
+            "State: 42000, Native error: 910, Message: [Oracle][ODBC][Ora]ORA-00910: specified length too long for its datatype",
+        );
+        assert!(error.contains("Oracle ORA-00910"));
+        assert!(error.contains("字符类型长度超过"));
+        assert!(error.contains("NVARCHAR2 最长为 2000"));
+        assert!(!error.contains("specified length too long"));
     }
 
     #[test]

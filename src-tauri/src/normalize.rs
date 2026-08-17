@@ -530,12 +530,19 @@ pub fn normalize(source: &Map<String, Value>, mappings: &[FieldMapping]) -> Map<
         if !allowed.contains(mapping.target_field.as_str()) {
             continue;
         }
-        let mut value = source
-            .get(&mapping.source_field)
-            .cloned()
-            .unwrap_or(Value::Null);
+        let mut value = composed_source_value(source, mapping);
         let mut ignored = false;
-        if is_blank(&value) {
+        let condition_applies = field_condition_matches(source, mapping);
+        if !condition_applies {
+            value = match mapping.condition_else.trim().to_ascii_uppercase().as_str() {
+                "EMPTY" => Value::Null,
+                "DEFAULT" if !mapping.default_value.trim().is_empty() => {
+                    Value::String(mapping.default_value.clone())
+                }
+                "DEFAULT" => Value::Null,
+                _ => value,
+            };
+        } else if is_blank(&value) {
             if let Some(mapped) = mapped_value(mapping, EMPTY_VALUE_MAPPING_SOURCE) {
                 value = mapped.clone();
                 ignored = mapped.is_null();
@@ -552,10 +559,20 @@ pub fn normalize(source: &Map<String, Value>, mappings: &[FieldMapping]) -> Map<
         if ignored && validation_ignore_allowed(&mapping.target_field) {
             explicitly_ignored.push(Value::String(mapping.target_field.clone()));
         }
-        target.insert(
-            mapping.target_field.clone(),
-            transform(value, &mapping.transform),
-        );
+        let normalized = if !condition_applies
+            && !matches!(
+                mapping.condition_else.trim().to_ascii_uppercase().as_str(),
+                "DEFAULT"
+            ) {
+            if is_blank(&value) {
+                Value::Null
+            } else {
+                Value::String(value_text(&value))
+            }
+        } else {
+            truncate(transform(value, &mapping.transform), mapping)
+        };
+        target.insert(mapping.target_field.clone(), normalized);
     }
     if !explicitly_ignored.is_empty() {
         target.insert(
@@ -767,6 +784,80 @@ fn transform(value: Value, operation: &str) -> Value {
             .unwrap_or(Value::String(text)),
         _ => Value::String(text),
     }
+}
+
+fn composed_source_value(source: &Map<String, Value>, mapping: &FieldMapping) -> Value {
+    let mut fields = Vec::with_capacity(1 + mapping.additional_source_fields.len());
+    if !mapping.source_field.is_empty() {
+        fields.push(mapping.source_field.as_str());
+    }
+    fields.extend(
+        mapping
+            .additional_source_fields
+            .iter()
+            .filter(|field| !field.is_empty())
+            .map(String::as_str),
+    );
+    if fields.len() <= 1 {
+        return fields
+            .first()
+            .and_then(|field| source.get(*field))
+            .cloned()
+            .unwrap_or(Value::Null);
+    }
+    let parts = fields
+        .into_iter()
+        .filter_map(|field| source.get(field))
+        .filter(|value| !is_blank(value))
+        .map(value_text)
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        Value::Null
+    } else {
+        Value::String(parts.join(&mapping.join_separator))
+    }
+}
+
+fn field_condition_matches(source: &Map<String, Value>, mapping: &FieldMapping) -> bool {
+    let operator = mapping.condition_operator.trim().to_ascii_uppercase();
+    if operator.is_empty() || operator == "ALWAYS" || mapping.condition_field.is_empty() {
+        return true;
+    }
+    let actual = source
+        .get(&mapping.condition_field)
+        .cloned()
+        .unwrap_or(Value::Null);
+    let text = value_text(&actual);
+    let expected = mapping.condition_value.trim();
+    match operator.as_str() {
+        "EMPTY" => is_blank(&actual),
+        "NOT_EMPTY" => !is_blank(&actual),
+        "EQUALS" => text == expected,
+        "NOT_EQUALS" => text != expected,
+        "CONTAINS" => text.contains(expected),
+        _ => true,
+    }
+}
+
+fn truncate(value: Value, mapping: &FieldMapping) -> Value {
+    if mapping.max_length == 0 {
+        return value;
+    }
+    let Value::String(text) = value else {
+        return value;
+    };
+    let characters = text.chars().collect::<Vec<_>>();
+    if characters.len() <= mapping.max_length {
+        return Value::String(text);
+    }
+    let truncated = if mapping.truncate_mode.eq_ignore_ascii_case("KEEP_END") {
+        characters[characters.len() - mapping.max_length..]
+            .iter()
+            .collect()
+    } else {
+        characters[..mapping.max_length].iter().collect()
+    };
+    Value::String(truncated)
 }
 
 fn mapped_value<'a>(mapping: &'a FieldMapping, lookup: &str) -> Option<&'a Value> {
@@ -1028,6 +1119,77 @@ mod tests {
         assert_eq!(
             normalized.get("cdAppr"),
             Some(&Value::String("2026-08-04".into()))
+        );
+    }
+
+    #[test]
+    fn mapping_combines_non_blank_fields_and_truncates_by_characters() {
+        let source = json!({
+            "NAME":"阿莫西林",
+            "SPEC":"",
+            "UNIT":"胶囊",
+            "APPROVAL":"国药准字H123456"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let mappings: Vec<FieldMapping> = serde_json::from_value(json!([
+            {
+                "sourceField":"NAME","additionalSourceFields":["SPEC","UNIT"],
+                "joinSeparator":" / ","targetField":"naMed","transform":"TRIM",
+                "maxLength":7,"truncateMode":"KEEP_START"
+            },
+            {
+                "sourceField":"APPROVAL","targetField":"cdAppr","transform":"TRIM",
+                "maxLength":6,"truncateMode":"KEEP_END"
+            }
+        ]))
+        .unwrap();
+        let normalized = normalize(&source, &mappings);
+        assert_eq!(
+            normalized.get("naMed"),
+            Some(&Value::String("阿莫西林 / ".into()))
+        );
+        assert_eq!(
+            normalized.get("cdAppr"),
+            Some(&Value::String("123456".into()))
+        );
+    }
+
+    #[test]
+    fn mapping_condition_supports_empty_keep_and_default_fallbacks() {
+        let source = json!({"NAME":"  青霉素  ","ACTIVE":"0"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let mappings: Vec<FieldMapping> = serde_json::from_value(json!([
+            {
+                "sourceField":"NAME","targetField":"naMed","transform":"TRIM",
+                "conditionField":"ACTIVE","conditionOperator":"EQUALS",
+                "conditionValue":"1","conditionElse":"KEEP"
+            },
+            {
+                "sourceField":"NAME","targetField":"naMedPro","transform":"TRIM",
+                "conditionField":"ACTIVE","conditionOperator":"EQUALS",
+                "conditionValue":"1","conditionElse":"EMPTY"
+            },
+            {
+                "sourceField":"NAME","targetField":"naFac","transform":"TRIM",
+                "defaultValue":"备用厂家","conditionField":"ACTIVE",
+                "conditionOperator":"EQUALS","conditionValue":"1",
+                "conditionElse":"DEFAULT"
+            }
+        ]))
+        .unwrap();
+        let normalized = normalize(&source, &mappings);
+        assert_eq!(
+            normalized.get("naMed"),
+            Some(&Value::String("青霉素".into()))
+        );
+        assert_eq!(normalized.get("naMedPro"), Some(&Value::Null));
+        assert_eq!(
+            normalized.get("naFac"),
+            Some(&Value::String("备用厂家".into()))
         );
     }
 

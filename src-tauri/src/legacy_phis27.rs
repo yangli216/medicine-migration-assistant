@@ -602,7 +602,7 @@ fn inventory_detail_query(
         has_physical_column(physical_columns, "YK_CDDZ", "CDQC"),
         has_physical_column(physical_columns, "YK_CDDZ", "CDMC"),
     ) {
-        (true, true) => "CAST(COALESCE(f.CDQC,f.CDMC) AS NVARCHAR2(300))",
+        (true, true) => "COALESCE(CAST(f.CDQC AS NVARCHAR2(300)),CAST(f.CDMC AS NVARCHAR2(300)))",
         (true, false) => "CAST(f.CDQC AS NVARCHAR2(300))",
         (false, true) => "CAST(f.CDMC AS NVARCHAR2(300))",
         (false, false) => "CAST(NULL AS NVARCHAR2(300))",
@@ -611,7 +611,7 @@ fn inventory_detail_query(
         physical_columns,
         "YK_YPCD",
         "YBSPMC",
-        "CAST(NVL(p.YBSPMC,t.YPMC) AS NVARCHAR2(200))",
+        "NVL(CAST(p.YBSPMC AS NVARCHAR2(200)),CAST(t.YPMC AS NVARCHAR2(200)))",
         "CAST(t.YPMC AS NVARCHAR2(200))",
     );
     if has_warehouse_stock {
@@ -661,13 +661,8 @@ fn inventory_detail_query(
             "CAST(k.YPPH AS NVARCHAR2(200))",
             "CAST(NULL AS NVARCHAR2(200))",
         );
-        let effective_date = optional_source_expression(
-            physical_columns,
-            "YK_KCMX",
-            "YPXQ",
-            "TO_NCHAR(k.YPXQ,'YYYY-MM-DD')",
-            "CAST(NULL AS NVARCHAR2(10))",
-        );
+        let effective_date =
+            optional_oracle_date_text_expression(physical_columns, "YK_KCMX", "YPXQ", "k");
         queries.push(format!(
             "SELECT N'WAREHOUSE' AS SOURCE_KIND,CAST(k.SBXH AS NVARCHAR2(64)) AS SOURCE_RECORD_ID,\
              {location_key} AS LOCATION_KEY,{location_name} AS LOCATION_NAME,\
@@ -739,13 +734,8 @@ fn inventory_detail_query(
             "CAST(k.YPPH AS NVARCHAR2(200))",
             "CAST(NULL AS NVARCHAR2(200))",
         );
-        let effective_date = optional_source_expression(
-            physical_columns,
-            "YF_KCMX",
-            "YPXQ",
-            "TO_NCHAR(k.YPXQ,'YYYY-MM-DD')",
-            "CAST(NULL AS NVARCHAR2(10))",
-        );
+        let effective_date =
+            optional_oracle_date_text_expression(physical_columns, "YF_KCMX", "YPXQ", "k");
         queries.push(format!(
             "SELECT N'PHARMACY' AS SOURCE_KIND,CAST(k.SBXH AS NVARCHAR2(64)) AS SOURCE_RECORD_ID,\
              N'YF:'||CAST(k.YFSB AS NVARCHAR2(128)) AS LOCATION_KEY,{location_name} AS LOCATION_NAME,\
@@ -1290,6 +1280,14 @@ fn expanded_scope_predicate_with_columns(
             "EXISTS (SELECT 1 FROM {} c WHERE c.YPXH=t.YPXH)",
             table_name(schema, "YK_CDXX")
         )
+    } else if matches!(scope, Scope::UsedActive)
+        && physical_column(physical_columns, "YK_CDXX", "ZFPB")
+            .is_some_and(|column| !oracle_numeric_type(&column.data_type))
+    {
+        format!(
+            "EXISTS (SELECT 1 FROM {} c WHERE c.YPXH=t.YPXH AND NVL(TRIM(TO_NCHAR(c.ZFPB)),N'0')=N'0')",
+            table_name(schema, "YK_CDXX")
+        )
     } else {
         expanded_scope_predicate(schema, scope)
     }
@@ -1343,9 +1341,41 @@ fn has_physical_column(
     table: &str,
     column: &str,
 ) -> bool {
+    physical_column(physical_columns, table, column).is_some()
+}
+
+fn physical_column<'a>(
+    physical_columns: &'a [LegacyPhysicalColumn],
+    table: &str,
+    column: &str,
+) -> Option<&'a LegacyPhysicalColumn> {
     physical_columns
         .iter()
-        .any(|item| item.table == table && item.column == column)
+        .find(|item| item.table == table && item.column == column)
+}
+
+fn oracle_numeric_type(data_type: &str) -> bool {
+    matches!(
+        data_type.trim().to_ascii_uppercase().as_str(),
+        "NUMBER" | "FLOAT" | "BINARY_FLOAT" | "BINARY_DOUBLE" | "INTEGER" | "DECIMAL"
+    )
+}
+
+fn optional_oracle_date_text_expression(
+    physical_columns: &[LegacyPhysicalColumn],
+    table: &str,
+    column: &str,
+    query_alias: &str,
+) -> String {
+    let Some(physical) = physical_column(physical_columns, table, column) else {
+        return "CAST(NULL AS NVARCHAR2(10))".into();
+    };
+    let data_type = physical.data_type.trim().to_ascii_uppercase();
+    if data_type == "DATE" || data_type.starts_with("TIMESTAMP") {
+        format!("TO_NCHAR({query_alias}.{column},'YYYY-MM-DD')")
+    } else {
+        format!("SUBSTR(CAST({query_alias}.{column} AS NVARCHAR2(200)),1,10)")
+    }
 }
 
 fn optional_source_expression<'a>(
@@ -1466,7 +1496,7 @@ fn optional_projection(
     if has_physical_column(physical_columns, table, column) {
         format!("{expression} AS {result_alias}")
     } else {
-        format!("CAST(NULL AS NVARCHAR2(4000)) AS {result_alias}")
+        format!("CAST(NULL AS NVARCHAR2(1)) AS {result_alias}")
     }
 }
 
@@ -1480,7 +1510,7 @@ fn optional_product_projection(
     if has_physical_column(physical_columns, table, column) {
         format!("CASE WHEN p.YPCD IS NOT NULL THEN {expression} END AS {result_alias}")
     } else {
-        format!("CAST(NULL AS NVARCHAR2(4000)) AS {result_alias}")
+        format!("CAST(NULL AS NVARCHAR2(1)) AS {result_alias}")
     }
 }
 
@@ -1525,19 +1555,19 @@ fn medicine_query_with_physical_columns(
         has_physical_column(physical_columns, "YK_CDDZ", "CDQC"),
         has_physical_column(physical_columns, "YK_CDDZ", "CDMC"),
     ) {
-        (true, true) => "COALESCE(f.CDQC,f.CDMC)",
-        (true, false) => "f.CDQC",
-        (false, true) => "f.CDMC",
-        (false, false) => "CAST(NULL AS NVARCHAR2(4000))",
+        (true, true) => "COALESCE(CAST(f.CDQC AS NVARCHAR2(300)),CAST(f.CDMC AS NVARCHAR2(300)))",
+        (true, false) => "CAST(f.CDQC AS NVARCHAR2(300))",
+        (false, true) => "CAST(f.CDMC AS NVARCHAR2(300))",
+        (false, false) => "CAST(NULL AS NVARCHAR2(1))",
     };
     let factory_name =
         format!("CASE WHEN p.YPCD IS NOT NULL THEN {factory_name_expression} END AS FACTORY_NAME");
     let factory_short_name = product_projection("YK_CDDZ", "CDMC", "f.CDMC", "FACTORY_SHORT_NAME");
     let factory_pinyin = product_projection("YK_CDDZ", "PYDM", "f.PYDM", "FACTORY_PINYIN");
     let product_name_expression = if has_physical_column(physical_columns, "YK_YPCD", "YBSPMC") {
-        "NVL(p.YBSPMC,t.YPMC)"
+        "NVL(CAST(p.YBSPMC AS NVARCHAR2(200)),CAST(t.YPMC AS NVARCHAR2(200)))"
     } else {
-        "t.YPMC"
+        "CAST(t.YPMC AS NVARCHAR2(200))"
     };
     let product_name =
         format!("CASE WHEN p.YPCD IS NOT NULL THEN {product_name_expression} END AS PRODUCT_NAME");
@@ -1547,10 +1577,10 @@ fn medicine_query_with_physical_columns(
         has_physical_column(physical_columns, "YK_TYPK", "YFGG"),
         has_physical_column(physical_columns, "YK_TYPK", "YPGG"),
     ) {
-        (true, true) => "NVL(t.YFGG,t.YPGG)",
-        (true, false) => "t.YFGG",
-        (false, true) => "t.YPGG",
-        (false, false) => "CAST(NULL AS NVARCHAR2(4000))",
+        (true, true) => "NVL(CAST(t.YFGG AS NVARCHAR2(200)),CAST(t.YPGG AS NVARCHAR2(200)))",
+        (true, false) => "CAST(t.YFGG AS NVARCHAR2(200))",
+        (false, true) => "CAST(t.YPGG AS NVARCHAR2(200))",
+        (false, false) => "CAST(NULL AS NVARCHAR2(1))",
     };
     let sale_spec =
         format!("CASE WHEN p.YPCD IS NOT NULL THEN {sale_spec_expression} END AS SALE_SPEC");
@@ -2301,7 +2331,11 @@ mod tests {
         .map(|(table, column)| LegacyPhysicalColumn {
             table: table.into(),
             column: column.into(),
-            data_type: "NVARCHAR2".into(),
+            data_type: if column == "YPXQ" {
+                "DATE".into()
+            } else {
+                "NVARCHAR2".into()
+            },
             comment: String::new(),
         })
         .collect()
@@ -2324,7 +2358,9 @@ mod tests {
         assert!(query.contains("t.YCJL AS DOSE_ONCE"));
         assert!(query.contains("TO_CHAR(t.YBFL) AS INSURANCE_LEVEL"));
         assert!(query.contains("TO_CHAR(t.YPDC) AS ORIGIN_TYPE"));
-        assert!(query.contains("COALESCE(f.CDQC,f.CDMC) END AS FACTORY_NAME"));
+        assert!(query.contains(
+            "COALESCE(CAST(f.CDQC AS NVARCHAR2(300)),CAST(f.CDMC AS NVARCHAR2(300))) END AS FACTORY_NAME"
+        ));
         assert!(query.contains("f.CDMC END AS FACTORY_SHORT_NAME"));
         assert!(query.contains("f.PYDM END AS FACTORY_PINYIN"));
         assert!(!query.contains(";"));
@@ -2396,9 +2432,63 @@ mod tests {
         let query =
             medicine_query_with_physical_columns("PHIS27", Scope::UsedActive, &physical_columns);
         assert!(!query.contains("t.MRYF"));
-        assert!(query.contains("CAST(NULL AS NVARCHAR2(4000)) AS FREQ_CODE"));
+        assert!(query.contains("CAST(NULL AS NVARCHAR2(1)) AS FREQ_CODE"));
+        assert!(!query.contains(&format!("NVARCHAR2({})", 4_000)));
         assert!(!query.contains("c.ZFPB"));
         assert!(query.contains("EXISTS (SELECT 1 FROM PHIS27.YK_CDXX c WHERE c.YPXH=t.YPXH)"));
+    }
+
+    #[test]
+    fn character_stop_flag_avoids_oracle_implicit_number_conversion() {
+        let mut physical_columns = phis27_column_definitions()
+            .into_iter()
+            .filter(|(_, table, column, _, _)| !table.is_empty() && !column.contains(':'))
+            .map(|(_, table, column, _, _)| LegacyPhysicalColumn {
+                table: table.into(),
+                column: column.into(),
+                data_type: "NVARCHAR2".into(),
+                comment: String::new(),
+            })
+            .collect::<Vec<_>>();
+        physical_columns.extend(
+            [
+                ("YK_YPCD", "YPXH", "NUMBER"),
+                ("YK_CDDZ", "YPCD", "NUMBER"),
+                ("YK_CDXX", "YPXH", "NUMBER"),
+                ("YK_CDXX", "ZFPB", "VARCHAR2"),
+            ]
+            .into_iter()
+            .map(|(table, column, data_type)| LegacyPhysicalColumn {
+                table: table.into(),
+                column: column.into(),
+                data_type: data_type.into(),
+                comment: String::new(),
+            }),
+        );
+
+        let query =
+            medicine_query_with_physical_columns("PHIS27", Scope::UsedActive, &physical_columns);
+        assert!(query.contains("NVL(TRIM(TO_NCHAR(c.ZFPB)),N'0')=N'0'"));
+        assert!(!query.contains("NVL(c.ZFPB,0)=0"));
+    }
+
+    #[test]
+    fn generated_oracle_sql_stays_within_11g_character_type_limits() {
+        let source = include_str!("legacy_phis27.rs");
+        for (marker, maximum) in [("NVARCHAR2(", 2_000_u32), ("VARCHAR2(", 4_000_u32)] {
+            for suffix in source.split(marker).skip(1) {
+                let digits = suffix
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>();
+                if let Ok(length) = digits.parse::<u32>() {
+                    assert!(
+                        length <= maximum,
+                        "Oracle 11g 不允许 {marker}{length})，上限为 {maximum}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -2470,6 +2560,19 @@ mod tests {
         assert!(detail.contains("CAST(k.JHJE AS NVARCHAR2(80)) AS PURCHASE_TOTAL"));
         assert!(detail.contains("CAST(k.LSJE AS NVARCHAR2(80)) AS RETAIL_TOTAL"));
         assert!(!detail.contains("NVL(k.YPPH,'')"));
+    }
+
+    #[test]
+    fn character_expiry_is_read_as_text_without_implicit_date_conversion() {
+        let mut physical_columns = inventory_physical_columns();
+        for column in &mut physical_columns {
+            if column.table == "YK_KCMX" && column.column == "YPXQ" {
+                column.data_type = "VARCHAR2".into();
+            }
+        }
+        let detail = inventory_detail_query("PHIS27", true, false, true, false, &physical_columns);
+        assert!(detail.contains("SUBSTR(CAST(k.YPXQ AS NVARCHAR2(200)),1,10) AS EFFECTIVE_DATE"));
+        assert!(!detail.contains("TO_NCHAR(k.YPXQ,'YYYY-MM-DD')"));
     }
 
     #[test]

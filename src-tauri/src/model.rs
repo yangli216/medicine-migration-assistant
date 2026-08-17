@@ -109,9 +109,25 @@ pub struct SourcePreview {
 #[serde(rename_all = "camelCase")]
 pub struct FieldMapping {
     pub source_field: String,
+    #[serde(default)]
+    pub additional_source_fields: Vec<String>,
+    #[serde(default)]
+    pub join_separator: String,
     pub target_field: String,
     #[serde(default)]
     pub transform: String,
+    #[serde(default)]
+    pub max_length: usize,
+    #[serde(default)]
+    pub truncate_mode: String,
+    #[serde(default)]
+    pub condition_field: String,
+    #[serde(default)]
+    pub condition_operator: String,
+    #[serde(default)]
+    pub condition_value: String,
+    #[serde(default)]
+    pub condition_else: String,
     #[serde(default)]
     pub default_value: String,
     #[serde(default)]

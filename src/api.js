@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { applyFieldRule } from "./transforms";
+import { applyFieldMapping } from "./transforms";
 
 export const isDesktop =
   typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
@@ -1026,10 +1026,7 @@ function mockPrepare(request) {
       ) {
         ignoredFields.push(mapping.targetField);
       }
-      normalized[mapping.targetField] = applyFieldRule(
-        rawValue,
-        mapping,
-      );
+      normalized[mapping.targetField] = applyFieldMapping(raw, mapping);
     });
     if (ignoredFields.length) {
       normalized._ignoredValidationFields = ignoredFields;

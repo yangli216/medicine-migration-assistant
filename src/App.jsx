@@ -50,10 +50,11 @@ import {
 } from "./DatabaseConnections";
 import { SearchableSelect } from "./SearchableSelect";
 import {
-  applyFieldRule,
+  applyFieldMapping,
   EMPTY_VALUE_MAPPING_SOURCE,
   parseValueMappings,
 } from "./transforms";
+import { FieldAdvancedRuleEditor } from "./FieldAdvancedRuleEditor";
 import {
   buildDictionaryValueMappings,
   buildPhis27PresetRules,
@@ -411,8 +412,17 @@ export function App() {
     if (!currentField) return null;
     const sourceField = mapping[currentField.key];
     if (!sourceField) return null;
-    const original = mappingSample[sourceField];
     const rule = rules[currentField.key] || {};
+    const additionalSourceFields = rule.additionalSourceFields || [];
+    const sourceValues = [sourceField, ...additionalSourceFields]
+      .map((field) => mappingSample[field])
+      .filter(
+        (value) =>
+          value !== null && value !== undefined && `${value}`.trim() !== "",
+      );
+    const original = additionalSourceFields.length
+      ? sourceValues.join(`${rule.joinSeparator ?? ""}`)
+      : mappingSample[sourceField];
     const parsedMappings = parseValueMappings(rule.valueMappingsText).mappings;
     const mappingLookup =
       original === null || original === undefined || `${original}`.trim() === ""
@@ -421,8 +431,9 @@ export function App() {
     const ignored =
       Object.prototype.hasOwnProperty.call(parsedMappings, mappingLookup) &&
       parsedMappings[mappingLookup] === null;
-    const converted = applyFieldRule(original, {
+    const converted = applyFieldMapping(mappingSample, {
       ...rule,
+      sourceField,
       transform: rule.transform || defaultTransformForField(currentField),
       valueMappings: parsedMappings,
     });
@@ -862,9 +873,29 @@ export function App() {
     }
     const targetKeys = new Set(targetFields.map((field) => field.key));
     const restoredRules = Object.fromEntries(
-      Object.entries(options.mappingProfile?.rules || {}).filter(
-        ([target, rule]) => targetKeys.has(target) && rule && typeof rule === "object",
-      ),
+      Object.entries(options.mappingProfile?.rules || {})
+        .filter(
+          ([target, rule]) =>
+            targetKeys.has(target) && rule && typeof rule === "object",
+        )
+        .map(([target, rule]) => {
+          const conditionField = mappingColumns.includes(rule.conditionField)
+            ? rule.conditionField
+            : "";
+          return [
+            target,
+            {
+              ...rule,
+              additionalSourceFields: (rule.additionalSourceFields || []).filter(
+                (field) => mappingColumns.includes(field),
+              ),
+              conditionField,
+              conditionOperator: conditionField
+                ? rule.conditionOperator || "ALWAYS"
+                : "ALWAYS",
+            },
+          ];
+        }),
     );
     const effectiveRules = options.phis27Preset
       ? buildPhis27PresetRules({
@@ -1542,13 +1573,23 @@ export function App() {
   function fieldRulePreview(field) {
     const sourceField = mapping[field.key];
     if (!sourceField || !rows.length) return "";
-    const original = rows.find(
+    const sampleRow = rows.find(
       (row) => `${row[sourceField] ?? ""}`.trim() !== "",
-    )?.[sourceField];
-    if (original === undefined) return "";
+    );
     const rule = rules[field.key] || {};
-    const converted = applyFieldRule(original, {
+    const sourceValues = [sourceField, ...(rule.additionalSourceFields || [])]
+      .map((item) => sampleRow?.[item])
+      .filter(
+        (value) =>
+          value !== null && value !== undefined && `${value}`.trim() !== "",
+      );
+    const original = (rule.additionalSourceFields || []).length
+      ? sourceValues.join(`${rule.joinSeparator ?? ""}`)
+      : sampleRow?.[sourceField];
+    if (original === undefined) return "";
+    const converted = applyFieldMapping(sampleRow, {
       ...rule,
+      sourceField,
       transform: rule.transform || defaultTransformForField(field),
       valueMappings: parseValueMappings(rule.valueMappingsText).mappings,
     });
@@ -1645,14 +1686,46 @@ export function App() {
         `${invalidMapping.field.label}的值映射第 ${invalidMapping.parsed.invalidLines.join("、")} 行格式不正确，请使用“旧值 = 新值”`,
       );
     }
+    const invalidAdvancedRule = targetFields
+      .map((field) => ({ field, rule: rules[field.key] || {} }))
+      .find(({ rule }) => {
+        const operator = rule.conditionOperator || "ALWAYS";
+        if (operator === "ALWAYS") return false;
+        if (!rule.conditionField) return true;
+        if (
+          ["EQUALS", "NOT_EQUALS", "CONTAINS"].includes(operator) &&
+          !`${rule.conditionValue ?? ""}`.trim()
+        ) {
+          return true;
+        }
+        return (
+          rule.conditionElse === "DEFAULT" &&
+          !`${rule.defaultValue ?? ""}`.trim()
+        );
+      });
+    if (invalidAdvancedRule) {
+      return fail(
+        `${invalidAdvancedRule.field.label}的条件规则不完整，请补充判断字段、比较值或默认值`,
+      );
+    }
     const mappings = targetFields
       .filter((field) => mapping[field.key] || rules[field.key]?.defaultValue)
       .map((field) => {
         const rule = rules[field.key] || {};
         return {
           sourceField: mapping[field.key] || "",
+          additionalSourceFields: (rule.additionalSourceFields || []).filter(
+            Boolean,
+          ),
+          joinSeparator: rule.joinSeparator || "",
           targetField: field.key,
           transform: rule.transform || defaultTransformForField(field),
+          maxLength: Number(rule.maxLength) || 0,
+          truncateMode: rule.truncateMode || "KEEP_START",
+          conditionField: rule.conditionField || "",
+          conditionOperator: rule.conditionOperator || "ALWAYS",
+          conditionValue: rule.conditionValue || "",
+          conditionElse: rule.conditionElse || "KEEP",
           defaultValue: rule.defaultValue || "",
           valueMappings: parseValueMappings(rule.valueMappingsText).mappings,
           valueMappingCaseInsensitive:
@@ -2508,7 +2581,7 @@ export function App() {
                   <FloppyDisk size={21} />
                   <div>
                     <strong>字段转换</strong>
-                    <small>支持清洗、大小写、数值日期、默认值和值字典映射</small>
+                    <small>支持清洗、组合、长度限制、简单条件、默认值和值字典映射</small>
                   </div>
                 </div>
                 <div className="rule-list">
@@ -2614,8 +2687,20 @@ export function App() {
                                 },
                               }))
                             }
-                          />
-                        )}
+                            />
+                          )}
+                        <FieldAdvancedRuleEditor
+                          fieldLabel={field.label}
+                          primarySourceField={mapping[field.key] || ""}
+                          rule={rules[field.key] || {}}
+                          sourceOptions={sourceFieldOptions}
+                          onChange={(nextRule) =>
+                            setRules((current) => ({
+                              ...current,
+                              [field.key]: nextRule,
+                            }))
+                          }
+                        />
                         <details className="value-mapping-editor">
                           <summary>
                             <span>字段值映射（旧值 → 新值）</span>

@@ -145,6 +145,7 @@ async fn target_duplicate_flags(
     if crate::odbc::is_odbc_kind(&profile.kind) {
         return with_connection(profile, |connection| {
             configure_target_session(connection, profile)?;
+            let date_text_sql = inventory_date_text_sql(&profile.kind, "dt_effect");
             for (table, columns) in [
                 ("hi_sto_med", "id_sto_med,id_med_pro,id_sto,id_org,id_tet"),
                 ("hi_sto_inv", "id_sto_inv,id_med_pro,id_sto,id_org,id_tet"),
@@ -165,10 +166,10 @@ async fn target_duplicate_flags(
                     };
                     query_optional_string(
                         connection,
-                        "SELECT id_sto_inv FROM hi_sto_inv WHERE id_tet=? AND id_org=? AND id_sto=? \
+                        &format!("SELECT id_sto_inv FROM hi_sto_inv WHERE id_tet=? AND id_org=? AND id_sto=? \
                          AND id_med_pro IN (SELECT id_med_pro FROM hi_bd_med_pro WHERE cd_med_pro=? AND id_tet=? AND fg_active='1') \
                          AND price_sale=? AND price_pur=? AND COALESCE(cd_batch,'')=? \
-                         AND COALESCE(TO_CHAR(dt_effect,'YYYY-MM-DD'),'')=? AND fg_active='1'",
+                         AND {date_text_sql}=? AND fg_active='1'"),
                         vec![
                             tenant_id.into(), mapping.target_id_org.clone(), mapping.target_id_sto.clone(),
                             group.source_product_key.clone(), tenant_id.into(), group.price_sale.to_string(),
@@ -209,6 +210,17 @@ async fn target_duplicate_flags(
     }
     pool.close().await;
     Ok(flags)
+}
+
+fn inventory_date_text_sql(kind: &str, column: &str) -> String {
+    match crate::odbc::normalize_kind(kind).as_str() {
+        "oracle" | "dameng" => {
+            format!("COALESCE(TO_CHAR({column},'YYYY-MM-DD'),'')")
+        }
+        "gbase8s" => format!("COALESCE(TO_CHAR({column},'%Y-%m-%d'),'')"),
+        "gbase8a" => format!("COALESCE(DATE_FORMAT({column},'%Y-%m-%d'),'')"),
+        _ => format!("COALESCE(CAST({column} AS VARCHAR(10)),'')"),
+    }
 }
 
 fn group_inventory(items: Vec<Phis27InventoryStockItem>) -> Result<Vec<InventoryGroup>, String> {
@@ -399,6 +411,7 @@ mod tests {
     use super::{
         group_inventory, inventory_undo_preview, is_single_minimum_unit_package, next_check_number,
         select_inventory_items, storage_type_name, inventory_date_parameter_sql,
+        inventory_date_text_sql,
         InventoryUndoRow, InventoryUndoStorage, Phis27InventoryStockItem,
     };
     use rust_decimal::Decimal;
@@ -526,6 +539,22 @@ mod tests {
         assert!(inventory_date_parameter_sql("postgresql").starts_with("CAST"));
         assert!(inventory_date_parameter_sql("GBase-8a").starts_with("CAST"));
         assert!(inventory_date_parameter_sql("GBase-8s").contains("%Y-%m-%d"));
+    }
+
+    #[test]
+    fn inventory_duplicate_check_formats_dates_with_the_selected_odbc_dialect() {
+        assert!(inventory_date_text_sql("oracle", "dt_effect")
+            .contains("TO_CHAR(dt_effect,'YYYY-MM-DD')"));
+        assert!(inventory_date_text_sql("DM8", "dt_effect")
+            .contains("TO_CHAR(dt_effect,'YYYY-MM-DD')"));
+        assert!(inventory_date_text_sql("GBase-8a", "dt_effect")
+            .contains("DATE_FORMAT(dt_effect,'%Y-%m-%d')"));
+        assert!(inventory_date_text_sql("GBase-8s", "dt_effect")
+            .contains("TO_CHAR(dt_effect,'%Y-%m-%d')"));
+        assert_eq!(
+            inventory_date_text_sql("postgresql", "dt_effect"),
+            "COALESCE(CAST(dt_effect AS VARCHAR(10)),'')"
+        );
     }
 
     #[test]

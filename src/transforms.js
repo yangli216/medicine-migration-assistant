@@ -97,7 +97,39 @@ export function applyFieldRule(value, rule = {}) {
     if (matchedKey !== undefined) next = mappings[matchedKey];
   }
 
-  return transformValue(next, rule.transform || "TRIM");
+  return truncateValue(
+    transformValue(next, rule.transform || "TRIM"),
+    rule.maxLength,
+    rule.truncateMode,
+  );
+}
+
+export function applyFieldMapping(source = {}, rule = {}) {
+  const sourceFields = [
+    rule.sourceField,
+    ...(Array.isArray(rule.additionalSourceFields)
+      ? rule.additionalSourceFields
+      : []),
+  ].filter(Boolean);
+  const values = sourceFields.map((field) => source?.[field]);
+  const baseValue = values.length > 1
+    ? values
+        .filter((value) => !isBlank(value))
+        .map(valueText)
+        .join(`${rule.joinSeparator ?? ""}`)
+    : values[0];
+
+  if (!fieldConditionMatches(source, rule)) {
+    switch (`${rule.conditionElse || "KEEP"}`.toUpperCase()) {
+      case "EMPTY":
+        return null;
+      case "DEFAULT":
+        return applyFieldRule(null, rule);
+      default:
+        return isBlank(baseValue) ? null : valueText(baseValue);
+    }
+  }
+  return applyFieldRule(baseValue, rule);
 }
 
 export function transformValue(value, operation = "TRIM") {
@@ -140,6 +172,38 @@ export function transformValue(value, operation = "TRIM") {
     default:
       return text;
   }
+}
+
+export function fieldConditionMatches(source = {}, rule = {}) {
+  const operator = `${rule.conditionOperator || "ALWAYS"}`.toUpperCase();
+  if (operator === "ALWAYS" || !rule.conditionField) return true;
+  const actual = source?.[rule.conditionField];
+  const expected = `${rule.conditionValue ?? ""}`.trim();
+  const text = valueText(actual);
+  switch (operator) {
+    case "EMPTY":
+      return isBlank(actual);
+    case "NOT_EMPTY":
+      return !isBlank(actual);
+    case "EQUALS":
+      return text === expected;
+    case "NOT_EQUALS":
+      return text !== expected;
+    case "CONTAINS":
+      return text.includes(expected);
+    default:
+      return true;
+  }
+}
+
+export function truncateValue(value, maxLength = 0, mode = "KEEP_START") {
+  const length = Math.max(0, Math.trunc(Number(maxLength) || 0));
+  if (!length || typeof value !== "string") return value;
+  const characters = Array.from(value);
+  if (characters.length <= length) return value;
+  return `${mode}`.toUpperCase() === "KEEP_END"
+    ? characters.slice(-length).join("")
+    : characters.slice(0, length).join("");
 }
 
 function valueText(value) {

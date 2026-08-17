@@ -2776,10 +2776,132 @@ button:disabled {
   font-size: 12px;
 }
 .value-mapping-editor {
-  grid-column: 1 / -1;
+  grid-column: 2 / -1;
   border: 1px solid #dbe5e7;
   border-radius: 6px;
   background: #f8fbfb;
+}
+.advanced-rule-editor {
+  grid-column: 1 / 2;
+  border: 1px solid #dbe5e7;
+  border-radius: 6px;
+  background: #fbfdfd;
+}
+.advanced-rule-editor[open],
+.value-mapping-editor[open] {
+  grid-column: 1 / -1;
+}
+.advanced-rule-editor > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  cursor: pointer;
+  color: #536176;
+  font-size: 12px;
+  font-weight: 700;
+}
+.advanced-rule-editor > summary small {
+  color: var(--teal-700);
+}
+.advanced-rule-editor__body {
+  padding: 0 11px 10px;
+}
+.advanced-rule-editor__body section {
+  padding: 9px 0;
+  border-top: 1px solid #e5eeee;
+}
+.advanced-rule-editor__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.advanced-rule-editor__section-head > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.advanced-rule-editor__section-head strong {
+  color: #34485b;
+  font-size: 12px;
+}
+.advanced-rule-editor__add {
+  min-height: 29px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.advanced-rule-editor__sources {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 8px;
+}
+.advanced-rule-editor__primary {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid #d7e4e5;
+  border-radius: 6px;
+  background: #eef8f6;
+  color: #27776e;
+  font-size: 11px;
+}
+.advanced-rule-editor__sources > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 5px;
+}
+.advanced-rule-editor__sources > label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  color: #617083;
+  font-size: 11px;
+}
+.advanced-rule-editor__sources input,
+.advanced-rule-editor__truncate input,
+.advanced-rule-editor__condition input {
+  width: 100%;
+  height: 34px;
+}
+.advanced-rule-editor .searchable-select__trigger {
+  height: 34px;
+}
+.advanced-rule-editor__truncate {
+  display: grid;
+  grid-template-columns: 150px minmax(220px, 0.65fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+.advanced-rule-editor__condition {
+  display: grid;
+  grid-template-columns: auto minmax(160px, 1.15fr) 120px minmax(120px, 0.8fr) minmax(190px, 1fr) 32px;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: #617083;
+  font-size: 11px;
+}
+.advanced-rule-editor__condition .icon-button,
+.advanced-rule-editor__sources .icon-button {
+  width: 32px;
+  height: 34px;
+  color: #a05a5a;
+}
+@media (max-width: 1050px) {
+  .advanced-rule-editor__condition {
+    grid-template-columns: auto minmax(150px, 1fr) 110px minmax(120px, 1fr);
+  }
+  .advanced-rule-editor__condition .searchable-select:nth-last-of-type(1) {
+    grid-column: 2 / span 2;
+  }
+  .advanced-rule-editor__sources {
+    grid-template-columns: 1fr;
+  }
 }
 .value-mapping-editor summary {
   display: flex;
