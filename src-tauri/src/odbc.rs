@@ -1,7 +1,7 @@
 use crate::model::{ConnectionCheck, ConnectionProfile, SourcePreview, TargetReadiness};
 use crate::target_contract::{validate_schema_identifier, TARGET_TABLE_PROJECTIONS};
 use odbc_api::{
-    buffers::{Indicator, TextRowSet},
+    buffers::{BufferDesc, ColumnarDynBuffer, Indicator},
     escape_attribute_value,
     parameter::VarCharBox,
     Connection, ConnectionOptions, Cursor, Environment, ResultSetMetadata,
@@ -13,6 +13,9 @@ use std::time::Instant;
 
 const QUERY_TIMEOUT_SECONDS: usize = 60;
 const MAX_CELL_BYTES: usize = 64 * 1024;
+const MAX_CELL_UTF16_UNITS: usize = MAX_CELL_BYTES / size_of::<u16>();
+const FETCH_BATCH_ROWS: usize = 128;
+const MAX_FETCH_BUFFER_BYTES: usize = 16 * 1024 * 1024;
 const ORACLE_BUNDLED_ALIAS: &str = "Oracle 19 ODBC driver";
 #[cfg(target_os = "windows")]
 const ORACLE_WINDOWS_BUNDLE_DIRECTORY: &str = "instantclient_19_31_bsoft_migration";
@@ -66,6 +69,19 @@ pub fn test_connection(profile: &ConnectionProfile) -> Result<ConnectionCheck, S
         connection
             .execute(ping_sql, (), Some(QUERY_TIMEOUT_SECONDS))
             .map_err(odbc_error)?;
+        if normalize_kind(&profile.kind) == "oracle" {
+            let chinese = query_optional_string(
+                connection,
+                "SELECT UNISTR('\\5F53\\5F52') FROM DUAL",
+                Vec::new(),
+            )?;
+            if chinese.as_deref() != Some("当归") {
+                return Err(
+                    "Oracle 中文读取检查失败：数据库已连接，但客户端未能正确读取“当归”；请改用应用内置 Oracle 驱动或检查客户端字符集"
+                        .into(),
+                );
+            }
+        }
         Ok(ConnectionCheck {
             ok: true,
             database_version: product,
@@ -115,8 +131,8 @@ pub fn preview_source(
             .map_err(odbc_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(odbc_error)?;
-        let mut buffer = TextRowSet::for_cursor(row_limit + 1, &mut cursor, Some(MAX_CELL_BYTES))
-            .map_err(odbc_error)?;
+        let fetch_capacity = (row_limit + 1).min(FETCH_BATCH_ROWS);
+        let mut buffer = wide_text_row_set(&mut cursor, fetch_capacity)?;
         let mut row_cursor = cursor.bind_buffer(&mut buffer).map_err(odbc_error)?;
         let mut rows = Vec::new();
         while rows.len() <= row_limit {
@@ -126,10 +142,16 @@ pub fn preview_source(
             for row_index in 0..batch.num_rows() {
                 let mut row = Map::new();
                 for (column_index, column_name) in columns.iter().enumerate() {
-                    let value = batch
-                        .at(column_index, row_index)
-                        .map(|bytes| Value::String(String::from_utf8_lossy(bytes).into_owned()))
-                        .unwrap_or(Value::Null);
+                    let value = decode_wide_cell(
+                        batch
+                            .column(column_index)
+                            .as_wide_text()
+                            .expect("wide text row set")
+                            .get(row_index),
+                        column_name,
+                    )?
+                    .map(Value::String)
+                    .unwrap_or(Value::Null);
                     row.insert(column_name.clone(), value);
                 }
                 rows.push(row);
@@ -196,9 +218,10 @@ fn odbc_driver_load_failure(detail: &str) -> bool {
 
 fn configure_odbc_runtime() {
     ODBC_RUNTIME_CONFIGURED.get_or_init(|| {
-        if std::env::var_os("NLS_LANG").is_none() {
-            std::env::set_var("NLS_LANG", "SIMPLIFIED CHINESE_CHINA.AL32UTF8");
-        }
+        // Keep Oracle's narrow-character fallback deterministic as well. Result rows are fetched
+        // through SQL_C_WCHAR below, so database character sets such as ZHS16GBK are converted by
+        // the Oracle client before Rust receives UTF-16 text.
+        std::env::set_var("NLS_LANG", "SIMPLIFIED CHINESE_CHINA.AL32UTF8");
         #[cfg(target_os = "windows")]
         if let Some(directory) = bundled_oracle_runtime_directory() {
             let existing = std::env::var_os("PATH").unwrap_or_default();
@@ -456,15 +479,19 @@ pub fn query_optional_string(
     else {
         return Ok(None);
     };
-    let mut buffer =
-        TextRowSet::for_cursor(1, &mut cursor, Some(MAX_CELL_BYTES)).map_err(odbc_error)?;
+    let mut buffer = wide_text_row_set(&mut cursor, 1)?;
     let mut row_cursor = cursor.bind_buffer(&mut buffer).map_err(odbc_error)?;
     let Some(batch) = row_cursor.fetch().map_err(odbc_error)? else {
         return Ok(None);
     };
-    Ok(batch
-        .at(0, 0)
-        .map(|bytes| String::from_utf8_lossy(bytes).into_owned()))
+    decode_wide_cell(
+        batch
+            .column(0)
+            .as_wide_text()
+            .expect("wide text row set")
+            .get(0),
+        "第 1 列",
+    )
 }
 
 pub fn query_optional_row_strings(
@@ -483,21 +510,24 @@ pub fn query_optional_row_strings(
         return Ok(None);
     };
     let column_count = cursor.num_result_cols().map_err(odbc_error)? as usize;
-    let mut buffer =
-        TextRowSet::for_cursor(1, &mut cursor, Some(MAX_CELL_BYTES)).map_err(odbc_error)?;
+    let mut buffer = wide_text_row_set(&mut cursor, 1)?;
     let mut row_cursor = cursor.bind_buffer(&mut buffer).map_err(odbc_error)?;
     let Some(batch) = row_cursor.fetch().map_err(odbc_error)? else {
         return Ok(None);
     };
-    Ok(Some(
-        (0..column_count)
-            .map(|index| {
+    let values = (0..column_count)
+        .map(|index| {
+            decode_wide_cell(
                 batch
-                    .at(index, 0)
-                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-            })
-            .collect(),
-    ))
+                    .column(index)
+                    .as_wide_text()
+                    .expect("wide text row set")
+                    .get(0),
+                &format!("第 {} 列", index + 1),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(values))
 }
 
 pub fn query_rows_strings(
@@ -518,8 +548,7 @@ pub fn query_rows_strings(
         return Ok(Vec::new());
     };
     let column_count = cursor.num_result_cols().map_err(odbc_error)? as usize;
-    let mut buffer =
-        TextRowSet::for_cursor(row_limit, &mut cursor, Some(MAX_CELL_BYTES)).map_err(odbc_error)?;
+    let mut buffer = wide_text_row_set(&mut cursor, row_limit.min(FETCH_BATCH_ROWS))?;
     let mut row_cursor = cursor.bind_buffer(&mut buffer).map_err(odbc_error)?;
     let mut rows = Vec::new();
     while rows.len() < row_limit {
@@ -527,21 +556,62 @@ pub fn query_rows_strings(
             break;
         };
         for row_index in 0..batch.num_rows() {
-            rows.push(
-                (0..column_count)
-                    .map(|column_index| {
+            let values = (0..column_count)
+                .map(|column_index| {
+                    decode_wide_cell(
                         batch
-                            .at(column_index, row_index)
-                            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                    })
-                    .collect(),
-            );
+                            .column(column_index)
+                            .as_wide_text()
+                            .expect("wide text row set")
+                            .get(row_index),
+                        &format!("第 {} 列", column_index + 1),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.push(values);
             if rows.len() >= row_limit {
                 break;
             }
         }
     }
     Ok(rows)
+}
+
+fn wide_text_row_set(
+    cursor: &mut impl ResultSetMetadata,
+    capacity: usize,
+) -> Result<ColumnarDynBuffer, String> {
+    let column_count = cursor.num_result_cols().map_err(odbc_error)? as u16;
+    let mut descriptions = Vec::with_capacity(column_count as usize);
+    for column_index in 1..=column_count {
+        let max_str_len = cursor
+            .col_data_type(column_index)
+            .map_err(odbc_error)?
+            .utf16_len()
+            .or(cursor.col_display_size(column_index).map_err(odbc_error)?)
+            .map(|length| length.get())
+            .unwrap_or(MAX_CELL_UTF16_UNITS)
+            .clamp(1, MAX_CELL_UTF16_UNITS);
+        descriptions.push(BufferDesc::WText { max_str_len });
+    }
+    let bytes_per_row = descriptions
+        .iter()
+        .map(BufferDesc::bytes_per_row)
+        .sum::<usize>()
+        .max(1);
+    let memory_safe_capacity = (MAX_FETCH_BUFFER_BYTES / bytes_per_row).max(1);
+    let capacity = capacity.max(1).min(memory_safe_capacity);
+    ColumnarDynBuffer::try_from_descs(capacity, descriptions).map_err(odbc_error)
+}
+
+fn decode_wide_cell(value: Option<&[u16]>, column: &str) -> Result<Option<String>, String> {
+    value
+        .map(|units| {
+            String::from_utf16(units).map_err(|_| {
+                format!("ODBC 返回的 {column} 不是有效的 UTF-16 文本；请检查数据库驱动与字符集配置")
+            })
+        })
+        .transpose()
 }
 
 /// Oracle 19c's ODBC driver may abort the entire process when an empty Rust
@@ -782,8 +852,8 @@ fn odbc_error(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_connection_string, inspect_target_schema, is_odbc_kind, odbc_error, preview_source,
-        query_optional_row_strings, stable_string_parameter, test_connection,
+        build_connection_string, decode_wide_cell, inspect_target_schema, is_odbc_kind, odbc_error,
+        preview_source, query_optional_row_strings, stable_string_parameter, test_connection,
         validate_driver_registration, with_connection,
     };
     use crate::model::ConnectionProfile;
@@ -868,6 +938,24 @@ mod tests {
                 length: NonZeroUsize::new("阿莫西林".len())
             }
         );
+    }
+
+    #[test]
+    fn wide_odbc_text_is_decoded_without_locale_dependent_bytes() {
+        let encoded = "当归".encode_utf16().collect::<Vec<_>>();
+        assert_eq!(
+            decode_wide_cell(Some(&encoded), "CN").unwrap().as_deref(),
+            Some("当归")
+        );
+        assert_eq!(decode_wide_cell(None, "CN").unwrap(), None);
+    }
+
+    #[test]
+    fn invalid_wide_odbc_text_is_reported_instead_of_replaced() {
+        let error = decode_wide_cell(Some(&[0xD800]), "药品名称").unwrap_err();
+        assert!(error.contains("药品名称"));
+        assert!(error.contains("UTF-16"));
+        assert!(!error.contains('�'));
     }
 
     #[test]

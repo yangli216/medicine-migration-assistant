@@ -198,7 +198,10 @@ fn validate_select_query(query: &str) -> Result<(), String> {
     if normalized.len() > 50_000 {
         return Err("查询语句过长，请使用视图或拆分查询".to_string());
     }
-    if !(normalized.starts_with("select ") || normalized.starts_with("with ")) {
+    if !matches!(
+        normalized.split_whitespace().next(),
+        Some("select" | "with")
+    ) {
         return Err("为保护老系统，数据源查询只允许 SELECT 或 WITH 语句".to_string());
     }
     let forbidden = [
@@ -237,6 +240,8 @@ mod tests {
     #[test]
     fn only_read_queries_are_allowed() {
         assert!(validate_select_query("select * from legacy_drug").is_ok());
+        assert!(validate_select_query("select\n  1 from dual").is_ok());
+        assert!(validate_select_query("select\t1 from dual").is_ok());
         assert!(validate_select_query("with d as (select 1) select * from d").is_ok());
         assert!(validate_select_query("delete from legacy_drug").is_err());
         assert!(validate_select_query("select 1; drop table x").is_err());
