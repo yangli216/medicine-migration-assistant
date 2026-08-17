@@ -113,6 +113,11 @@ import {
   buildFieldMappingStatuses,
   dictionaryRowsForField,
 } from "./fieldMappingStatus";
+import {
+  applySourceDictionaryOverrides,
+  phis27DictionaryScopeKey,
+  updateScopedDictionaryOverride,
+} from "./sourceDictionaryOverrides";
 
 function isPhis27Source(description) {
   return description.startsWith("二系列phis内置模板:");
@@ -198,6 +203,7 @@ export function App() {
   const [rows, setRows] = useState([]);
   const [columns, setColumns] = useState([]);
   const [columnMetadata, setColumnMetadata] = useState({});
+  const [sourceDictionaryOverrides, setSourceDictionaryOverrides] = useState({});
   const [sourceKey, setSourceKey] = useState("");
   const [mapping, setMapping] = useState({});
   const [rules, setRules] = useState({});
@@ -340,6 +346,18 @@ export function App() {
   const currentSourceDictionary = currentSourceField
     ? columnMetadata[currentSourceField]?.sourceDictionary || null
     : null;
+  const currentDictionaryScopeKey = useMemo(
+    () =>
+      phis27DictionaryScopeKey(
+        sourceProfile,
+        legacyInspection?.schema || sourceProfile.schema,
+      ),
+    [legacyInspection?.schema, sourceProfile],
+  );
+  const currentDictionaryScopeLabel = phis27SourceIdentity(
+    sourceProfile,
+    legacyInspection?.schema || sourceProfile.schema || "当前 Schema",
+  );
   const articleTypeDictionary =
     dictionariesById["rbmh.base.med.articleType"] || null;
   const mappedCount = targetFields.filter(
@@ -1024,13 +1042,24 @@ export function App() {
       if (preview.truncated)
         return fail("当前范围超过单批10,000行，请缩小范围后再读取");
       setAllowCreateFactory(true);
+      const savedDictionaryOverrides =
+        savedMappingProfile?.dictionaryOverrides || {};
+      const dictionaryScopeKey = phis27DictionaryScopeKey(
+        sourceProfile,
+        legacyInspection.schema,
+      );
+      const customizedMetadata = applySourceDictionaryOverrides(
+        preview.columnMetadata,
+        savedDictionaryOverrides[dictionaryScopeKey] || {},
+      );
+      setSourceDictionaryOverrides(savedDictionaryOverrides);
       const restored = acceptData(
         preview.rows,
         `二系列phis · ${legacyInspection.schema} · ${selected?.label || legacyScope}`,
         {
           sourceKey: "SOURCE_KEY",
           description: `二系列phis内置模板:${legacyScope}; schema=${legacyInspection.schema}`,
-          columnMetadata: preview.columnMetadata,
+          columnMetadata: customizedMetadata,
           mappingProfile: savedMappingProfile,
           phis27Preset: true,
           skipNotice: true,
@@ -1513,6 +1542,7 @@ export function App() {
       request: {
         mapping: completeMapping,
         rules,
+        dictionaryOverrides: sourceDictionaryOverrides,
       },
     });
     setPhis27MappingStatus({
@@ -1522,6 +1552,83 @@ export function App() {
       savedAt: saved.savedAt,
     });
     return saved;
+  }
+
+  async function saveSourceDictionaryOverride(dictionary, items) {
+    if (!dictionary?.id || !isPhis27Source(sourceDescription)) return;
+    const nextOverrides = updateScopedDictionaryOverride(
+      sourceDictionaryOverrides,
+      currentDictionaryScopeKey,
+      dictionary.id,
+      items,
+    );
+    const completeMapping = Object.fromEntries(
+      targetFields.map((field) => [field.key, mapping[field.key] || ""]),
+    );
+    setBusy("source-dictionary-save");
+    try {
+      const saved = await command("save_phis27_mapping_profile", {
+        request: {
+          mapping: completeMapping,
+          rules,
+          dictionaryOverrides: nextOverrides,
+        },
+      });
+      const savedOverrides = saved.dictionaryOverrides || nextOverrides;
+      const effectiveItems =
+        items === null
+          ? dictionary.presetItems || []
+          : savedOverrides[currentDictionaryScopeKey]?.[dictionary.id] || items;
+      setSourceDictionaryOverrides(savedOverrides);
+      setColumnMetadata((current) =>
+        Object.fromEntries(
+          Object.entries(current).map(([column, metadata]) => {
+            if (metadata.sourceDictionary?.id !== dictionary.id) {
+              return [column, metadata];
+            }
+            return [
+              column,
+              {
+                ...metadata,
+                sourceDictionary: {
+                  ...metadata.sourceDictionary,
+                  items: effectiveItems,
+                  customized: items !== null,
+                  loadStatus:
+                    items === null
+                      ? metadata.sourceDictionary.originalLoadStatus ||
+                        "bundled"
+                      : "customized",
+                  loadMessage:
+                    items === null
+                      ? metadata.sourceDictionary.originalLoadMessage ||
+                        "已恢复当前连接读取或系统预设的来源字典"
+                      : `当前项目已人工调整 ${effectiveItems.length} 个来源字典项`,
+                },
+              },
+            ];
+          }),
+        ),
+      );
+      setPhis27MappingStatus({
+        restored: true,
+        restoredCount: Object.values(saved.mapping || completeMapping).filter(
+          Boolean,
+        ).length,
+        missingCount: 0,
+        savedAt: saved.savedAt,
+      });
+      notify(
+        items === null
+          ? `已恢复“${dictionary.name}”默认定义`
+          : `已保存“${dictionary.name}”的项目级调整，推荐与校验已更新`,
+      );
+    } catch (error) {
+      fail(error);
+      throw error;
+    } finally {
+      setBusy("");
+    }
   }
 
   async function continueFieldMapping() {
@@ -2302,6 +2409,7 @@ export function App() {
             </div>
             {currentDictionary && currentSourceField && (
               <DictionaryMappingEditor
+                dictionaryScopeLabel={currentDictionaryScopeLabel}
                 dictionary={currentDictionary}
                 field={currentField}
                 onAutoMap={() => autoMapDictionary(currentField)}
@@ -2309,6 +2417,9 @@ export function App() {
                   setDictionaryMapping(currentField, sourceValue, targetValue)
                 }
                 onClear={() => clearDictionaryMappings(currentField)}
+                onSaveSourceDictionary={(items) =>
+                  saveSourceDictionaryOverride(currentSourceDictionary, items)
+                }
                 rows={currentDictionaryRows}
                 sourceDictionary={currentSourceDictionary}
                 valueMappingsText={rules[currentField.key]?.valueMappingsText}
@@ -3324,6 +3435,7 @@ export function App() {
                     status.sourceField && (
                       <div className="expert-dictionary-editor">
                         <DictionaryMappingEditor
+                          dictionaryScopeLabel={currentDictionaryScopeLabel}
                           dictionary={status.dictionary}
                           field={status.field}
                           onAutoMap={() => autoMapDictionary(status.field)}
@@ -3335,6 +3447,13 @@ export function App() {
                             )
                           }
                           onClear={() => clearDictionaryMappings(status.field)}
+                          onSaveSourceDictionary={(items) =>
+                            saveSourceDictionaryOverride(
+                              columnMetadata[status.sourceField]
+                                ?.sourceDictionary,
+                              items,
+                            )
+                          }
                           rows={status.dictionaryRows}
                           sourceDictionary={
                             columnMetadata[status.sourceField]?.sourceDictionary || null

@@ -43,7 +43,7 @@ fn default_preview_limit() -> u32 {
     200
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceDictionaryItem {
     pub key: String,

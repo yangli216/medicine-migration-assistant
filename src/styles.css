@@ -2177,6 +2177,151 @@ button:disabled {
   background: #fff;
   box-shadow: 0 24px 80px rgba(11, 37, 42, 0.24);
 }
+.source-dictionary-dialog {
+  width: min(820px, calc(100vw - 48px));
+  max-height: min(760px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #b8d8d4;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgba(11, 37, 42, 0.24);
+}
+.source-dictionary-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid #dce9e8;
+}
+.source-dictionary-dialog__header h2 {
+  margin: 3px 0 4px;
+  color: #183147;
+  font-size: 20px;
+}
+.source-dictionary-dialog__header p {
+  margin: 0;
+  color: #718091;
+  font-size: 12px;
+}
+.source-dictionary-dialog__scope {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 20px 0;
+  padding: 9px 11px;
+  border: 1px solid #cae4e1;
+  border-radius: 7px;
+  background: #f3fbfa;
+  color: #617788;
+  font-size: 12px;
+}
+.source-dictionary-dialog__scope strong {
+  color: #176f68;
+}
+.source-dictionary-dialog__scope span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-dictionary-dialog__scope b {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #dff4f1;
+  color: #167a71;
+  font-size: 11px;
+}
+.source-dictionary-dialog__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 20px;
+  color: #6d7e8e;
+  font-size: 12px;
+}
+.source-dictionary-dialog__toolbar > div {
+  display: flex;
+  gap: 7px;
+}
+.source-dictionary-table {
+  min-height: 180px;
+  margin: 0 20px;
+  overflow: auto;
+  border: 1px solid #d6e4e5;
+  border-radius: 8px;
+}
+.source-dictionary-table__head,
+.source-dictionary-table__row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.7fr) minmax(240px, 1.5fr) 48px;
+  align-items: center;
+  gap: 8px;
+}
+.source-dictionary-table__head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 10px;
+  border-bottom: 1px solid #d6e4e5;
+  background: #f4f8f9;
+  color: #5f7284;
+  font-size: 11px;
+  font-weight: 750;
+}
+.source-dictionary-table__row {
+  padding: 7px 10px;
+  border-bottom: 1px solid #e7eeee;
+}
+.source-dictionary-table__row:last-child {
+  border-bottom: 0;
+}
+.source-dictionary-table__row input {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid #cadadd;
+  border-radius: 6px;
+  color: #263d50;
+  background: #fff;
+}
+.source-dictionary-table__row input:focus {
+  border-color: #31a99d;
+  outline: 2px solid rgba(49, 169, 157, 0.13);
+}
+.source-dictionary-table__empty {
+  display: grid;
+  min-height: 140px;
+  place-items: center;
+  color: #84929f;
+  font-size: 12px;
+}
+.source-dictionary-dialog__error {
+  margin: 10px 20px 0;
+  padding: 8px 10px;
+  border: 1px solid #f1c6c2;
+  border-radius: 7px;
+  color: #b43f39;
+  background: #fff5f4;
+  font-size: 12px;
+}
+.source-dictionary-dialog__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid #e1eaea;
+}
+.source-dictionary-dialog__footer > div {
+  display: flex;
+  gap: 8px;
+}
 .dictionary-medicine-dialog__header {
   flex: 0 0 auto;
   display: flex;

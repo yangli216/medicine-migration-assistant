@@ -53,9 +53,12 @@ export async function command(name, args = {}) {
     return mockPhis27MappingProfile;
   if (name === "save_phis27_mapping_profile") {
     mockPhis27MappingProfile = {
-      version: 1,
+      version: 2,
       mapping: { ...args.request.mapping },
       rules: { ...args.request.rules },
+      dictionaryOverrides: structuredClone(
+        args.request.dictionaryOverrides || {},
+      ),
       savedAt: new Date().toISOString(),
     };
     return mockPhis27MappingProfile;

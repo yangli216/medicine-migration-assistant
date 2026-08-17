@@ -1,12 +1,17 @@
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
+  ArrowCounterClockwise,
   CaretLeft,
   CaretRight,
   CheckCircle,
+  FloppyDisk,
   Info,
   LinkSimple,
   MagnifyingGlass,
+  PencilSimple,
+  Plus,
+  Trash,
   Warning,
   X,
 } from "@phosphor-icons/react";
@@ -387,17 +392,20 @@ export function FieldMappingNavigator({
 }
 
 export function DictionaryMappingEditor({
+  dictionaryScopeLabel,
   dictionary,
   field,
   onAutoMap,
   onChange,
   onClear,
+  onSaveSourceDictionary,
   rows,
   sourceDictionary,
   valueMappingsText,
 }) {
   const [filter, setFilter] = useState("ALL");
   const [selectedMedicineGroup, setSelectedMedicineGroup] = useState(null);
+  const [sourceDictionaryEditing, setSourceDictionaryEditing] = useState(false);
   if (!dictionary) return null;
   const handled = rows.filter((item) => item.matched || item.ignored).length;
   const filterCounts = Object.fromEntries(
@@ -426,6 +434,16 @@ export function DictionaryMappingEditor({
             </span>
           </div>
           <div>
+            {sourceDictionary && onSaveSourceDictionary && (
+              <button
+                className="button button--secondary"
+                onClick={() => setSourceDictionaryEditing(true)}
+                type="button"
+              >
+                <PencilSimple size={16} />
+                调整来源字典
+              </button>
+            )}
             <button
               className="button button--secondary"
               type="button"
@@ -616,6 +634,244 @@ export function DictionaryMappingEditor({
           onClose={() => setSelectedMedicineGroup(null)}
         />
       )}
+      {sourceDictionaryEditing && (
+        <SourceDictionaryEditor
+          dictionary={sourceDictionary}
+          onClose={() => setSourceDictionaryEditing(false)}
+          onSave={onSaveSourceDictionary}
+          rows={rows}
+          scopeLabel={dictionaryScopeLabel}
+        />
+      )}
     </>
+  );
+}
+
+function SourceDictionaryEditor({
+  dictionary,
+  onClose,
+  onSave,
+  rows,
+  scopeLabel,
+}) {
+  const [draft, setDraft] = useState(() =>
+    (dictionary.items || []).map((item) => ({ ...item })),
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const presentCodes = useMemo(
+    () =>
+      rows
+        .filter((item) => !item.sourceIsBlank)
+        .map((item) => `${item.sourceValue}`.trim())
+        .filter(Boolean),
+    [rows],
+  );
+  const configuredCodes = new Set(
+    draft.map((item) => `${item.key ?? ""}`.trim()).filter(Boolean),
+  );
+  const missingCodes = presentCodes.filter(
+    (code, index) =>
+      !configuredCodes.has(code) && presentCodes.indexOf(code) === index,
+  );
+
+  useEffect(() => {
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape" && !saving) onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose, saving]);
+
+  const updateItem = (index, key, value) => {
+    setDraft((current) =>
+      current.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, [key]: value } : item,
+      ),
+    );
+  };
+  const validate = () => {
+    const normalized = draft.map((item) => ({
+      ...item,
+      key: `${item.key ?? ""}`.trim(),
+      text: `${item.text ?? ""}`.trim(),
+      properties: item.properties || {},
+    }));
+    if (normalized.some((item) => !item.key || !item.text)) {
+      throw new Error("每个字典项都需要填写来源编码和中文含义");
+    }
+    const keys = normalized.map((item) => item.key);
+    if (new Set(keys).size !== keys.length) {
+      throw new Error("来源编码不能重复，请合并重复项后再保存");
+    }
+    return normalized;
+  };
+  const save = async (items) => {
+    setError("");
+    setSaving(true);
+    try {
+      await onSave(items);
+      onClose();
+    } catch (nextError) {
+      setError(nextError?.message || `${nextError}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      className="dictionary-medicine-backdrop"
+      onMouseDown={() => !saving && onClose()}
+      role="presentation"
+    >
+      <section
+        aria-label={`调整${dictionary.name}来源字典`}
+        aria-modal="true"
+        className="source-dictionary-dialog"
+        onMouseDown={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <header className="source-dictionary-dialog__header">
+          <div>
+            <span className="eyebrow">二系列phis · 项目级配置</span>
+            <h2>调整“{dictionary.name}”来源字典</h2>
+            <p>
+              仅修正老系统编码的实际含义；保存后将重新参与按含义推荐、预览和校验。
+            </p>
+          </div>
+          <button
+            aria-label="关闭来源字典调整"
+            className="icon-button"
+            disabled={saving}
+            onClick={onClose}
+            type="button"
+          >
+            <X size={19} />
+          </button>
+        </header>
+        <div className="source-dictionary-dialog__scope">
+          <strong>适用项目</strong>
+          <span>{scopeLabel}</span>
+          <b>{dictionary.customized ? "已人工调整" : "当前为默认定义"}</b>
+        </div>
+        <div className="source-dictionary-dialog__toolbar">
+          <span>
+            当前 {draft.length} 项
+            {missingCodes.length
+              ? ` · 本批还有 ${missingCodes.length} 个编码未定义`
+              : " · 本批出现的编码均已覆盖"}
+          </span>
+          <div>
+            {missingCodes.length > 0 && (
+              <button
+                className="button button--secondary"
+                onClick={() =>
+                  setDraft((current) => [
+                    ...current,
+                    ...missingCodes.map((key) => ({
+                      key,
+                      text: "",
+                      properties: {},
+                    })),
+                  ])
+                }
+                type="button"
+              >
+                <Plus size={15} /> 补齐本批编码
+              </button>
+            )}
+            <button
+              className="button button--secondary"
+              onClick={() =>
+                setDraft((current) => [
+                  ...current,
+                  { key: "", text: "", properties: {} },
+                ])
+              }
+              type="button"
+            >
+              <Plus size={15} /> 新增字典项
+            </button>
+          </div>
+        </div>
+        <div className="source-dictionary-table">
+          <div className="source-dictionary-table__head">
+            <span>来源编码</span>
+            <span>项目实际中文含义</span>
+            <span>操作</span>
+          </div>
+          {draft.map((item, index) => (
+            <div className="source-dictionary-table__row" key={`${index}-${item.key}`}>
+              <input
+                aria-label={`第 ${index + 1} 项来源编码`}
+                onChange={(event) => updateItem(index, "key", event.target.value)}
+                placeholder="例如 3"
+                value={item.key}
+              />
+              <input
+                aria-label={`第 ${index + 1} 项中文含义`}
+                onChange={(event) => updateItem(index, "text", event.target.value)}
+                placeholder="例如 喹诺酮类"
+                value={item.text}
+              />
+              <button
+                aria-label={`删除第 ${index + 1} 项`}
+                className="icon-button icon-button--danger"
+                onClick={() =>
+                  setDraft((current) =>
+                    current.filter((_, itemIndex) => itemIndex !== index),
+                  )
+                }
+                type="button"
+              >
+                <Trash size={16} />
+              </button>
+            </div>
+          ))}
+          {!draft.length && (
+            <div className="source-dictionary-table__empty">
+              当前没有字典项，可新增或补齐本批实际编码。
+            </div>
+          )}
+        </div>
+        {error && <div className="source-dictionary-dialog__error">{error}</div>}
+        <footer className="source-dictionary-dialog__footer">
+          <button
+            className="button button--ghost"
+            disabled={saving || !dictionary.customized}
+            onClick={() => save(null)}
+            type="button"
+          >
+            <ArrowCounterClockwise size={16} /> 恢复默认定义
+          </button>
+          <div>
+            <button
+              className="button button--secondary"
+              disabled={saving}
+              onClick={onClose}
+              type="button"
+            >
+              取消
+            </button>
+            <button
+              className="button button--primary"
+              disabled={saving}
+              onClick={() => {
+                try {
+                  save(validate());
+                } catch (nextError) {
+                  setError(nextError.message);
+                }
+              }}
+              type="button"
+            >
+              <FloppyDisk size={16} />
+              {saving ? "正在保存…" : "保存项目调整"}
+            </button>
+          </div>
+        </footer>
+      </section>
+    </div>
   );
 }
