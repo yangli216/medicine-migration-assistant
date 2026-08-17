@@ -137,7 +137,8 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /每个 YPXH:YPCD 仍分别保留迁移映射/);
   assert.match(appSource, /任务 B · 已开放/);
   assert.match(appSource, /inspect_phis27_inventory/);
-  assert.match(appSource, /读取库存并核对台账/);
+  assert.match(appSource, /读取机构与库存范围/);
+  assert.match(appSource, /读取并核对本批机构/);
   assert.match(appSource, /load_inventory_target_storages/);
   assert.match(appSource, /load_inventory_target_organizations/);
   assert.match(appSource, /load_phis27_inventory_catalog/);
@@ -149,12 +150,12 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /老系统药库\/药房 → 新系统库房/);
   assert.match(appSource, /机构与库房对应关系/);
   assert.match(appSource, /同名自动匹配/);
-  assert.match(appSource, /检查已完成机构/);
-  assert.match(appSource, /本批只处理已完整映射的机构/);
-  assert.match(appSource, /请至少完整映射一个机构及其全部药库\/药房/);
+  assert.match(appSource, /纳入本批/);
+  assert.match(appSource, /未勾选机构不会读取明细/);
+  assert.match(appSource, /请先完整映射机构与库房，并勾选至少一个机构纳入本批/);
   assert.match(appSource, /第 3 步 · 数据来源[\s\S]*返回选择任务/);
-  assert.match(appSource, /查看读取明细/);
-  assert.match(appSource, /老系统库存已读取/);
+  assert.match(appSource, /查看范围详情/);
+  assert.match(appSource, /老系统机构与库存范围已读取/);
   assert.match(appSource, /新系统机构与库房已读取/);
   assert.match(appSource, /storage\.storageType === expectedType/);
   assert.match(appSource, /storage\.organizationId === targetOrganizationId/);

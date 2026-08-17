@@ -28,6 +28,7 @@ export function createInventoryRenderers(context) {
     inventoryOrganizationMappings,
     inventoryReadiness,
     inventoryResolvedLocations,
+    inventorySelectedOrganizationIds,
     inventoryReviewSearch,
     inventoryReviewStatus,
     inventoryReviewStorage,
@@ -41,6 +42,7 @@ export function createInventoryRenderers(context) {
     setInventoryMappingExpanded,
     setInventoryOrganizationMappings,
     setInventoryResolvedLocations,
+    setInventorySelectedOrganizationIds,
     setInventoryReviewSearch,
     setInventoryReviewStatus,
     setInventoryReviewStorage,
@@ -65,11 +67,16 @@ function renderInventoryMappingBoard() {
         .filter(Boolean),
     ),
   ];
-  const completedOrganizationCount = completeInventoryOrganizationIds(
+  const completedOrganizationIds = completeInventoryOrganizationIds(
     inventoryReadiness.locations,
     inventoryOrganizationMappings,
     inventoryLocationMappings,
     inventoryResolvedLocations,
+  );
+  const completedOrganizationCount = completedOrganizationIds.length;
+  const completedOrganizationIdSet = new Set(completedOrganizationIds);
+  const selectedOrganizationCount = inventorySelectedOrganizationIds.filter(
+    (organizationId) => completedOrganizationIdSet.has(organizationId),
   ).length;
   const completedLocationCount = inventoryReadiness.locations.filter(
     (location) =>
@@ -116,6 +123,7 @@ function renderInventoryMappingBoard() {
           <span>
             可迁移机构 {completedOrganizationCount}/{sourceOrganizationIds.length}
           </span>
+          <span>本批已选 {selectedOrganizationCount}</span>
           <span>
             库房 {completedLocationCount}/{inventoryReadiness.locations.length}
           </span>
@@ -161,6 +169,12 @@ function renderInventoryMappingBoard() {
               (location.mappingStatus !== "SOURCE_LOCATION_AMBIGUOUS" ||
                 inventoryResolvedLocations[location.sourceLocationKey]),
           ).length;
+          const organizationReady =
+            organizationCompleted === locations.length &&
+            Boolean(targetOrganizationId);
+          const selectedForBatch =
+            organizationReady &&
+            inventorySelectedOrganizationIds.includes(sourceOrganizationId);
           return (
             <section className="inventory-org-group" key={sourceOrganizationId}>
               <div className="inventory-org-group__header">
@@ -206,20 +220,44 @@ function renderInventoryMappingBoard() {
                       ),
                     );
                     setInventoryBatchDetail(null);
+                    setInventorySelectedOrganizationIds((current) =>
+                      current.filter((id) => id !== sourceOrganizationId),
+                    );
                   }}
                   options={organizationOptions}
                   placeholder="选择新系统机构"
                   searchPlaceholder="按机构名称、编码或上级机构过滤"
                 />
-                <span
-                  className={`inventory-org-group__status ${organizationCompleted === locations.length && targetOrganizationId ? "is-complete" : ""}`}
+                <label
+                  className={`inventory-org-group__batch-choice ${organizationReady ? "is-ready" : ""}`}
+                  title={
+                    organizationReady
+                      ? "选择该机构纳入本次库存核对与迁移"
+                      : "完成机构和全部库房映射后才能纳入本批"
+                  }
                 >
-                  {organizationCompleted === locations.length && targetOrganizationId
-                    ? "本批可迁移"
-                    : targetOrganizationId
-                      ? `还差 ${locations.length - organizationCompleted} 项`
-                      : "待映射"}
-                </span>
+                  <input
+                    checked={selectedForBatch}
+                    disabled={!organizationReady}
+                    onChange={(event) =>
+                      setInventorySelectedOrganizationIds((current) =>
+                        event.target.checked
+                          ? [...new Set([...current, sourceOrganizationId])]
+                          : current.filter((id) => id !== sourceOrganizationId),
+                      )
+                    }
+                    type="checkbox"
+                  />
+                  <span>
+                    {organizationReady
+                      ? selectedForBatch
+                        ? "已纳入本批"
+                        : "纳入本批"
+                      : targetOrganizationId
+                        ? `还差 ${locations.length - organizationCompleted} 项`
+                        : "待映射"}
+                  </span>
+                </label>
               </div>
               {targetOrganizationId &&
                 selectedOrganizationStorages.length === 0 && (
@@ -302,6 +340,9 @@ function renderInventoryMappingBoard() {
                                 [location.sourceLocationKey]: sourceLocationKey,
                               }));
                               setInventoryBatchDetail(null);
+                              setInventorySelectedOrganizationIds((current) =>
+                                current.filter((id) => id !== sourceOrganizationId),
+                              );
                             }}
                             options={sourceLocationOptions}
                             placeholder="指定实际老药库"
@@ -323,6 +364,9 @@ function renderInventoryMappingBoard() {
                             [location.sourceLocationKey]: targetIdSto,
                           }));
                           setInventoryBatchDetail(null);
+                          setInventorySelectedOrganizationIds((current) =>
+                            current.filter((id) => id !== sourceOrganizationId),
+                          );
                         }}
                         options={targetOptions}
                         disabled={!targetOrganizationId}
@@ -347,18 +391,18 @@ function renderInventoryMappingBoard() {
         <div>
           <ShieldCheck size={18} weight="fill" />
           <span>
-            本批只处理已完整映射的机构，其他机构可在后续批次继续配置。
+            完整映射后勾选“纳入本批”；未勾选机构不会读取明细，也不会计入本次失败。
           </span>
         </div>
         <button
           className="button button--primary"
-          disabled={busy === "inventory-prepare" || completedOrganizationCount === 0}
+          disabled={busy === "inventory-prepare" || selectedOrganizationCount === 0}
           onClick={preparePhis27Inventory}
         >
           <ListMagnifyingGlass size={18} />
           {busy === "inventory-prepare"
             ? "正在检查…"
-            : `检查已完成机构（${completedOrganizationCount}）`}
+            : `读取并核对本批机构（${selectedOrganizationCount}）`}
         </button>
       </div>
     </div>

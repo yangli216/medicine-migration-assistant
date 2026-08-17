@@ -171,6 +171,8 @@ export function App() {
   const [targetOrganizationCatalog, setTargetOrganizationCatalog] = useState(null);
   const [inventoryOrganizationMappings, setInventoryOrganizationMappings] =
     useState({});
+  const [inventorySelectedOrganizationIds, setInventorySelectedOrganizationIds] =
+    useState([]);
   const [targetStorageCatalog, setTargetStorageCatalog] = useState(null);
   const [inventoryLocationMappings, setInventoryLocationMappings] = useState({});
   const [inventoryResolvedLocations, setInventoryResolvedLocations] = useState({});
@@ -1085,6 +1087,7 @@ export function App() {
     setLegacyInventoryCatalog(null);
     setTargetOrganizationCatalog(null);
     setInventoryOrganizationMappings({});
+    setInventorySelectedOrganizationIds([]);
     setTargetStorageCatalog(null);
     setInventoryLocationMappings({});
     setInventoryResolvedLocations({});
@@ -1168,6 +1171,7 @@ export function App() {
             ]),
         ),
       );
+      setInventorySelectedOrganizationIds([]);
       setInventoryLocationMappings(
         Object.fromEntries(
           savedMappings
@@ -1209,10 +1213,14 @@ export function App() {
       inventoryLocationMappings,
       inventoryResolvedLocations,
     );
-    if (!completedOrganizationIds.length) {
-      return fail("请至少完整映射一个机构及其全部药库/药房");
+    const completedOrganizationIdSet = new Set(completedOrganizationIds);
+    const selectedBatchOrganizationIds = inventorySelectedOrganizationIds.filter(
+      (organizationId) => completedOrganizationIdSet.has(organizationId),
+    );
+    if (!selectedBatchOrganizationIds.length) {
+      return fail("请先完整映射机构与库房，并勾选至少一个机构纳入本批");
     }
-    const selectedOrganizationIds = new Set(completedOrganizationIds);
+    const selectedOrganizationIds = new Set(selectedBatchOrganizationIds);
     const selectedLocations = locations.filter((location) =>
       selectedOrganizationIds.has(location.organizationId),
     );
@@ -1258,7 +1266,7 @@ export function App() {
         targetIdOrg: storage.organizationId,
       };
     });
-    const organizationMappings = completedOrganizationIds.map((sourceId) => {
+    const organizationMappings = selectedBatchOrganizationIds.map((sourceId) => {
       const source = legacyOrganizations.find((item) => item.id === sourceId);
       const targetId = inventoryOrganizationMappings[sourceId];
       const target = targetOrganizations.find((item) => item.id === targetId);
@@ -1291,8 +1299,8 @@ export function App() {
       setInventoryMappingExpanded(false);
       notify(
         detail.batch.failCount
-          ? `${completedOrganizationIds.length} 个机构防重预检完成：${detail.batch.validCount} 组可写入，${detail.batch.failCount} 组需处理`
-          : `${completedOrganizationIds.length} 个机构防重预检通过：${detail.batch.validCount} 组可进入正式写入`,
+          ? `${selectedBatchOrganizationIds.length} 个机构防重预检完成：${detail.batch.validCount} 组可写入，${detail.batch.failCount} 组需处理`
+          : `${selectedBatchOrganizationIds.length} 个机构防重预检通过：${detail.batch.validCount} 组可进入正式写入`,
       );
     } catch (error) {
       fail(error);
@@ -1504,6 +1512,7 @@ export function App() {
     inventoryOrganizationMappings,
     inventoryReadiness,
     inventoryResolvedLocations,
+    inventorySelectedOrganizationIds,
     inventoryReviewSearch,
     inventoryReviewStatus,
     inventoryReviewStorage,
@@ -1517,6 +1526,7 @@ export function App() {
     setInventoryMappingExpanded,
     setInventoryOrganizationMappings,
     setInventoryResolvedLocations,
+    setInventorySelectedOrganizationIds,
     setInventoryReviewSearch,
     setInventoryReviewStatus,
     setInventoryReviewStorage,
@@ -2113,6 +2123,7 @@ export function App() {
             setInventoryPreflightExpanded,
             setInventoryReadiness,
             setInventoryResolvedLocations,
+            setInventorySelectedOrganizationIds,
             setInventoryReviewConfirmed,
             setInventorySourceExpanded,
             setInventoryTargetExpanded,

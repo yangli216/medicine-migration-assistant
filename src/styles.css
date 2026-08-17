@@ -5492,7 +5492,7 @@ button:disabled {
 .inventory-org-group__header {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(220px, 0.78fr) 20px minmax(280px, 1.22fr) 86px;
+  grid-template-columns: minmax(220px, 0.78fr) 20px minmax(280px, 1.22fr) 108px;
   align-items: center;
   gap: 10px;
   padding: 9px 11px;
@@ -5551,6 +5551,33 @@ button:disabled {
 .inventory-org-group__status.is-complete {
   background: #dff5f0;
   color: #168276;
+}
+.inventory-org-group__batch-choice {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 96px;
+  padding: 5px 8px;
+  border: 1px solid #d9e2e3;
+  border-radius: 999px;
+  color: #78858e;
+  background: #f1f4f5;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+.inventory-org-group__batch-choice.is-ready {
+  border-color: #93d8cf;
+  color: #157c72;
+  background: #ecfaf7;
+  cursor: pointer;
+}
+.inventory-org-group__batch-choice input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #259b90;
 }
 .inventory-org-storage-warning {
   display: flex;

@@ -63,6 +63,7 @@ export function InventoryMigrationScreen({ context }) {
     setInventoryPreflightExpanded,
     setInventoryReadiness,
     setInventoryResolvedLocations,
+    setInventorySelectedOrganizationIds,
     setInventoryReviewConfirmed,
     setInventorySourceExpanded,
     setInventoryTargetExpanded,
@@ -95,11 +96,11 @@ export function InventoryMigrationScreen({ context }) {
   <section className="screen inventory-screen">
     <div className="screen-heading screen-heading--row">
       <div>
-        <span className="eyebrow">第 3 步 · 库存前置核对</span>
-        <h1>先确认库存药品都能找到新系统主键</h1>
+        <span className="eyebrow">第 3 步 · 选择本批迁移范围</span>
+        <h1>先选择需要迁移的机构和库房</h1>
         <p>
-          只读检查 YK_KCMX / YF_KCMX，并复用已核实的
-          YPXH:YPCD → id_med/id_med_pro 台账；本步骤不会写入库存。
+          先轻量读取机构和非零库存范围；完成本批机构、库房映射后，才读取所选范围的
+          YK_KCMX / YF_KCMX 明细并核对药品台账。
         </p>
       </div>
       <div className="source-summary">
@@ -127,6 +128,7 @@ export function InventoryMigrationScreen({ context }) {
           setTargetStorageCatalog(null);
           setInventoryLocationMappings({});
           setInventoryResolvedLocations({});
+          setInventorySelectedOrganizationIds([]);
           setInventoryBatchDetail(null);
         }}
         onManage={() => setConnectionManagerOpen(true)}
@@ -150,6 +152,7 @@ export function InventoryMigrationScreen({ context }) {
             setTargetStorageCatalog(null);
             setInventoryLocationMappings({});
             setInventoryResolvedLocations({});
+            setInventorySelectedOrganizationIds([]);
             setInventoryBatchDetail(null);
           }}
           title="二系列phis老系统只读连接"
@@ -166,9 +169,9 @@ export function InventoryMigrationScreen({ context }) {
         <div className="inventory-preflight-card__copy">
           <Database size={22} weight="duotone" />
           <div>
-            <strong>读取非零库存并核对基础数据台账</strong>
+            <strong>读取机构及非零库存范围</strong>
             <span>
-              药库数量取 YK_KCMX.KCSL，药房数量取 YF_KCMX.YPSL；批号、效期和价格将在正式写入阶段保留。
+              本次只汇总机构、药库和药房，不读取全部药品明细；选定本批范围后再核对主键、批号、效期和价格。
             </span>
           </div>
         </div>
@@ -179,8 +182,8 @@ export function InventoryMigrationScreen({ context }) {
         >
           <ListMagnifyingGlass size={19} />
           {busy === "inventory-inspect"
-            ? "正在核对…"
-            : "读取库存并核对台账"}
+            ? "正在读取范围…"
+            : "读取机构与库存范围"}
         </button>
       </div>
         </>
@@ -189,7 +192,7 @@ export function InventoryMigrationScreen({ context }) {
           <div>
             <CheckCircle size={20} weight="fill" />
             <div>
-              <strong>老系统库存已读取</strong>
+              <strong>老系统机构与库存范围已读取</strong>
               <span>
                 {inventoryReadiness.schema} · {sourceProfile.host}:{sourceProfile.port}
               </span>
@@ -225,19 +228,14 @@ export function InventoryMigrationScreen({ context }) {
         <div className="inventory-readiness-summary">
           <div>
             <span>
-              {inventoryReadiness.stockRowCount} 条明细
+              预计 {inventoryReadiness.stockRowCount} 条明细
             </span>
             <span>
-              {inventoryReadiness.medicineCount} 种药品
+              {inventoryReadiness.medicineCount} 个药品-库房组合
             </span>
             <span>
               {inventoryReadiness.locations.length} 个待映射位置
             </span>
-            {inventoryReadiness.unresolvedMedicineCount > 0 && (
-              <span className="is-warning">
-                {inventoryReadiness.unresolvedMedicineCount} 个药品待补台账
-              </span>
-            )}
           </div>
           <button
             className="button button--ghost button--compact"
@@ -245,7 +243,7 @@ export function InventoryMigrationScreen({ context }) {
               setInventoryPreflightExpanded((current) => !current)
             }
           >
-            {inventoryPreflightExpanded ? "收起读取明细" : "查看读取明细"}
+            {inventoryPreflightExpanded ? "收起范围详情" : "查看范围详情"}
             <CaretDown
               size={15}
               className={inventoryPreflightExpanded ? "is-rotated" : ""}
@@ -256,11 +254,9 @@ export function InventoryMigrationScreen({ context }) {
           <>
           <div className="summary-cards inventory-summary-cards">
           {[
-            ["库存明细", inventoryReadiness.stockRowCount],
-            ["库存分组", inventoryReadiness.stockGroupCount],
-            ["涉及药品", inventoryReadiness.medicineCount],
-            ["已关联台账", inventoryReadiness.mappedMedicineCount],
-            ["待补基础数据", inventoryReadiness.unresolvedMedicineCount],
+            ["预计库存明细", inventoryReadiness.stockRowCount],
+            ["药品-库房组合", inventoryReadiness.stockGroupCount],
+            ["待选库房", inventoryReadiness.locations.length],
           ].map(([label, value], index) => (
             <div
               className={`summary-card ${index === 3 ? "summary-card--ready" : index === 4 && value ? "summary-card--danger" : ""}`}
@@ -274,8 +270,8 @@ export function InventoryMigrationScreen({ context }) {
         <div className="inventory-location-list">
           <div className="inventory-location-list__heading">
             <div>
-              <strong>待配置的库存位置</strong>
-              <span>正式写入前，每个老系统药库/药房都必须对应一个新系统仓储。</span>
+              <strong>本次可选择的库存位置</strong>
+              <span>先选定一个或多个完整机构，再读取这些机构的库存明细进行核对。</span>
             </div>
             <em>{inventoryReadiness.locations.length} 个位置</em>
           </div>
@@ -305,6 +301,12 @@ export function InventoryMigrationScreen({ context }) {
             </article>
           ))}
         </div>
+        <div className="prerequisite-note">
+          <Info size={17} />
+          <span>
+            选定本批机构后的明细阶段：药库数量取 YK_KCMX.KCSL，药房数量取 YF_KCMX.YPSL。
+          </span>
+        </div>
         {inventoryReadiness.unresolvedSourceKeys.length > 0 && (
           <div className="inventory-unresolved">
             <Warning size={18} weight="fill" />
@@ -327,9 +329,9 @@ export function InventoryMigrationScreen({ context }) {
             <div className="inventory-target-panel__heading">
               <div>
                 <span className="eyebrow">目标机构与库房</span>
-                <strong>设置新老系统对应关系</strong>
+                <strong>选择本批机构并设置库房对应关系</strong>
                 <p>
-                  读取目标清单后，按老系统机构集中配置其药库和药房。
+                  每个已完整映射的机构都可以独立进入本批，其余机构留待后续处理。
                 </p>
               </div>
               {targetStorageCatalog && (
@@ -356,6 +358,7 @@ export function InventoryMigrationScreen({ context }) {
                 setTargetStorageCatalog(null);
                 setInventoryLocationMappings({});
                 setInventoryResolvedLocations({});
+                setInventorySelectedOrganizationIds([]);
                 setInventoryBatchDetail(null);
               }}
               onManage={() => setConnectionManagerOpen(true)}
@@ -377,6 +380,7 @@ export function InventoryMigrationScreen({ context }) {
                   setTargetStorageCatalog(null);
                   setInventoryLocationMappings({});
                   setInventoryResolvedLocations({});
+                  setInventorySelectedOrganizationIds([]);
                   setInventoryBatchDetail(null);
                 }}
                 title="新系统目标数据库"
@@ -829,7 +833,7 @@ export function InventoryMigrationScreen({ context }) {
       {inventoryReadiness?.readyForLocationMapping && !targetStorageCatalog && (
         <div className="inventory-next-note">
           <CheckCircle size={18} weight="fill" />
-          药品主键核对通过，请继续连接目标库并完成库房映射。
+          库存范围已读取，请继续连接目标库并选择本批机构；药品主键将在读取所选机构明细时核对。
         </div>
       )}
     </div>

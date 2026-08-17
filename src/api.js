@@ -279,7 +279,7 @@ export async function command(name, args = {}) {
       stockRowCount: 118,
       stockGroupCount: 107,
       medicineCount: 81,
-      mappedMedicineCount: 81,
+      mappedMedicineCount: 0,
       unresolvedMedicineCount: 0,
       locations: [
         {
@@ -292,7 +292,7 @@ export async function command(name, args = {}) {
           stockGroupCount: 68,
           medicineCount: 58,
           mappingStatus: "PENDING_TARGET_MAPPING",
-          mappingMessage: "老系统位置已识别，下一步选择对应的新系统库房",
+          mappingMessage: "老系统位置已识别，可选择对应的新系统库房",
         },
         {
           sourceKind: "PHARMACY",
@@ -304,7 +304,7 @@ export async function command(name, args = {}) {
           stockGroupCount: 28,
           medicineCount: 24,
           mappingStatus: "PENDING_TARGET_MAPPING",
-          mappingMessage: "老系统位置已识别，下一步选择对应的新系统库房",
+          mappingMessage: "老系统位置已识别，可选择对应的新系统库房",
         },
         {
           sourceKind: "PHARMACY",
@@ -320,9 +320,9 @@ export async function command(name, args = {}) {
         },
       ],
       unresolvedSourceKeys: [],
-      warnings: [],
+      warnings: ["药品主键台账将在选定本批机构后，仅对所选库存明细核对"],
       message:
-        "库存药品已全部关联到本次核实的基础数据台账，可以进入库房映射配置",
+        "已读取轻量库存范围，请先选择并映射本批要迁移的机构与库房",
     };
   if (name === "load_phis27_inventory_catalog")
     return {
@@ -502,6 +502,8 @@ function mockPrepareInventory(request) {
     sourceHash: objectId(),
     status: "VALIDATED",
     rawData: {
+      sourceKind: mapping.sourceKind,
+      sourceOrganizationId: mapping.sourceOrganizationId,
       sourceLocationKey: mapping.sourceLocationKey,
       sourceLocationName: mapping.sourceLocationName,
       sourceProductKey: `${26911 + index}:${12000 + index}`,

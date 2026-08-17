@@ -8,7 +8,7 @@ use crate::target_contract::validate_schema_identifier;
 use odbc_api::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 const REQUIRED_TABLES: &[&str] = &["YK_TYPK", "YK_YPCD", "YK_CDDZ", "YK_CDXX"];
 const INSPECTED_TABLES: &[&str] = &[
@@ -178,17 +178,6 @@ pub struct Phis27InventoryReferenceCatalog {
 }
 
 #[derive(Debug, Clone)]
-struct InventoryStockGroup {
-    source_kind: String,
-    source_location_key: String,
-    source_location_name: String,
-    organization_id: String,
-    source_option_count: usize,
-    source_key: String,
-    stock_rows: usize,
-}
-
-#[derive(Debug, Clone)]
 struct LegacyPhysicalColumn {
     table: String,
     column: String,
@@ -223,8 +212,8 @@ pub fn load(request: &LoadPhis27Request) -> Result<SourcePreview, String> {
 }
 
 pub fn inspect_inventory(
-    store: &LocalStore,
-    tenant_id: &str,
+    _store: &LocalStore,
+    _tenant_id: &str,
     request: &InspectPhis27InventoryRequest,
 ) -> Result<Phis27InventoryReadiness, String> {
     ensure_oracle(&request.connection)?;
@@ -259,7 +248,7 @@ pub fn inspect_inventory(
         .any(|item| item == "YF_YFLB")
         && has_physical_column(&physical_columns, "YF_YFLB", "YFSB")
         && has_physical_column(&physical_columns, "YF_YFLB", "JGID");
-    let query = inventory_group_query(
+    let grouped_query = inventory_group_query(
         &schema,
         has_warehouse_stock,
         has_pharmacy_stock,
@@ -267,17 +256,50 @@ pub fn inspect_inventory(
         has_pharmacy_list,
         &physical_columns,
     );
+    let query = inventory_location_summary_query(&grouped_query);
     let preview = odbc::preview_source(&request.connection, &query, 10_000)
-        .map_err(|error| format!("读取二系列phis非零库存失败：{error}"))?;
+        .map_err(|error| format!("读取二系列phis机构库存范围失败：{error}"))?;
     if preview.truncated {
-        return Err("库存分组超过 10,000 条，请先按机构拆分后再执行库存初始化".into());
+        return Err("库存机构/库房范围超过 10,000 个，请检查老系统机构与库房配置".into());
     }
-    let groups = preview
+    let locations = preview
         .rows
         .iter()
-        .map(inventory_group_from_row)
+        .map(inventory_location_from_row)
         .collect::<Result<Vec<_>, _>>()?;
-    summarize_inventory_readiness(store, tenant_id, source_name, &schema, groups)
+    let stock_row_count = locations.iter().map(|item| item.stock_row_count).sum();
+    let stock_group_count = locations.iter().map(|item| item.stock_group_count).sum();
+    let medicine_count = locations.iter().map(|item| item.medicine_count).sum();
+    let mut warnings = Vec::new();
+    let ambiguous_locations = locations
+        .iter()
+        .filter(|location| location.mapping_status == "SOURCE_LOCATION_AMBIGUOUS")
+        .count();
+    if ambiguous_locations > 0 {
+        warnings.push(format!(
+            "{ambiguous_locations} 个药库库存范围无法从 YK_KCMX 直接还原药库主键，选择本批机构时需人工确认"
+        ));
+    }
+    warnings.push("药品主键台账将在选定本批机构后，仅对所选库存明细核对".into());
+    let ready_for_location_mapping = !locations.is_empty();
+    Ok(Phis27InventoryReadiness {
+        ready_for_location_mapping,
+        schema,
+        source_name: source_name.into(),
+        stock_row_count,
+        stock_group_count,
+        medicine_count,
+        mapped_medicine_count: 0,
+        unresolved_medicine_count: 0,
+        locations,
+        unresolved_source_keys: Vec::new(),
+        warnings,
+        message: if ready_for_location_mapping {
+            "已读取轻量库存范围，请先选择并映射本批要迁移的机构与库房".into()
+        } else {
+            "没有需要初始化的非零库存记录".into()
+        },
+    })
 }
 
 pub fn load_inventory_reference_catalog(
@@ -512,7 +534,11 @@ pub fn load_inventory_reference_catalog(
 
 pub fn load_inventory_stock_items(
     profile: &ConnectionProfile,
+    organization_ids: &HashSet<String>,
 ) -> Result<Vec<Phis27InventoryStockItem>, String> {
+    if organization_ids.is_empty() {
+        return Err("请先选择本批需要迁移的机构".into());
+    }
     ensure_oracle(profile)?;
     let schema = source_schema(profile)?;
     let inspection = inspect(profile)?;
@@ -548,11 +574,15 @@ pub fn load_inventory_stock_items(
         has_warehouse_list,
         has_pharmacy_list,
         &physical_columns,
+        organization_ids,
     );
     let preview = odbc::preview_source(profile, &query, 10_000)
         .map_err(|error| format!("读取二系列phis库存明细失败：{error}"))?;
     if preview.truncated {
-        return Err("非零库存明细超过 10,000 条，请先按机构拆分后再迁移".into());
+        return Err(
+            "本批所选机构的非零库存明细仍超过 10,000 条，请减少本批机构数量后重试；若仅选一个机构仍超限，请联系技术人员调整分批策略"
+                .into(),
+        );
     }
     preview
         .rows
@@ -568,8 +598,10 @@ fn inventory_detail_query(
     has_warehouse_list: bool,
     has_pharmacy_list: bool,
     physical_columns: &[LegacyPhysicalColumn],
+    organization_ids: &HashSet<String>,
 ) -> String {
     let mut queries = Vec::new();
+    let organization_filter = oracle_organization_filter(organization_ids);
     let specification = optional_source_expression(
         physical_columns,
         "YK_TYPK",
@@ -678,7 +710,7 @@ fn inventory_detail_query(
              {batch_code} AS BATCH_CODE,{effective_date} AS EFFECTIVE_DATE \
              FROM {} k INNER JOIN {} t ON t.YPXH=k.YPXH \
              LEFT JOIN {} p ON p.YPXH=k.YPXH AND p.YPCD=k.YPCD \
-             LEFT JOIN {} f ON f.YPCD=k.YPCD {location_join} WHERE NVL(k.KCSL,0)<>0",
+             LEFT JOIN {} f ON f.YPCD=k.YPCD {location_join} WHERE NVL(k.KCSL,0)<>0{organization_filter}",
             table_name(schema, "YK_KCMX"),
             table_name(schema, "YK_TYPK"),
             table_name(schema, "YK_YPCD"),
@@ -752,7 +784,7 @@ fn inventory_detail_query(
              FROM {} k INNER JOIN {} t ON t.YPXH=k.YPXH \
              LEFT JOIN {} y ON y.JGID=k.JGID AND y.YFSB=k.YFSB AND y.YPXH=k.YPXH \
              LEFT JOIN {} p ON p.YPXH=k.YPXH AND p.YPCD=k.YPCD \
-             LEFT JOIN {} f ON f.YPCD=k.YPCD {location_join} WHERE NVL(k.YPSL,0)<>0",
+             LEFT JOIN {} f ON f.YPCD=k.YPCD {location_join} WHERE NVL(k.YPSL,0)<>0{organization_filter}",
             table_name(schema, "YF_KCMX"),
             table_name(schema, "YK_TYPK"),
             table_name(schema, "YF_YPXX"),
@@ -768,6 +800,17 @@ fn inventory_detail_query(
          ORDER BY SOURCE_KIND,LOCATION_KEY,SOURCE_KEY,SOURCE_RECORD_ID",
         queries.join(" UNION ALL ")
     )
+}
+
+fn oracle_organization_filter(organization_ids: &HashSet<String>) -> String {
+    let mut ids = organization_ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .map(|id| format!("N'{}'", id.replace('\'', "''")))
+        .collect::<Vec<_>>();
+    ids.sort();
+    format!(" AND CAST(k.JGID AS NVARCHAR2(128)) IN ({})", ids.join(","))
 }
 
 fn inventory_stock_item_from_row(
@@ -894,12 +937,23 @@ fn inventory_group_query(
     }
     format!(
         "SELECT SOURCE_KIND,LOCATION_KEY,LOCATION_NAME,ORGANIZATION_ID,OPTION_COUNT,SOURCE_KEY,STOCK_ROWS \
-         FROM ({}) ORDER BY SOURCE_KIND,LOCATION_KEY,SOURCE_KEY",
+         FROM ({})",
         queries.join(" UNION ALL ")
     )
 }
 
-fn inventory_group_from_row(row: &Map<String, Value>) -> Result<InventoryStockGroup, String> {
+fn inventory_location_summary_query(grouped_query: &str) -> String {
+    format!(
+        "SELECT SOURCE_KIND,LOCATION_KEY,LOCATION_NAME,ORGANIZATION_ID,MAX(OPTION_COUNT) AS OPTION_COUNT,\
+         COUNT(*) AS STOCK_GROUPS,SUM(STOCK_ROWS) AS STOCK_ROWS \
+         FROM ({grouped_query}) GROUP BY SOURCE_KIND,LOCATION_KEY,LOCATION_NAME,ORGANIZATION_ID \
+         ORDER BY SOURCE_KIND,LOCATION_KEY"
+    )
+}
+
+fn inventory_location_from_row(
+    row: &Map<String, Value>,
+) -> Result<Phis27InventoryLocation, String> {
     let text = |key: &str| {
         row.get(key)
             .and_then(Value::as_str)
@@ -912,132 +966,43 @@ fn inventory_group_from_row(row: &Map<String, Value>) -> Result<InventoryStockGr
             .parse::<usize>()
             .map_err(|_| format!("库存统计字段 {key} 无法识别"))
     };
-    let source_key = text("SOURCE_KEY");
-    if source_key.is_empty() {
-        return Err("库存记录缺少 YPXH:YPCD 药品来源键".into());
+    let source_kind = text("SOURCE_KIND");
+    let source_option_count = number("OPTION_COUNT")?;
+    let (mapping_status, mapping_message) = if source_kind == "WAREHOUSE" && source_option_count > 1
+    {
+        (
+            "SOURCE_LOCATION_AMBIGUOUS",
+            format!(
+                "YK_KCMX 未保存药库主键；该机构有 {source_option_count} 个药库，需人工指定实际药库"
+            ),
+        )
+    } else if source_option_count == 0 {
+        (
+            "SOURCE_LOCATION_MISSING",
+            "未读取到对应的老系统库房定义，需人工指定实际库房".into(),
+        )
+    } else {
+        (
+            "PENDING_TARGET_MAPPING",
+            "老系统位置已识别，可选择对应的新系统库房".into(),
+        )
+    };
+    let source_location_key = text("LOCATION_KEY");
+    if source_location_key.is_empty() {
+        return Err("库存范围缺少库房标识".into());
     }
-    Ok(InventoryStockGroup {
-        source_kind: text("SOURCE_KIND"),
-        source_location_key: text("LOCATION_KEY"),
+    let stock_group_count = number("STOCK_GROUPS")?;
+    Ok(Phis27InventoryLocation {
+        source_kind,
+        source_location_key,
         source_location_name: text("LOCATION_NAME"),
         organization_id: text("ORGANIZATION_ID"),
-        source_option_count: number("OPTION_COUNT")?,
-        source_key,
-        stock_rows: number("STOCK_ROWS")?,
-    })
-}
-
-fn summarize_inventory_readiness(
-    store: &LocalStore,
-    tenant_id: &str,
-    source_name: &str,
-    schema: &str,
-    groups: Vec<InventoryStockGroup>,
-) -> Result<Phis27InventoryReadiness, String> {
-    let medicine_keys = groups
-        .iter()
-        .map(|group| group.source_key.clone())
-        .collect::<HashSet<_>>();
-    let mut unresolved = Vec::new();
-    for source_key in &medicine_keys {
-        let linked = store
-            .find_source_link(tenant_id, "PHIS27", source_name, source_key)?
-            .is_some_and(|link| !link.id_med.is_empty() && !link.id_med_pro.is_empty());
-        if !linked {
-            unresolved.push(source_key.clone());
-        }
-    }
-    unresolved.sort();
-    let mut locations = BTreeMap::<String, Vec<&InventoryStockGroup>>::new();
-    for group in &groups {
-        locations
-            .entry(group.source_location_key.clone())
-            .or_default()
-            .push(group);
-    }
-    let locations = locations
-        .into_values()
-        .filter_map(|items| {
-            let first = items.first().copied()?;
-            let keys = items
-                .iter()
-                .map(|item| item.source_key.as_str())
-                .collect::<HashSet<_>>();
-            let (mapping_status, mapping_message) =
-                if first.source_kind == "WAREHOUSE" && first.source_option_count > 1 {
-                    (
-                        "SOURCE_LOCATION_AMBIGUOUS",
-                        format!(
-                            "YK_KCMX 未保存药库主键；该机构有 {} 个药库，需人工指定目标库房",
-                            first.source_option_count
-                        ),
-                    )
-                } else if first.source_option_count == 0 {
-                    (
-                        "SOURCE_LOCATION_MISSING",
-                        "未读取到对应的老系统库房定义，需人工指定目标库房".into(),
-                    )
-                } else {
-                    (
-                        "PENDING_TARGET_MAPPING",
-                        "老系统位置已识别，下一步选择对应的新系统库房".into(),
-                    )
-                };
-            Some(Phis27InventoryLocation {
-                source_kind: first.source_kind.clone(),
-                source_location_key: first.source_location_key.clone(),
-                source_location_name: first.source_location_name.clone(),
-                organization_id: first.organization_id.clone(),
-                source_option_count: first.source_option_count,
-                stock_row_count: items.iter().map(|item| item.stock_rows).sum(),
-                stock_group_count: items.len(),
-                medicine_count: keys.len(),
-                mapping_status: mapping_status.into(),
-                mapping_message,
-            })
-        })
-        .collect::<Vec<_>>();
-    let mut warnings = Vec::new();
-    if !unresolved.is_empty() {
-        warnings.push(format!(
-            "{} 个库存药品没有找到完整的 id_med/id_med_pro 基础数据台账；需先补迁药品基础数据",
-            unresolved.len()
-        ));
-    }
-    let ambiguous_locations = locations
-        .iter()
-        .filter(|location| location.mapping_status == "SOURCE_LOCATION_AMBIGUOUS")
-        .count();
-    if ambiguous_locations > 0 {
-        warnings.push(format!(
-            "{ambiguous_locations} 个药库库存范围无法从 YK_KCMX 直接还原药库主键，配置目标库房时需人工确认"
-        ));
-    }
-    if groups.is_empty() {
-        warnings.push("YK_KCMX/YF_KCMX 中没有非零库存，无需初始化".into());
-    }
-    let medicine_count = medicine_keys.len();
-    let unresolved_medicine_count = unresolved.len();
-    let ready_for_location_mapping = !groups.is_empty() && unresolved_medicine_count == 0;
-    Ok(Phis27InventoryReadiness {
-        ready_for_location_mapping,
-        schema: schema.into(),
-        source_name: source_name.into(),
-        stock_row_count: groups.iter().map(|group| group.stock_rows).sum(),
-        stock_group_count: groups.len(),
-        medicine_count,
-        mapped_medicine_count: medicine_count.saturating_sub(unresolved_medicine_count),
-        unresolved_medicine_count,
-        locations,
-        unresolved_source_keys: unresolved.into_iter().take(20).collect(),
-        warnings,
-        message: if ready_for_location_mapping {
-            "库存药品已全部关联到本次核实的基础数据台账，可以进入库房映射配置".into()
-        } else if groups.is_empty() {
-            "没有需要初始化的非零库存记录".into()
-        } else {
-            "库存读取完成，但仍有药品未关联到基础数据台账".into()
-        },
+        source_option_count,
+        stock_row_count: number("STOCK_ROWS")?,
+        stock_group_count,
+        medicine_count: stock_group_count,
+        mapping_status: mapping_status.into(),
+        mapping_message,
     })
 }
 
@@ -2251,13 +2216,14 @@ fn ensure_oracle(profile: &ConnectionProfile) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        additional_physical_columns, inventory_detail_query, inventory_group_query, medicine_query,
-        medicine_query_with_physical_columns, normalize_scope, phis27_column_definitions,
-        phis27_source_dictionary, source_schema, table_dictionary_query,
-        validate_inventory_source_columns, validate_medicine_source_columns, LegacyPhysicalColumn,
-        Scope,
+        additional_physical_columns, inventory_detail_query, inventory_group_query,
+        inventory_location_summary_query, medicine_query, medicine_query_with_physical_columns,
+        normalize_scope, phis27_column_definitions, phis27_source_dictionary, source_schema,
+        table_dictionary_query, validate_inventory_source_columns,
+        validate_medicine_source_columns, LegacyPhysicalColumn, Scope,
     };
     use crate::model::ConnectionProfile;
+    use std::collections::HashSet;
 
     fn profile(schema: &str) -> ConnectionProfile {
         ConnectionProfile {
@@ -2339,6 +2305,10 @@ mod tests {
             comment: String::new(),
         })
         .collect()
+    }
+
+    fn selected_organizations() -> HashSet<String> {
+        HashSet::from(["420100001".into()])
     }
 
     #[test]
@@ -2547,7 +2517,22 @@ mod tests {
         assert!(!query.contains("YF_YPXX"));
         assert!(!query.contains(';'));
 
-        let detail = inventory_detail_query("PHIS27", true, true, true, true, &physical_columns);
+        let summary = inventory_location_summary_query(&query);
+        assert!(summary.contains("GROUP BY SOURCE_KIND,LOCATION_KEY,LOCATION_NAME,ORGANIZATION_ID"));
+        assert!(summary.contains("COUNT(*) AS STOCK_GROUPS"));
+        assert!(
+            summary.starts_with("SELECT SOURCE_KIND,LOCATION_KEY,LOCATION_NAME,ORGANIZATION_ID")
+        );
+
+        let detail = inventory_detail_query(
+            "PHIS27",
+            true,
+            true,
+            true,
+            true,
+            &physical_columns,
+            &selected_organizations(),
+        );
         assert!(detail.contains("N'YK:'||l.LOCATION_ID"));
         assert!(detail.contains("N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128))"));
         assert!(detail.contains("CAST(k.YPPH AS NVARCHAR2(200)) AS BATCH_CODE"));
@@ -2559,6 +2544,7 @@ mod tests {
         assert!(detail.contains("CAST(y.YFDW AS NVARCHAR2(80)) AS SALE_UNIT"));
         assert!(detail.contains("CAST(k.JHJE AS NVARCHAR2(80)) AS PURCHASE_TOTAL"));
         assert!(detail.contains("CAST(k.LSJE AS NVARCHAR2(80)) AS RETAIL_TOTAL"));
+        assert!(detail.contains("CAST(k.JGID AS NVARCHAR2(128)) IN (N'420100001')"));
         assert!(!detail.contains("NVL(k.YPPH,'')"));
     }
 
@@ -2570,7 +2556,15 @@ mod tests {
                 column.data_type = "VARCHAR2".into();
             }
         }
-        let detail = inventory_detail_query("PHIS27", true, false, true, false, &physical_columns);
+        let detail = inventory_detail_query(
+            "PHIS27",
+            true,
+            false,
+            true,
+            false,
+            &physical_columns,
+            &selected_organizations(),
+        );
         assert!(detail.contains("SUBSTR(CAST(k.YPXQ AS NVARCHAR2(200)),1,10) AS EFFECTIVE_DATE"));
         assert!(!detail.contains("TO_NCHAR(k.YPXQ,'YYYY-MM-DD')"));
     }
@@ -2598,7 +2592,15 @@ mod tests {
             })
             .collect::<Vec<_>>();
         validate_inventory_source_columns(&physical_columns, true, true).unwrap();
-        let detail = inventory_detail_query("PHIS27", true, true, true, true, &physical_columns);
+        let detail = inventory_detail_query(
+            "PHIS27",
+            true,
+            true,
+            true,
+            true,
+            &physical_columns,
+            &selected_organizations(),
+        );
         assert!(!detail.contains("k.JHJE"));
         assert!(!detail.contains("k.LSJE"));
         assert!(!detail.contains("k.YPPH"));
@@ -2748,12 +2750,20 @@ mod tests {
                 .any(|table| table == "YF_YFLB"),
             &physical_columns,
         );
-        let inventory_preview = crate::odbc::preview_source(&live, &inventory_query, 10_000)
-            .expect("PHIS27 inventory preflight");
+        let inventory_summary_query = inventory_location_summary_query(&inventory_query);
+        let inventory_preview =
+            crate::odbc::preview_source(&live, &inventory_summary_query, 10_000)
+                .expect("PHIS27 inventory preflight");
         assert!(!inventory_preview.truncated);
         assert!(inventory_preview
             .columns
             .contains(&"LOCATION_NAME".to_string()));
+        let selected_organizations = reference_catalog
+            .organizations
+            .iter()
+            .take(1)
+            .map(|organization| organization.id.clone())
+            .collect::<HashSet<_>>();
         let inventory_detail = inventory_detail_query(
             &schema,
             inspection
@@ -2773,6 +2783,7 @@ mod tests {
                 .iter()
                 .any(|table| table == "YF_YFLB"),
             &physical_columns,
+            &selected_organizations,
         );
         let inventory_detail_preview = crate::odbc::preview_source(&live, &inventory_detail, 1)
             .expect("PHIS27 inventory detail");

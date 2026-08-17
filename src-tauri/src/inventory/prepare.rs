@@ -101,7 +101,7 @@ pub async fn prepare(
         &request.mappings,
     )?;
     let source_items = select_inventory_items(
-        load_inventory_stock_items(&request.source)?,
+        load_inventory_stock_items(&request.source, &selected_organization_ids)?,
         &selected_organization_ids,
     );
     if source_items.is_empty() {
