@@ -362,6 +362,9 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
     /detail\.batch\.failCount > 0 \? "INVALID" : "VALIDATED"/,
   );
   assert.match(appSource, /当前显示 \{rangeStart\}–\{rangeEnd\}/);
+  assert.match(appSource, /function validationMedicineName/);
+  assert.match(appSource, /issue-list__medicine/);
+  assert.match(appSource, /药品名称未读取/);
   assert.match(appSource, /每页最多 \{pageSize\} 条，所有结果均可逐页查看/);
   assert.match(appSource, /正在校验 \{rows\.length\} 条待迁移数据/);
   assert.match(appSource, /const prepareBatchLock = useRef\(false\)/);
@@ -369,6 +372,7 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(localStoreSource, /pub fn insert_prepared_batch/);
   assert.doesNotMatch(appSource, /batchDetail\.rows\.slice\(0, 12\)/);
   assert.match(stylesSource, /\.issue-list__row--danger p/);
+  assert.match(stylesSource, /\.issue-list__medicine/);
   assert.match(stylesSource, /\.validation-jump-context/);
   assert.match(stylesSource, /white-space: normal/);
   assert.match(stylesSource, /min-height: calc\(100vh - 136px\)/);

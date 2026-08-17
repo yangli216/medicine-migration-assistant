@@ -3218,12 +3218,25 @@ button:disabled {
 }
 .issue-list > div {
   display: grid;
-  grid-template-columns: 75px 160px 90px 1fr;
+  grid-template-columns: 75px 150px minmax(140px, 0.8fr) 90px minmax(260px, 1.5fr);
   gap: 10px;
   align-items: center;
   padding: 10px 4px;
   border-bottom: 1px solid var(--line-soft);
   font-size: 12px;
+}
+.issue-list__medicine {
+  min-width: 0;
+  overflow: hidden;
+  color: #31485f;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.issue-list__medicine[title="药品名称未读取"] {
+  color: #8a96a4;
+  font-weight: 500;
 }
 .issue-list p {
   margin: 0;

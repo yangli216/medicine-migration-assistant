@@ -4,6 +4,20 @@ import { fieldsMentionedInValidationError } from "./migrationFields";
 import { sourceValueLabel } from "./migrationPreview";
 import { statusMeta } from "./MigrationHistory";
 
+function validationMedicineName(row) {
+  const candidates = [
+    row.normalizedData?.naMed,
+    row.rawData?.DRUG_NAME,
+    row.rawData?.drugName,
+    row.rawData?.medicineName,
+    row.rawData?.YPMC,
+  ];
+  const name = candidates.find(
+    (value) => value !== null && value !== undefined && String(value).trim(),
+  );
+  return name ? String(name).trim() : "药品名称未读取";
+}
+
 export function DataTable({
   columns,
   rows,
@@ -128,6 +142,7 @@ export function ValidationResults({
             const issueFields = fieldsMentionedInValidationError(
               row.errorMessage,
             );
+            const medicineName = validationMedicineName(row);
             return (
               <div
                 className={row.status === "INVALID" ? "issue-list__row--danger" : ""}
@@ -135,6 +150,12 @@ export function ValidationResults({
               >
                 <span>第 {row.rowNo} 行</span>
                 <code>{row.sourceKey}</code>
+                <strong
+                  className="issue-list__medicine"
+                  title={medicineName}
+                >
+                  {medicineName}
+                </strong>
                 <span
                   className={`status-pill status-pill--${statusMeta(row.status)[1]}`}
                 >
