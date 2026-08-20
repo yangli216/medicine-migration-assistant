@@ -974,7 +974,6 @@ async fn write_row(
             allow_create_factory,
             tenant_id,
             operator_id,
-            organization_id,
             now,
         )
         .await?;
@@ -1084,16 +1083,7 @@ async fn write_row(
         id
     };
 
-    ensure_alias(
-        &mut tx,
-        &id_med,
-        &name,
-        tenant_id,
-        &fg_pri,
-        organization_id,
-        &mut events,
-    )
-    .await?;
+    ensure_alias(&mut tx, &id_med, data, tenant_id, &mut events).await?;
     let id_med_unit = ensure_unit(&mut tx, &id_med, data, tenant_id, &mut events).await?;
     if !crate::normalize::has_product_data(data) {
         tx.commit().await.map_err(db_error)?;
@@ -1244,21 +1234,18 @@ async fn write_row(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn overwrite_mysql_row(
     tx: &mut MySqlTransaction<'_>,
     row: &MigrationRow,
     allow_create_factory: bool,
     tenant_id: &str,
     operator_id: &str,
-    organization_id: &str,
     now: chrono::NaiveDateTime,
 ) -> Result<WriteOutcome, String> {
     let data = &row.normalized_data;
     let id_med = row.id_med.clone();
     let name = text(data, "naMed");
     let spec = derived_spec(data);
-    let fg_pri = defaulted(data, "fgPri", "0");
     let duplicate_med = query_scalar::<MySql, String>(
         "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND COALESCE(spec,'')=? AND COALESCE(unit_pre,'')=? AND id_med<>? AND fg_active='1' LIMIT 1",
     )
@@ -1287,16 +1274,7 @@ async fn overwrite_mysql_row(
         before,
         after,
     });
-    ensure_alias(
-        tx,
-        &id_med,
-        &name,
-        tenant_id,
-        &fg_pri,
-        organization_id,
-        &mut events,
-    )
-    .await?;
+    ensure_alias(tx, &id_med, data, tenant_id, &mut events).await?;
     let id_med_unit = ensure_unit(tx, &id_med, data, tenant_id, &mut events).await?;
     if row.id_med_pro.is_empty() {
         return Ok(WriteOutcome {
@@ -1515,15 +1493,14 @@ pub(crate) fn summarize_overwrite_preview(
 async fn ensure_alias(
     tx: &mut MySqlTransaction<'_>,
     id_med: &str,
-    name: &str,
+    data: &Map<String, Value>,
     tenant_id: &str,
-    fg_pri: &str,
-    organization_id: &str,
     events: &mut Vec<WriteEvent>,
 ) -> Result<(), String> {
+    let name = text(data, "naMed");
     let exists: Option<String> = query_scalar::<MySql, String>(
         "SELECT id_med_alias FROM hi_bd_med_alias WHERE id_tet=? AND id_med=? AND na_alias=? AND fg_main='1' AND fg_active='1' LIMIT 1"
-    ).bind(tenant_id).bind(id_med).bind(name).fetch_optional(&mut **tx).await.map_err(db_error)?;
+    ).bind(tenant_id).bind(id_med).bind(&name).fetch_optional(&mut **tx).await.map_err(db_error)?;
     if let Some(id) = exists {
         events.push(WriteEvent {
             operation: "REUSE",
@@ -1535,16 +1512,16 @@ async fn ensure_alias(
         });
     } else {
         let id = new_object_id();
-        query::<MySql>("INSERT INTO hi_bd_med_alias(id_med_alias,id_med,na_alias,fg_main,py,wb,instr,id_tet,fg_active,fg_pri,id_org) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
-            .bind(&id).bind(id_med).bind(name).bind("1").bind("").bind("")
-            .bind(name).bind(tenant_id).bind("1").bind(fg_pri)
-            .bind((fg_pri == "1").then_some(organization_id))
+        let (py, wb, instr) = alias_search_fields(data, &name);
+        query::<MySql>("INSERT INTO hi_bd_med_alias(id_med_alias,id_med,na_alias,fg_main,py,wb,instr,id_tet,fg_active) VALUES (?,?,?,?,?,?,?,?,?)")
+            .bind(&id).bind(id_med).bind(&name).bind("1").bind(&py).bind(&wb)
+            .bind(&instr).bind(tenant_id).bind("1")
             .execute(&mut **tx).await.map_err(db_error)?;
         events.push(WriteEvent {
             operation: "INSERT",
             table: "hi_bd_med_alias",
             target_id: id,
-            message: "新增药品主别名；拼音/五笔码可由新系统后续补齐".into(),
+            message: alias_event_message(&py, &wb),
             before: Value::Null,
             after: json!({"idMed":id_med,"naAlias":name}),
         });
@@ -1842,6 +1819,22 @@ pub(crate) fn derived_sale_spec(data: &Map<String, Value>, base_spec: &str) -> S
         )
     }
 }
+pub(crate) fn alias_search_fields(
+    data: &Map<String, Value>,
+    name: &str,
+) -> (String, String, String) {
+    let py = limit(&text(data, "_aliasPy").to_lowercase(), 32);
+    let wb = limit(&text(data, "_aliasWb").to_lowercase(), 32);
+    let instr = limit(&format!("{name},{py},{wb}"), 255);
+    (py, wb, instr)
+}
+pub(crate) fn alias_event_message(py: &str, wb: &str) -> String {
+    if py.is_empty() && wb.is_empty() {
+        "新增药品主别名；来源未提供拼音/五笔码，保留为空".into()
+    } else {
+        "新增药品主别名；已沿用来源拼音/五笔检索码".into()
+    }
+}
 fn db_error(error: sqlx_core::Error) -> String {
     format!("目标数据库写入失败：{}", error)
 }
@@ -1851,7 +1844,7 @@ pub(crate) fn limit(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{inserted_targets, updated_targets, ActiveBatchGuard};
+    use super::{alias_search_fields, inserted_targets, updated_targets, ActiveBatchGuard};
     use crate::model::MigrationAudit;
     use serde_json::Value;
 
@@ -1914,5 +1907,20 @@ mod tests {
             .contains("正在执行"));
         drop(first);
         assert!(ActiveBatchGuard::enter("guard-batch").is_ok());
+    }
+
+    #[test]
+    fn alias_search_fields_use_legacy_codes_without_exceeding_target_lengths() {
+        let data = serde_json::json!({
+            "_aliasPy":"AMXLJN",
+            "_aliasWb":"BSOEXA"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let (py, wb, instr) = alias_search_fields(&data, "阿莫西林胶囊");
+        assert_eq!(py, "amxljn");
+        assert_eq!(wb, "bsoexa");
+        assert_eq!(instr, "阿莫西林胶囊,amxljn,bsoexa");
     }
 }

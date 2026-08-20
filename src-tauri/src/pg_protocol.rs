@@ -6,6 +6,7 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use rust_decimal::Decimal;
 use serde_json::{Map, Number, Value};
 use sqlx_core::column::Column;
+use sqlx_core::error::Error as SqlxError;
 use sqlx_core::query::query;
 use sqlx_core::query_scalar::query_scalar;
 use sqlx_core::row::Row;
@@ -46,7 +47,7 @@ pub async fn connect(profile: &ConnectionProfile) -> Result<PgPool, String> {
         .acquire_timeout(Duration::from_secs(8))
         .connect_with(options)
         .await
-        .map_err(|error| friendly_error(&error.to_string()))?;
+        .map_err(|error| friendly_sqlx_error(&error))?;
     configure_schema(&pool, &profile.schema).await?;
     Ok(pool)
 }
@@ -57,7 +58,7 @@ async fn configure_schema(pool: &PgPool, schema: &str) -> Result<(), String> {
         query::<Postgres>(&format!("SET search_path TO {schema}"))
             .execute(pool)
             .await
-            .map_err(|error| friendly_error(&error.to_string()))?;
+            .map_err(|error| friendly_sqlx_error(&error))?;
     }
     Ok(())
 }
@@ -68,7 +69,7 @@ pub async fn test_connection(profile: &ConnectionProfile) -> Result<ConnectionCh
     let version: String = query_scalar::<Postgres, String>("SELECT version()")
         .fetch_one(&pool)
         .await
-        .map_err(|error| friendly_error(&error.to_string()))?;
+        .map_err(|error| friendly_sqlx_error(&error))?;
     pool.close().await;
     Ok(ConnectionCheck {
         ok: true,
@@ -95,7 +96,7 @@ pub async fn list_tables(profile: &ConnectionProfile) -> Result<Vec<String>, Str
         .fetch_all(&pool)
         .await
     }
-    .map_err(|error| friendly_error(&error.to_string()))?;
+    .map_err(|error| friendly_sqlx_error(&error))?;
     pool.close().await;
     Ok(tables)
 }
@@ -115,7 +116,7 @@ pub async fn preview_source(
     );
     let result = query::<Postgres>(&statement).fetch_all(&pool).await;
     pool.close().await;
-    let pg_rows = result.map_err(|error| friendly_error(&error.to_string()))?;
+    let pg_rows = result.map_err(|error| friendly_sqlx_error(&error))?;
     let columns = pg_rows
         .first()
         .map(|row| {
@@ -156,7 +157,7 @@ pub(crate) async fn inspect_pool(pool: &PgPool) -> Result<TargetReadiness, Strin
             .map_err(|error| {
                 format!(
                     "目标表结构预检失败（{table}）：{}。请检查数据库、Schema、字段版本和查询权限",
-                    friendly_error(&error.to_string())
+                    friendly_sqlx_error(&error)
                 )
             })?;
         checked_tables.push((*table).to_string());
@@ -274,9 +275,34 @@ fn friendly_error(raw: &str) -> String {
     }
 }
 
+fn friendly_sqlx_error(error: &SqlxError) -> String {
+    if let Some(database_error) = error.as_database_error() {
+        let code = database_error.code().map(|value| value.into_owned());
+        return format_database_error(code.as_deref(), database_error.message());
+    }
+    friendly_error(&error.to_string())
+}
+
+fn format_database_error(code: Option<&str>, message: &str) -> String {
+    let cause = match code {
+        Some("42P01") => Some("目标表不存在或当前 Schema 不正确"),
+        Some("42703") => Some("目标字段不存在或字段版本不兼容"),
+        Some("42501") => Some("当前账号没有执行该操作的权限"),
+        Some("3F000") => Some("目标 Schema 不存在"),
+        _ => None,
+    };
+    match (code, cause) {
+        (Some(code), Some(cause)) => {
+            format!("数据库返回 SQLSTATE {code}（{cause}）：{message}")
+        }
+        (Some(code), None) => format!("数据库返回 SQLSTATE {code}：{message}"),
+        (None, _) => format!("数据库返回错误：{message}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{is_pg_protocol_kind, uses_native_connection};
+    use super::{format_database_error, is_pg_protocol_kind, uses_native_connection};
     use crate::model::ConnectionProfile;
 
     #[test]
@@ -312,5 +338,17 @@ mod tests {
         assert!(uses_native_connection(&profile));
         profile.driver = "Vastbase ODBC Driver".into();
         assert!(!uses_native_connection(&profile));
+    }
+
+    #[test]
+    fn database_error_keeps_sqlstate_and_original_message() {
+        assert_eq!(
+            format_database_error(Some("42703"), "字段 id_alias 不存在"),
+            "数据库返回 SQLSTATE 42703（目标字段不存在或字段版本不兼容）：字段 id_alias 不存在"
+        );
+        assert_eq!(
+            format_database_error(Some("XX999"), "兼容数据库自定义错误"),
+            "数据库返回 SQLSTATE XX999：兼容数据库自定义错误"
+        );
     }
 }

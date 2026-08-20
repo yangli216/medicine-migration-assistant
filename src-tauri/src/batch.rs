@@ -46,6 +46,8 @@ pub fn prepare_batch(
                     );
                 }
             }
+            copy_phis27_alias_code(source, &mut normalized, "_aliasPy", &["T__PYDM", "PYDM"]);
+            copy_phis27_alias_code(source, &mut normalized, "_aliasWb", &["T__WBDM", "WBDM"]);
         }
         apply_cost_merge_mapping(&mut normalized, &request.cost_merge_mappings);
         let mut errors = validate(&normalized);
@@ -208,6 +210,26 @@ pub fn prepare_batch(
         &trace_id,
     )?;
     store.load_batch(&batch_id)
+}
+
+fn copy_phis27_alias_code(
+    source: &serde_json::Map<String, Value>,
+    normalized: &mut serde_json::Map<String, Value>,
+    target: &str,
+    candidates: &[&str],
+) {
+    let value = candidates
+        .iter()
+        .filter_map(|field| source.get(*field))
+        .map(crate::normalize::value_text)
+        .find(|value| !value.is_empty())
+        .unwrap_or_default();
+    if !value.is_empty() {
+        normalized.insert(
+            target.into(),
+            Value::String(value.chars().take(32).collect::<String>().to_lowercase()),
+        );
+    }
 }
 
 pub fn skip_invalid_rows(
@@ -489,6 +511,42 @@ mod tests {
         .unwrap()
         .clone();
         assert_eq!(phis27_base_merge_key(&source), "阿莫西林胶囊|0.25g*24粒|粒");
+    }
+
+    #[test]
+    fn phis27_alias_search_codes_are_retained_for_target_alias() {
+        let store = LocalStore::open(Path::new(":memory:")).unwrap();
+        let source = json!({
+            "SOURCE_KEY":"1001:BASE","SOURCE_MED_ID":"1001","SOURCE_DUPLICATE_COUNT":"1",
+            "DRUG_NAME":"阿莫西林胶囊","SPEC":"0.25g*24粒","PRE_UNIT":"粒",
+            "T__PYDM":"AMXLJN","T__WBDM":"BSOEXA","_sourceKey":"1001:BASE",
+            "naMed":"阿莫西林胶囊","sdMed":"1","idCstmg":"63aa8b1b3c6f491981ba4221",
+            "unitPre":"粒","spec":"0.25g*24粒","dose":"0.25","unitDose":"g",
+            "sdDose":"1","dftUsage":"100"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let detail = prepare_batch(
+            &store,
+            PrepareBatchRequest {
+                batch_name: "alias-code".into(),
+                source_type: "PHIS27".into(),
+                source_name: "source".into(),
+                source_description: String::new(),
+                conflict_strategy: "INCREMENTAL".into(),
+                allow_create_factory: false,
+                idempotency_key: "alias-code-key".into(),
+                mappings: Vec::new(),
+                cost_merge_mappings: Map::new(),
+                rows: vec![source],
+            },
+            &HashMap::new(),
+            "tenant",
+        )
+        .unwrap();
+        assert_eq!(detail.rows[0].normalized_data["_aliasPy"], "amxljn");
+        assert_eq!(detail.rows[0].normalized_data["_aliasWb"], "bsoexa");
     }
 
     #[test]

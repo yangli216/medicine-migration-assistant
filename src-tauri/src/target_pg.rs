@@ -3,9 +3,10 @@ use crate::local_store::LocalStore;
 use crate::model::{BatchDetail, ExecuteBatchRequest, MigrationRow, UndoBatchRequest};
 use crate::normalize::value_text;
 use crate::target::{
-    audit_undo_failure, audit_undo_start, decimal, defaulted, derived_sale_spec, derived_spec,
-    finish_batch, finish_undo, integer, limit, optional_decimal, target_identity, text,
-    validate_undo_request, UndoEvent, UndoTarget, WriteEvent, WriteOutcome,
+    alias_event_message, alias_search_fields, audit_undo_failure, audit_undo_start, decimal,
+    defaulted, derived_sale_spec, derived_spec, finish_batch, finish_undo, integer, limit,
+    optional_decimal, target_identity, text, validate_undo_request, UndoEvent, UndoTarget,
+    WriteEvent, WriteOutcome,
 };
 use crate::target_contract::validate_execution_context;
 use chrono::Utc;
@@ -507,16 +508,7 @@ async fn write_row(
         id
     };
 
-    ensure_alias(
-        &mut tx,
-        &id_med,
-        &name,
-        tenant_id,
-        &fg_pri,
-        organization_id,
-        &mut events,
-    )
-    .await?;
+    ensure_alias(&mut tx, &id_med, data, tenant_id, &mut events).await?;
     let id_med_unit = ensure_unit(&mut tx, &id_med, data, tenant_id, &mut events).await?;
     if !crate::normalize::has_product_data(data) {
         tx.commit()
@@ -800,14 +792,13 @@ async fn insert_product(
 async fn ensure_alias(
     tx: &mut PgTransaction<'_>,
     id_med: &str,
-    name: &str,
+    data: &Map<String, Value>,
     tenant_id: &str,
-    fg_pri: &str,
-    organization_id: &str,
     events: &mut Vec<WriteEvent>,
 ) -> Result<(), String> {
+    let name = text(data, "naMed");
     let exists = query_scalar::<Postgres, String>("SELECT id_med_alias FROM hi_bd_med_alias WHERE id_tet=$1 AND id_med=$2 AND na_alias=$3 AND fg_main='1' AND fg_active='1' LIMIT 1")
-        .bind(tenant_id).bind(id_med).bind(name).fetch_optional(&mut **tx).await
+        .bind(tenant_id).bind(id_med).bind(&name).fetch_optional(&mut **tx).await
         .map_err(|error| pg_error("hi_bd_med_alias", "查找药品主别名", error))?;
     if let Some(id) = exists {
         events.push(WriteEvent {
@@ -820,15 +811,15 @@ async fn ensure_alias(
         });
     } else {
         let id = new_object_id();
-        query::<Postgres>("INSERT INTO hi_bd_med_alias(id_med_alias,id_med,na_alias,fg_main,py,wb,instr,id_tet,fg_active,fg_pri,id_org) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
-            .bind(&id).bind(id_med).bind(name).bind("1").bind("").bind("").bind(name).bind(tenant_id).bind("1").bind(fg_pri)
-            .bind((fg_pri == "1").then_some(organization_id)).execute(&mut **tx).await
+        let (py, wb, instr) = alias_search_fields(data, &name);
+        query::<Postgres>("INSERT INTO hi_bd_med_alias(id_med_alias,id_med,na_alias,fg_main,py,wb,instr,id_tet,fg_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)")
+            .bind(&id).bind(id_med).bind(&name).bind("1").bind(&py).bind(&wb).bind(&instr).bind(tenant_id).bind("1").execute(&mut **tx).await
             .map_err(|error| pg_error("hi_bd_med_alias", "新增药品主别名", error))?;
         events.push(WriteEvent {
             operation: "INSERT",
             table: "hi_bd_med_alias",
             target_id: id,
-            message: "新增药品主别名；拼音/五笔码可由新系统后续补齐".into(),
+            message: alias_event_message(&py, &wb),
             before: Value::Null,
             after: json!({"idMed":id_med,"naAlias":name}),
         });

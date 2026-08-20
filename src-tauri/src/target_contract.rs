@@ -10,7 +10,7 @@ pub const TARGET_TABLE_PROJECTIONS: &[(&str, &str)] = &[
     ),
     (
         "hi_bd_med_alias",
-        "id_med_alias,id_med,na_alias,fg_main,py,wb,instr,id_tet,fg_active,fg_pri,id_org",
+        "id_med_alias,id_med,na_alias,fg_main,py,wb,instr,id_tet,fg_active",
     ),
     (
         "hi_bd_med_unit",
@@ -69,7 +69,7 @@ pub fn validate_execution_context(
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_execution_context, validate_schema_identifier};
+    use super::{validate_execution_context, validate_schema_identifier, TARGET_TABLE_PROJECTIONS};
 
     #[test]
     fn schema_identifier_rejects_sql_fragments() {
@@ -86,5 +86,19 @@ mod tests {
             validate_execution_context("tenant", "operator", "66aa10244f0d4826ac110001", true)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn medicine_alias_contract_uses_only_standard_table_columns() {
+        let (_, columns) = TARGET_TABLE_PROJECTIONS
+            .iter()
+            .find(|(table, _)| *table == "hi_bd_med_alias")
+            .expect("medicine alias target contract");
+        assert_eq!(
+            *columns,
+            "id_med_alias,id_med,na_alias,fg_main,py,wb,instr,id_tet,fg_active"
+        );
+        assert!(!columns.split(',').any(|column| column == "fg_pri"));
+        assert!(!columns.split(',').any(|column| column == "id_org"));
     }
 }

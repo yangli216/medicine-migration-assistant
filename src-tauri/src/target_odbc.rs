@@ -11,9 +11,10 @@ use crate::odbc::{
 };
 use crate::overwrite::{medicine_patch, product_patch, restore_patch, ColumnPatch};
 use crate::target::{
-    audit_overwrite_preview, audit_undo_failure, audit_undo_start, build_field_diffs, finish_undo,
-    summarize_overwrite_preview, target_identity, validate_overwrite_execution_preview,
-    validate_undo_request, RestoreTarget, UndoEvent, UndoTarget,
+    alias_event_message, alias_search_fields, audit_overwrite_preview, audit_undo_failure,
+    audit_undo_start, build_field_diffs, finish_undo, summarize_overwrite_preview, target_identity,
+    validate_overwrite_execution_preview, validate_undo_request, RestoreTarget, UndoEvent,
+    UndoTarget,
 };
 use crate::target_contract::validate_execution_context;
 use chrono::Utc;
@@ -578,7 +579,6 @@ fn write_row(
             allow_create_factory,
             tenant_id,
             operator_id,
-            organization_id,
         );
     }
     let existing_med = if fg_pri == "1" {
@@ -682,15 +682,7 @@ fn write_row(
         id
     };
 
-    ensure_alias(
-        connection,
-        &id_med,
-        &name,
-        tenant_id,
-        &fg_pri,
-        organization_id,
-        &mut events,
-    )?;
+    ensure_alias(connection, &id_med, data, tenant_id, &mut events)?;
     let id_med_unit = ensure_unit(connection, &id_med, data, tenant_id, &mut events)?;
     if !crate::normalize::has_product_data(data) {
         return Ok(WriteOutcome {
@@ -839,20 +831,17 @@ fn write_row(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn overwrite_odbc_row(
     connection: &Connection<'_>,
     row: &MigrationRow,
     allow_create_factory: bool,
     tenant_id: &str,
     operator_id: &str,
-    organization_id: &str,
 ) -> Result<WriteOutcome, String> {
     let data = &row.normalized_data;
     let id_med = row.id_med.clone();
     let name = text(data, "naMed");
     let spec = derived_spec(data);
-    let fg_pri = defaulted(data, "fgPri", "0");
     if let Some(duplicate) = query_optional_string(
         connection,
         "SELECT id_med FROM hi_bd_med WHERE id_tet=? AND na_med=? AND COALESCE(spec,'')=? AND COALESCE(unit_pre,'')=? AND id_med<>? AND fg_active='1'",
@@ -880,15 +869,7 @@ fn overwrite_odbc_row(
         before,
         after,
     });
-    ensure_alias(
-        connection,
-        &id_med,
-        &name,
-        tenant_id,
-        &fg_pri,
-        organization_id,
-        &mut events,
-    )?;
+    ensure_alias(connection, &id_med, data, tenant_id, &mut events)?;
     let id_med_unit = ensure_unit(connection, &id_med, data, tenant_id, &mut events)?;
     if row.id_med_pro.is_empty() {
         return Ok(WriteOutcome {
@@ -1059,16 +1040,15 @@ fn read_odbc_patch_snapshot(
 fn ensure_alias(
     connection: &Connection<'_>,
     id_med: &str,
-    name: &str,
+    data: &Map<String, Value>,
     tenant_id: &str,
-    fg_pri: &str,
-    organization_id: &str,
     events: &mut Vec<WriteEvent>,
 ) -> Result<(), String> {
+    let name = text(data, "naMed");
     let exists = query_optional_string(
         connection,
         "SELECT id_med_alias FROM hi_bd_med_alias WHERE id_tet=? AND id_med=? AND na_alias=? AND fg_main='1' AND fg_active='1'",
-        vec![tenant_id.into(), id_med.into(), name.into()],
+        vec![tenant_id.into(), id_med.into(), name.clone()],
     )?;
     if let Some(id) = exists {
         events.push(WriteEvent {
@@ -1081,18 +1061,19 @@ fn ensure_alias(
         });
     } else {
         let id = new_object_id();
+        let (py, wb, instr) = alias_search_fields(data, &name);
         execute_target_strings(
             connection,
             "hi_bd_med_alias",
             "新增药品主别名",
-            "INSERT INTO hi_bd_med_alias(id_med_alias,id_med,na_alias,fg_main,py,wb,instr,id_tet,fg_active,fg_pri,id_org) VALUES (?,?,?,?,?,?,?,?,?,?,NULLIF(?,''))",
-            vec![id.clone(), id_med.into(), name.into(), "1".into(), String::new(), String::new(), name.into(), tenant_id.into(), "1".into(), fg_pri.into(), if fg_pri == "1" { organization_id.into() } else { String::new() }],
+            "INSERT INTO hi_bd_med_alias(id_med_alias,id_med,na_alias,fg_main,py,wb,instr,id_tet,fg_active) VALUES (?,?,?,?,?,?,?,?,?)",
+            vec![id.clone(), id_med.into(), name.clone(), "1".into(), py.clone(), wb.clone(), instr, tenant_id.into(), "1".into()],
         )?;
         events.push(WriteEvent {
             operation: "INSERT",
             table: "hi_bd_med_alias",
             target_id: id,
-            message: "新增药品主别名；拼音/五笔码可由新系统后续补齐".into(),
+            message: alias_event_message(&py, &wb),
             before: Value::Null,
             after: json!({"idMed":id_med,"naAlias":name}),
         });
