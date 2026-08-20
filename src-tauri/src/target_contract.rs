@@ -19,7 +19,7 @@ pub const TARGET_TABLE_PROJECTIONS: &[(&str, &str)] = &[
     (
         "hi_bd_fac",
         "id_fac,na_fac,na_fac_short,sd_prod_plac,py,wb,instr,fg_active,id_tet,\
-         revision,insert_user,insert_time,sd_fac",
+         revision,insert_user,insert_time",
     ),
     (
         "hi_bd_med_pro",
@@ -100,5 +100,14 @@ mod tests {
         );
         assert!(!columns.split(',').any(|column| column == "fg_pri"));
         assert!(!columns.split(',').any(|column| column == "id_org"));
+    }
+
+    #[test]
+    fn factory_contract_does_not_require_project_specific_category() {
+        let (_, columns) = TARGET_TABLE_PROJECTIONS
+            .iter()
+            .find(|(table, _)| *table == "hi_bd_fac")
+            .expect("factory target contract");
+        assert!(!columns.split(',').any(|column| column == "sd_fac"));
     }
 }

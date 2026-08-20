@@ -960,9 +960,9 @@ async fn ensure_factory(
     let id = new_object_id();
     let short_name = defaulted(data, "naFacShort", &limit(&name, 32));
     let pinyin = text(data, "pyFac");
-    query::<Postgres>("INSERT INTO hi_bd_fac(id_fac,na_fac,na_fac_short,sd_prod_plac,py,wb,instr,fg_active,id_tet,revision,insert_user,insert_time,sd_fac) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)")
+    query::<Postgres>("INSERT INTO hi_bd_fac(id_fac,na_fac,na_fac_short,sd_prod_plac,py,wb,instr,fg_active,id_tet,revision,insert_user,insert_time) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)")
         .bind(&id).bind(&name).bind(limit(&short_name,32)).bind(defaulted(data,"sdProdPlac","1")).bind(&pinyin).bind("").bind(&name).bind("1")
-        .bind(tenant_id).bind(0_i64).bind(operator_id).bind(now).bind("1").execute(&mut **tx).await
+        .bind(tenant_id).bind(0_i64).bind(operator_id).bind(now).execute(&mut **tx).await
         .map_err(|error| pg_error("hi_bd_fac", "新增生产厂家", error))?;
     events.push(WriteEvent { operation:"INSERT", table:"hi_bd_fac", target_id:id.clone(), message:if source_factory_key.is_empty(){"按迁移策略新增生产厂家".into()}else{format!("迁移二系列phis厂家基础数据（YPCD={source_factory_key}）")}, before:Value::Null, after:json!({"idFac":id,"naFac":name,"naFacShort":short_name,"py":pinyin,"sourceFactoryKey":source_factory_key}) });
     Ok(id)

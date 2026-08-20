@@ -40,8 +40,8 @@ const HI_BD_MED_PRO_INSERT_SQL: &str = r#"INSERT INTO hi_bd_med_pro(
 
 const HI_BD_FAC_INSERT_SQL: &str = r#"INSERT INTO hi_bd_fac(
     id_fac,na_fac,na_fac_short,sd_prod_plac,py,wb,instr,fg_active,
-    id_tet,revision,insert_user,insert_time,sd_fac
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,?)"#;
+    id_tet,revision,insert_user,insert_time
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)"#;
 
 #[derive(Debug)]
 struct WriteEvent {
@@ -1225,7 +1225,6 @@ fn ensure_factory(
             tenant_id.into(),
             "0".into(),
             operator_id.into(),
-            "1".into(),
         ],
     )?;
     events.push(WriteEvent {
@@ -1414,7 +1413,7 @@ mod tests {
         for (statement, expected_parameters) in [
             (HI_BD_MED_INSERT_SQL, 45),
             (HI_BD_MED_PRO_INSERT_SQL, 23),
-            (HI_BD_FAC_INSERT_SQL, 12),
+            (HI_BD_FAC_INSERT_SQL, 11),
         ] {
             assert!(statement.contains("CURRENT_TIMESTAMP"));
             assert_eq!(
@@ -1429,6 +1428,7 @@ mod tests {
                     || statement.contains("CURRENT_TIMESTAMP")
             );
         }
+        assert!(!HI_BD_FAC_INSERT_SQL.contains("sd_fac"));
     }
 
     #[test]

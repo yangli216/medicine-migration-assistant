@@ -3685,6 +3685,12 @@ button:disabled {
   width: 16px;
   height: 16px;
 }
+.result-table {
+  height: clamp(260px, 36vh, 360px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 .result-table__row {
   display: grid;
   grid-template-columns: 1fr 100px 190px 190px 1.2fr;
@@ -3704,9 +3710,17 @@ button:disabled {
   text-overflow: ellipsis;
 }
 .result-table__head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   background: #f5f8f9;
+  box-shadow: 0 1px 0 var(--line);
   font-weight: 700;
   color: #536176;
+}
+.result-table:focus-visible {
+  outline: 2px solid rgba(30, 154, 139, 0.35);
+  outline-offset: -2px;
 }
 .status-dot {
   width: 8px;

@@ -1666,7 +1666,7 @@ async fn ensure_factory(
     let pinyin = text(data, "pyFac");
     query::<MySql>(
         r#"INSERT INTO hi_bd_fac(id_fac,na_fac,na_fac_short,sd_prod_plac,py,wb,instr,fg_active,
-        id_tet,revision,insert_user,insert_time,sd_fac) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"#,
+        id_tet,revision,insert_user,insert_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"#,
     )
     .bind(&id)
     .bind(&name)
@@ -1680,7 +1680,6 @@ async fn ensure_factory(
     .bind("0")
     .bind(operator_id)
     .bind(now)
-    .bind("1")
     .execute(&mut **tx)
     .await
     .map_err(db_error)?;

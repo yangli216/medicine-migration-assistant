@@ -3253,7 +3253,12 @@ export function App() {
                   )}
                 </div>
                 {activeResultTab === "rows" ? (
-                  <div className="result-table">
+                  <div
+                    className="result-table"
+                    role="region"
+                    aria-label="迁移明细列表"
+                    tabIndex={0}
+                  >
                     <div className="result-table__row result-table__head">
                       <span>来源行</span>
                       <span>状态</span>
