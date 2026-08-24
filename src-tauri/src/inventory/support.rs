@@ -409,12 +409,15 @@ fn storage_type_name(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        group_inventory, inventory_undo_preview, is_single_minimum_unit_package, next_check_number,
-        select_inventory_items, storage_type_name, inventory_date_parameter_sql,
-        inventory_date_text_sql,
+        group_inventory, has_successful_inventory_trials, inventory_date_parameter_sql,
+        inventory_date_text_sql, inventory_storage_hash, inventory_undo_preview,
+        is_single_minimum_unit_package, next_check_number, select_inventory_items,
+        storage_type_name,
         InventoryUndoRow, InventoryUndoStorage, Phis27InventoryStockItem,
     };
+    use crate::model::{BatchDetail, ConnectionProfile};
     use rust_decimal::Decimal;
+    use serde_json::json;
     use std::collections::HashSet;
 
     fn item(record: &str, amount: &str) -> Phis27InventoryStockItem {
@@ -633,5 +636,73 @@ mod tests {
         let inventory = source.find("DELETE FROM hi_sto_inv WHERE").unwrap();
         let header = source.find("DELETE FROM hi_sto_check WHERE").unwrap();
         assert!(log < detail && detail < inventory && inventory < header);
+    }
+
+    #[test]
+    fn every_target_storage_needs_a_current_successful_rolled_back_trial() {
+        let profile: ConnectionProfile = serde_json::from_value(json!({
+            "kind":"postgresql","host":"db.example","port":5432,"database":"phis",
+            "username":"writer","password":"","schema":"public","serviceName":"",
+            "driver":"","connectionString":""
+        }))
+        .unwrap();
+        let mut detail: BatchDetail = serde_json::from_value(json!({
+            "batch":{
+                "batchId":"batch-1","batchName":"库存","sourceType":"PHIS27_INVENTORY",
+                "sourceName":"source","sourceDescription":"inventory","conflictStrategy":"FAIL",
+                "allowCreateFactory":false,"idempotencyKey":"key","status":"VALIDATED",
+                "totalCount":2,"validCount":2,"successCount":0,"failCount":0,"skipCount":0,
+                "createdAt":"2026-08-21T00:00:00Z","updatedAt":"2026-08-21T00:00:00Z","finishedAt":null
+            },
+            "rows":[
+                {
+                    "rowId":"row-1","batchId":"batch-1","rowNo":1,"sourceKey":"1:1",
+                    "sourceHash":"hash-1","status":"VALIDATED","rawData":{},
+                    "normalizedData":{"idSto":"sto-1","idOrg":"org-1"},"errorCode":"",
+                    "errorMessage":"","idMed":"","idMedUnit":"","idFac":"","idMedPro":"",
+                    "retryCount":0,"updatedAt":"2026-08-21T00:00:00Z"
+                },
+                {
+                    "rowId":"row-2","batchId":"batch-1","rowNo":2,"sourceKey":"2:2",
+                    "sourceHash":"hash-2","status":"VALIDATED","rawData":{},
+                    "normalizedData":{"idSto":"sto-2","idOrg":"org-1"},"errorCode":"",
+                    "errorMessage":"","idMed":"","idMedUnit":"","idFac":"","idMedPro":"",
+                    "retryCount":0,"updatedAt":"2026-08-21T00:00:00Z"
+                }
+            ],
+            "audits":[]
+        }))
+        .unwrap();
+        for (index, id_sto) in ["sto-1", "sto-2"].into_iter().enumerate() {
+            let storage_hash = inventory_storage_hash(&detail.rows, id_sto);
+            detail
+                .audits
+                .push(serde_json::from_value(json!({
+                    "auditId":format!("audit-{index}"),"batchId":"batch-1",
+                    "rowId":format!("row-{}",index+1),"traceId":format!("trace-{index}"),
+                    "operation":"INVENTORY_TRIAL_ROLLBACK","targetTable":"hi_sto_check",
+                    "targetId":id_sto,"result":"SUCCESS","beforeData":null,
+                    "afterData":{
+                        "targetIdentity":super::target_identity(&profile),"idSto":id_sto,
+                        "storageHash":storage_hash,"rolledBack":true
+                    },
+                    "message":"已回滚","operatorId":"operator",
+                    "operatedAt":format!("2026-08-21T0{}:00:00Z",index+1)
+                }))
+                .unwrap());
+        }
+        assert!(has_successful_inventory_trials(&detail, &profile));
+
+        detail.audits.push(
+            serde_json::from_value(json!({
+                "auditId":"audit-failed","batchId":"batch-1","rowId":"row-2","traceId":"trace-failed",
+                "operation":"INVENTORY_TRIAL_ROLLBACK","targetTable":"hi_sto_check","targetId":"sto-2",
+                "result":"FAILED","beforeData":null,
+                "afterData":{"targetIdentity":super::target_identity(&profile),"idSto":"sto-2","rolledBack":true},
+                "message":"验证失败但已回滚","operatorId":"operator","operatedAt":"2026-08-21T09:00:00Z"
+            }))
+            .unwrap(),
+        );
+        assert!(!has_successful_inventory_trials(&detail, &profile));
     }
 }

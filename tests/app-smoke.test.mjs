@@ -315,6 +315,11 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /审计日志 \$\{detail\.audits\.length\}/);
   assert.match(appSource, /查看前后数据快照/);
   assert.match(appSource, /不需要重新登录新系统/);
+  assert.match(appSource, /trial_migration_row/);
+  assert.match(appSource, /先从迁移明细选择一条数据进行试迁移/);
+  assert.match(appSource, /通过后才开放正式迁移/);
+  assert.match(appSource, /通过 · 已回滚/);
+  assert.match(appSource, /formalMigrationNeedsTrial/);
   assert.match(stylesSource, /\.migration-history\s*\{/);
   assert.match(
     stylesSource,
@@ -395,6 +400,9 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /load_saved_connections/);
   assert.match(appSource, /load_phis27_mapping_profile/);
   assert.match(appSource, /save_phis27_mapping_profile/);
+  assert.match(appSource, /load_cost_merge_mapping_profile/);
+  assert.match(appSource, /save_cost_merge_mapping_profile/);
+  assert.match(appSource, /费用归并映射已按当前新系统租户自动保存到本机/);
   assert.match(appSource, /已恢复固化映射/);
   assert.match(appSource, /数据库注释仍按本次连接实时刷新/);
   assert.match(

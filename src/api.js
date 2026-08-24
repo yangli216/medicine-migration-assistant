@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { applyFieldMapping } from "./transforms";
+import {
+  hasSuccessfulTargetTrial,
+  targetTrialIdentity,
+} from "./trialMigration";
+import { inventoryTrialCoverage } from "./inventoryTrialMigration";
 
 export const isDesktop =
   typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
@@ -12,6 +17,7 @@ let mockSavedConnections = {
 };
 let mockDatabaseConnections = [];
 let mockPhis27MappingProfile = null;
+const mockCostMergeMappingProfiles = new Map();
 let mockInventoryLocationMappings = [];
 let mockInventoryOrganizationMappings = [];
 
@@ -62,6 +68,24 @@ export async function command(name, args = {}) {
       savedAt: new Date().toISOString(),
     };
     return mockPhis27MappingProfile;
+  }
+  if (name === "load_cost_merge_mapping_profile") {
+    return (
+      mockCostMergeMappingProfiles.get(
+        mockCostMergeScope(args.request),
+      ) || null
+    );
+  }
+  if (name === "save_cost_merge_mapping_profile") {
+    const profile = {
+      version: 1,
+      baseUrl: `${args.request.baseUrl || ""}`.trim().replace(/\/+$/, ""),
+      tenantId: `${args.request.tenantId || ""}`.trim(),
+      mappings: { ...(args.request.mappings || {}) },
+      savedAt: new Date().toISOString(),
+    };
+    mockCostMergeMappingProfiles.set(mockCostMergeScope(profile), profile);
+    return profile;
   }
   if (name === "save_source_connection") {
     mockSavedConnections = {
@@ -478,9 +502,12 @@ export async function command(name, args = {}) {
   if (name === "prepare_migration_batch") return mockPrepare(args.request);
   if (name === "preview_overwrite_batch")
     return mockPreviewOverwrite(args.request);
+  if (name === "trial_migration_row") return mockTrialMigration(args.request);
   if (name === "execute_migration_batch") return mockExecute(args.request);
   if (name === "execute_phis27_inventory")
     return mockExecuteInventory(args.request);
+  if (name === "trial_phis27_inventory")
+    return mockTrialInventory(args.request);
   if (name === "undo_migration_batch") return mockUndo(args.request);
   if (name === "load_migration_batch") return mockBatches.get(args.batchId);
   if (name === "list_recent_batches")
@@ -577,6 +604,11 @@ function mockExecuteInventory(request) {
   if (!detail || detail.batch.sourceType !== "PHIS27_INVENTORY") {
     throw new Error("浏览器预览中未找到对应的库存预检批次");
   }
+  if (!inventoryTrialCoverage(detail, request.target).complete) {
+    throw new Error(
+      "正式执行首次盘点前，请为本批每个目标库房选择一条库存明细完成试迁移",
+    );
+  }
   const now = new Date();
   const prefix = `${now.getFullYear()}${`${now.getMonth() + 1}`.padStart(2, "0")}${`${now.getDate()}`.padStart(2, "0")}`;
   const numberByStorage = new Map();
@@ -626,6 +658,66 @@ function mockExecuteInventory(request) {
   };
   mockBatches.set(request.batchId, next);
   return next;
+}
+
+function mockTrialInventory(request) {
+  const detail = mockBatches.get(request.batchId);
+  if (!detail || detail.batch.sourceType !== "PHIS27_INVENTORY") {
+    throw new Error("浏览器预览中未找到对应的库存预检批次");
+  }
+  const row = detail.rows.find((item) => item.rowId === request.rowId);
+  if (!row) throw new Error("找不到要试迁移的库存明细");
+  const idSto = row.normalizedData?.idSto || "";
+  const storageName = row.normalizedData?.naSto || idSto;
+  const now = new Date().toISOString();
+  const message =
+    "库存试迁移通过：已完整建立首次盘点、初始库存和账簿；目标事务已自动回滚";
+  const trialAudit = {
+    auditId: objectId(),
+    batchId: request.batchId,
+    rowId: row.rowId,
+    traceId: objectId(),
+    operation: "INVENTORY_TRIAL_ROLLBACK",
+    targetTable: "hi_sto_check",
+    targetId: idSto,
+    result: "SUCCESS",
+    beforeData: row.normalizedData,
+    afterData: {
+      targetIdentity: targetTrialIdentity(request.target),
+      idSto,
+      storageName,
+      sourceHash: row.sourceHash,
+      storageHash: `preview-${idSto}`,
+      candidateCheckNumber: "20260821001",
+      checkedTables: [
+        "hi_bd_med_unit",
+        "hi_sto_med",
+        "hi_sto_check",
+        "hi_sto_check_sub",
+        "hi_sto_inv",
+        "hi_sto_inv_log",
+      ],
+      rolledBack: true,
+    },
+    message,
+    operatorId: "preview-system",
+    operatedAt: now,
+  };
+  detail.audits = [...detail.audits, trialAudit];
+  mockBatches.set(request.batchId, detail);
+  return {
+    result: {
+      ok: true,
+      rowId: row.rowId,
+      rowNo: row.rowNo,
+      sourceKey: row.sourceKey,
+      idSto,
+      storageName,
+      message,
+      checkedTables: trialAudit.afterData.checkedTables,
+    },
+    detail,
+  };
 }
 
 function mockDriverPack(databaseKind, title, version, state, defaultDriver) {
@@ -742,6 +834,10 @@ function mockTargetDictionaryCatalog() {
     warnings: ["浏览器预览使用演示字典，桌面版读取真实租户字典"],
     message: "浏览器预览：已加载药品标准字典",
   };
+}
+
+function mockCostMergeScope(request = {}) {
+  return `${`${request.baseUrl || ""}`.trim().replace(/\/+$/, "")}\u0000${`${request.tenantId || ""}`.trim()}`;
 }
 
 function mockMedicineCostMerges() {
@@ -1142,6 +1238,15 @@ function mockPrepare(request) {
 function mockExecute(request) {
   const detail = mockBatches.get(request.batchId);
   const now = new Date().toISOString();
+  if (
+    !request.failedOnly &&
+    detail.batch.successCount === 0 &&
+    !hasSuccessfulTargetTrial(detail.audits, request.target)
+  ) {
+    throw new Error(
+      "正式迁移前请先在迁移明细中选择一条数据完成单条试迁移",
+    );
+  }
   const selected = new Set(request.selectedRowIds || []);
   const mergedMedicineIds = new Map();
   const invalidCount = detail.rows.filter(
@@ -1245,6 +1350,62 @@ function mockExecute(request) {
   };
   mockBatches.set(request.batchId, detail);
   return detail;
+}
+
+function mockTrialMigration(request) {
+  const detail = mockBatches.get(request.batchId);
+  if (!detail) throw new Error("找不到要试迁移的批次");
+  const row = detail.rows.find((item) => item.rowId === request.rowId);
+  if (!row) throw new Error("找不到要试迁移的明细行");
+  const now = new Date().toISOString();
+  const message =
+    "单条试迁移通过：字段、约束和关联写入均成功；目标事务已自动回滚";
+  const trialAudit = {
+    auditId: objectId(),
+    batchId: request.batchId,
+    rowId: row.rowId,
+    traceId: objectId(),
+    operation: "TRIAL_ROLLBACK",
+    targetTable: "migration_row",
+    targetId: row.rowId,
+    result: "SUCCESS",
+    beforeData: row.normalizedData,
+    afterData: {
+      targetIdentity: targetTrialIdentity(request.target),
+      sourceHash: row.sourceHash,
+      outcomeStatus: "SUCCESS",
+      checkedTables: [
+        "hi_bd_med",
+        "hi_bd_med_alias",
+        "hi_bd_med_unit",
+        "hi_bd_fac",
+        "hi_bd_med_pro",
+      ],
+      rolledBack: true,
+    },
+    message,
+    operatorId: request.operatorId,
+    operatedAt: now,
+  };
+  detail.audits = [...detail.audits, trialAudit];
+  mockBatches.set(request.batchId, detail);
+  return {
+    result: {
+      ok: true,
+      rowId: row.rowId,
+      rowNo: row.rowNo,
+      sourceKey: row.sourceKey,
+      message,
+      checkedTables: [
+        "hi_bd_med",
+        "hi_bd_med_alias",
+        "hi_bd_med_unit",
+        "hi_bd_fac",
+        "hi_bd_med_pro",
+      ],
+    },
+    detail,
+  };
 }
 
 function mockPreviewOverwrite(request) {

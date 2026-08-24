@@ -3533,6 +3533,45 @@ button:disabled {
   gap: 11px;
   margin-top: 20px;
 }
+.trial-gate {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #ead6a9;
+  border-radius: 8px;
+  background: #fffaf0;
+  color: #8b641f;
+}
+.trial-gate--passed {
+  border-color: #a8d9d1;
+  background: #eefaf7;
+  color: #197d72;
+}
+.trial-gate > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.trial-gate strong {
+  color: #314b5e;
+  font-size: 12px;
+}
+.trial-gate span {
+  color: #71818c;
+  font-size: 10px;
+}
+.trial-gate em {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  white-space: nowrap;
+}
 .overwrite-preview-card {
   margin-top: 18px;
   border: 1px solid #e1c078;
@@ -3693,7 +3732,8 @@ button:disabled {
 }
 .result-table__row {
   display: grid;
-  grid-template-columns: 1fr 100px 190px 190px 1.2fr;
+  grid-template-columns: minmax(155px, 1fr) 92px 160px 160px minmax(180px, 1.2fr) 150px;
+  min-width: 1040px;
   min-height: 46px;
   border-bottom: 1px solid var(--line-soft);
   align-items: center;
@@ -3721,6 +3761,57 @@ button:disabled {
 .result-table:focus-visible {
   outline: 2px solid rgba(30, 154, 139, 0.35);
   outline-offset: -2px;
+}
+.trial-row-action {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.trial-result {
+  max-width: 86px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 3px 6px;
+  border: 1px solid;
+  border-radius: 999px;
+  font-size: 9px;
+  white-space: nowrap;
+}
+.trial-result--success {
+  border-color: #9fd7cf;
+  background: #edf9f6;
+  color: #177c70;
+}
+.trial-result--danger {
+  border-color: #edbfbb;
+  background: #fff3f2;
+  color: #bd4d48;
+}
+.trial-row-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid #97cec7;
+  border-radius: 6px;
+  background: #fff;
+  color: #197f74;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.trial-row-button:hover:not(:disabled) {
+  background: #eaf8f5;
+}
+.trial-row-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.trial-row-button svg {
+  width: 14px;
+  height: 14px;
 }
 .status-dot {
   width: 8px;
@@ -6036,7 +6127,7 @@ button:disabled {
 }
 .inventory-review-table {
   width: 100%;
-  min-width: 1100px;
+  min-width: 1220px;
   border-collapse: separate;
   border-spacing: 0;
   table-layout: fixed;
@@ -6053,12 +6144,13 @@ button:disabled {
   font-weight: 700;
   text-align: left;
 }
-.inventory-review-table th:nth-child(1) { width: 20%; }
-.inventory-review-table th:nth-child(2) { width: 21%; }
-.inventory-review-table th:nth-child(3) { width: 17%; }
-.inventory-review-table th:nth-child(4) { width: 13%; }
-.inventory-review-table th:nth-child(5) { width: 13%; }
-.inventory-review-table th:nth-child(6) { width: 16%; }
+.inventory-review-table th:nth-child(1) { width: 18%; }
+.inventory-review-table th:nth-child(2) { width: 19%; }
+.inventory-review-table th:nth-child(3) { width: 14%; }
+.inventory-review-table th:nth-child(4) { width: 11%; }
+.inventory-review-table th:nth-child(5) { width: 12%; }
+.inventory-review-table th:nth-child(6) { width: 12%; }
+.inventory-review-table th:nth-child(7) { width: 14%; }
 .inventory-review-table td {
   vertical-align: top;
   padding: 9px;
@@ -6134,6 +6226,31 @@ button:disabled {
   margin: 5px 0 0;
   color: #a1453f;
   line-height: 1.5;
+}
+.inventory-trial-cell {
+  white-space: normal;
+}
+.inventory-trial-result {
+  display: block;
+  width: fit-content;
+  margin-bottom: 6px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.inventory-trial-result.is-success {
+  background: #def4ef;
+  color: #157e73;
+}
+.inventory-trial-result.is-danger {
+  background: #fde7e4;
+  color: #bd4d46;
+}
+.inventory-trial-button {
+  min-height: 28px;
+  padding-inline: 8px;
+  font-size: 10px;
 }
 .inventory-review-empty {
   padding: 28px !important;
@@ -6340,7 +6457,7 @@ button:disabled {
     grid-template-columns: 1fr;
   }
   .result-table__row {
-    grid-template-columns: 0.9fr 90px 165px 165px 1fr;
+    grid-template-columns: minmax(145px, 0.9fr) 84px 145px 145px minmax(170px, 1fr) 142px;
   }
   .screen {
     padding-inline: 22px;

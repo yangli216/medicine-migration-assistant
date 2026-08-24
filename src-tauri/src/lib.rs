@@ -1,6 +1,7 @@
 mod adapter_settings;
 mod batch;
 mod connection_settings;
+mod cost_merge_settings;
 mod datasource;
 mod driver_pack;
 mod id;
@@ -24,7 +25,8 @@ use local_store::LocalStore;
 use model::{
     BatchDetail, ConnectionCheck, ConnectionProfile, ExecuteBatchRequest, MigrationBatch,
     OverwritePreview, PrepareBatchRequest, PreviewOverwriteRequest, SourcePreview,
-    SourcePreviewRequest, TargetField, TargetReadiness, UndoBatchRequest,
+    SourcePreviewRequest, TargetField, TargetReadiness, TrialMigrationRequest,
+    TrialMigrationResponse, UndoBatchRequest,
 };
 use tauri::{Manager, State};
 
@@ -187,6 +189,22 @@ fn save_phis27_mapping_profile(
 }
 
 #[tauri::command]
+fn load_cost_merge_mapping_profile(
+    store: State<'_, LocalStore>,
+    request: cost_merge_settings::CostMergeMappingProfileScope,
+) -> Result<Option<cost_merge_settings::CostMergeMappingProfile>, String> {
+    cost_merge_settings::load(&store, request)
+}
+
+#[tauri::command]
+fn save_cost_merge_mapping_profile(
+    store: State<'_, LocalStore>,
+    request: cost_merge_settings::SaveCostMergeMappingProfileRequest,
+) -> Result<cost_merge_settings::CostMergeMappingProfile, String> {
+    cost_merge_settings::save(&store, request)
+}
+
+#[tauri::command]
 async fn test_database_connection(profile: ConnectionProfile) -> Result<ConnectionCheck, String> {
     datasource::test_connection(&profile).await
 }
@@ -286,6 +304,16 @@ async fn execute_phis27_inventory(
 }
 
 #[tauri::command]
+async fn trial_phis27_inventory(
+    store: State<'_, LocalStore>,
+    client: State<'_, target_system::TargetSystemClient>,
+    request: inventory::TrialInventoryRequest,
+) -> Result<inventory::TrialInventoryResponse, String> {
+    let (tenant_id, operator_id) = client.execution_identity()?;
+    inventory::trial(&store, &tenant_id, &operator_id, request).await
+}
+
+#[tauri::command]
 async fn preview_phis27_inventory_undo(
     store: State<'_, LocalStore>,
     client: State<'_, target_system::TargetSystemClient>,
@@ -337,6 +365,15 @@ async fn execute_migration_batch(
     if detail.batch.source_type == "PHIS27_INVENTORY" {
         return Err("库存批次必须使用“首次盘点”专用执行入口，已阻止误写药品基础表".into());
     }
+    if !request.failed_only
+        && detail.batch.success_count == 0
+        && !target::has_successful_trial(&detail, &request.target)
+    {
+        return Err(
+            "正式迁移前请先在迁移明细中选择一条数据完成单条试迁移；试迁移会真实执行目标写入并自动回滚"
+                .into(),
+        );
+    }
     let (tenant_id, operator_id) = client.execution_identity()?;
     let invalid_count = detail
         .rows
@@ -357,6 +394,23 @@ async fn execute_migration_batch(
     request.operator_id = operator_id;
     request.organization_id.clear();
     target::execute_batch(&store, request).await
+}
+
+#[tauri::command]
+async fn trial_migration_row(
+    store: State<'_, LocalStore>,
+    client: State<'_, target_system::TargetSystemClient>,
+    mut request: TrialMigrationRequest,
+) -> Result<TrialMigrationResponse, String> {
+    let detail = store.load_batch(&request.batch_id)?;
+    if detail.batch.source_type == "PHIS27_INVENTORY" {
+        return Err("机构库存必须按首次盘点整体核对，不支持单条试迁移".into());
+    }
+    let (tenant_id, operator_id) = client.execution_identity()?;
+    request.tenant_id = tenant_id;
+    request.operator_id = operator_id;
+    request.organization_id.clear();
+    target::trial_row(&store, request).await
 }
 
 #[tauri::command]
@@ -466,6 +520,8 @@ pub fn run() {
             forget_target_database_connection,
             load_phis27_mapping_profile,
             save_phis27_mapping_profile,
+            load_cost_merge_mapping_profile,
+            save_cost_merge_mapping_profile,
             test_database_connection,
             inspect_target_schema,
             list_source_tables,
@@ -480,10 +536,12 @@ pub fn run() {
             load_inventory_organization_mappings,
             prepare_phis27_inventory,
             execute_phis27_inventory,
+            trial_phis27_inventory,
             preview_phis27_inventory_undo,
             undo_phis27_inventory,
             prepare_migration_batch,
             preview_overwrite_batch,
+            trial_migration_row,
             execute_migration_batch,
             undo_migration_batch,
             load_migration_batch,

@@ -1,12 +1,14 @@
 use crate::id::new_object_id;
 use crate::local_store::LocalStore;
-use crate::model::{BatchDetail, ExecuteBatchRequest, MigrationRow, UndoBatchRequest};
+use crate::model::{
+    BatchDetail, ExecuteBatchRequest, MigrationRow, TrialMigrationRequest, UndoBatchRequest,
+};
 use crate::normalize::value_text;
 use crate::target::{
     alias_event_message, alias_search_fields, audit_undo_failure, audit_undo_start, decimal,
     defaulted, derived_sale_spec, derived_spec, finish_batch, finish_undo, integer, limit,
-    optional_decimal, target_identity, text, validate_undo_request, UndoEvent, UndoTarget,
-    WriteEvent, WriteOutcome,
+    optional_decimal, target_identity, text, trial_summary, validate_undo_request,
+    TrialWriteSummary, UndoEvent, UndoTarget, WriteEvent, WriteOutcome,
 };
 use crate::target_contract::validate_execution_context;
 use chrono::Utc;
@@ -95,6 +97,7 @@ pub async fn execute_batch(
             &request.tenant_id,
             &request.operator_id,
             &request.organization_id,
+            true,
         )
         .await
         {
@@ -113,6 +116,36 @@ pub async fn execute_batch(
     pool.close().await;
     finish_batch(store, &request.batch_id, &request.operator_id)?;
     store.load_batch(&request.batch_id)
+}
+
+pub(crate) async fn trial_write_row(
+    request: &TrialMigrationRequest,
+    row: &MigrationRow,
+    conflict_strategy: &str,
+    allow_create_factory: bool,
+) -> Result<TrialWriteSummary, String> {
+    if conflict_strategy.eq_ignore_ascii_case("OVERWRITE") {
+        return Err("PostgreSQL 通用协议当前未开放覆盖迁移，无法执行覆盖模式试迁移".into());
+    }
+    let pool = crate::pg_protocol::connect(&request.target).await?;
+    let result = async {
+        crate::pg_protocol::inspect_pool(&pool).await?;
+        write_row(
+            &pool,
+            row,
+            conflict_strategy,
+            allow_create_factory,
+            &request.tenant_id,
+            &request.operator_id,
+            &request.organization_id,
+            false,
+        )
+        .await
+        .map(trial_summary)
+    }
+    .await;
+    pool.close().await;
+    result
 }
 
 pub async fn undo_batch(
@@ -428,6 +461,7 @@ async fn write_row(
     tenant_id: &str,
     operator_id: &str,
     organization_id: &str,
+    persist: bool,
 ) -> Result<WriteOutcome, String> {
     let data = &row.normalized_data;
     let now = Utc::now().naive_utc();
@@ -511,9 +545,7 @@ async fn write_row(
     ensure_alias(&mut tx, &id_med, data, tenant_id, &mut events).await?;
     let id_med_unit = ensure_unit(&mut tx, &id_med, data, tenant_id, &mut events).await?;
     if !crate::normalize::has_product_data(data) {
-        tx.commit()
-            .await
-            .map_err(|error| pg_error("migration_row", "提交逐行事务", error))?;
+        finish_pg_row_transaction(tx, persist).await?;
         return Ok(WriteOutcome {
             status: "SUCCESS".into(),
             id_med,
@@ -580,9 +612,7 @@ async fn write_row(
         if conflict_strategy.eq_ignore_ascii_case("FAIL") {
             return Err("同厂家、商品名和销售规格的药品商品已存在".into());
         }
-        tx.commit()
-            .await
-            .map_err(|error| pg_error("migration_row", "提交逐行事务", error))?;
+        finish_pg_row_transaction(tx, persist).await?;
         events.push(WriteEvent { operation: "SKIP", table: "hi_bd_med_pro", target_id: id_med_pro.clone(), message: "目标商品已存在，本行幂等跳过".into(), before: json!({"idMedPro":id_med_pro,"matchedBy":matched_by,"businessKey":{"cdMedPro":external_code,"idFac":id_fac,"naMedPro":product_name,"specSale":sale_spec}}), after: json!({"idMedPro":id_med_pro}) });
         return Ok(WriteOutcome {
             status: "SKIPPED".into(),
@@ -610,9 +640,7 @@ async fn write_row(
         now,
     )
     .await?;
-    tx.commit()
-        .await
-        .map_err(|error| pg_error("migration_row", "提交逐行事务", error))?;
+    finish_pg_row_transaction(tx, persist).await?;
     events.push(WriteEvent {
         operation: "INSERT",
         table: "hi_bd_med_pro",
@@ -629,6 +657,18 @@ async fn write_row(
         id_med_pro,
         events,
     })
+}
+
+async fn finish_pg_row_transaction(tx: PgTransaction<'_>, persist: bool) -> Result<(), String> {
+    if persist {
+        tx.commit()
+            .await
+            .map_err(|error| pg_error("migration_row", "提交逐行事务", error))
+    } else {
+        tx.rollback()
+            .await
+            .map_err(|error| pg_error("migration_row", "回滚单条试迁移事务", error))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

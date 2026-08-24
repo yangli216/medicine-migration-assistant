@@ -10,6 +10,7 @@ import {
   mergeValueMappingText,
   replaceValueMappingText,
   recommendCostMergeMappings,
+  restoreCostMergeMappings,
 } from "../src/dictionary.js";
 
 const items = [
@@ -45,6 +46,38 @@ test("recommends medicine cost merge by target medicine type", () => {
       costs,
     ),
     { 1: "cost-west", 3: "cost-herb", 5: "cost-material" },
+  );
+});
+
+test("restores tenant cost merge choices before recommendations", () => {
+  const articleTypes = [
+    { key: "1", text: "西药" },
+    { key: "2", text: "中药" },
+    { key: "3", text: "草药" },
+    { key: "4", text: "疫苗" },
+  ];
+  const costs = [
+    { key: "cost-west", text: "西药费", active: true },
+    { key: "cost-patent", text: "成药费", active: true },
+    { key: "cost-herb", text: "草药费", active: true },
+    { key: "cost-vaccine", text: "疫苗费", active: true },
+  ];
+  assert.deepEqual(
+    restoreCostMergeMappings(articleTypes, costs, {
+      1: "cost-patent",
+      2: "",
+      3: "deleted-cost",
+    }),
+    {
+      mappings: {
+        1: "cost-patent",
+        2: "",
+        3: "",
+        4: "cost-vaccine",
+      },
+      restoredCount: 3,
+      staleCount: 1,
+    },
   );
 });
 

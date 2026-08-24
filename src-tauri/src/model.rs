@@ -182,6 +182,36 @@ pub struct ExecuteBatchRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TrialMigrationRequest {
+    pub batch_id: String,
+    pub row_id: String,
+    pub target: ConnectionProfile,
+    pub tenant_id: String,
+    pub operator_id: String,
+    #[serde(default)]
+    pub organization_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrialMigrationResult {
+    pub ok: bool,
+    pub row_id: String,
+    pub row_no: usize,
+    pub source_key: String,
+    pub message: String,
+    pub checked_tables: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrialMigrationResponse {
+    pub result: TrialMigrationResult,
+    pub detail: BatchDetail,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UndoBatchRequest {
     pub batch_id: String,
     pub target: ConnectionProfile,

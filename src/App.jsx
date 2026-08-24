@@ -62,7 +62,7 @@ import {
   findDictionaryItem,
   mergeValueMappingText,
   replaceValueMappingText,
-  recommendCostMergeMappings,
+  restoreCostMergeMappings,
 } from "./dictionary";
 import {
   defaultTransformForField,
@@ -118,6 +118,11 @@ import {
   phis27DictionaryScopeKey,
   updateScopedDictionaryOverride,
 } from "./sourceDictionaryOverrides";
+import {
+  hasSuccessfulTargetTrial,
+  latestTargetTrialByRow,
+} from "./trialMigration";
+import { inventoryTrialCoverage } from "./inventoryTrialMigration";
 
 function isPhis27Source(description) {
   return description.startsWith("二系列phis内置模板:");
@@ -133,9 +138,14 @@ const initialTargetSystemUrl = "http://10.17.18.88:8000/rbmh-phis/";
 export function App() {
   const fileInput = useRef(null);
   const prepareBatchLock = useRef(false);
+  const migrationExecutionLock = useRef(false);
+  const trialMigrationLock = useRef(false);
   const inventoryExecutionLock = useRef(false);
+  const inventoryTrialLock = useRef(false);
   const inventoryUndoLock = useRef(false);
   const noticeTimerRef = useRef(null);
+  const costMergeMappingsRef = useRef({});
+  const costMergeSaveQueueRef = useRef(Promise.resolve());
   const [runtime, setRuntime] = useState(
     isDesktop ? "tauri-rust" : "browser-preview",
   );
@@ -177,6 +187,7 @@ export function App() {
   const [inventoryLocationMappings, setInventoryLocationMappings] = useState({});
   const [inventoryResolvedLocations, setInventoryResolvedLocations] = useState({});
   const [inventoryBatchDetail, setInventoryBatchDetail] = useState(null);
+  const [inventoryTrialRowId, setInventoryTrialRowId] = useState("");
   const [inventoryMappingExpanded, setInventoryMappingExpanded] = useState(true);
   const [inventoryReviewSearch, setInventoryReviewSearch] = useState("");
   const [inventoryReviewStorage, setInventoryReviewStorage] = useState("");
@@ -221,6 +232,7 @@ export function App() {
   const [tenantId, setTenantId] = useState("");
   const [operatorId, setOperatorId] = useState("");
   const [activeResultTab, setActiveResultTab] = useState("rows");
+  const [trialRowId, setTrialRowId] = useState("");
   const [validationResultFilter, setValidationResultFilter] =
     useState("INVALID");
   const [skipInvalidRowsOnExecute, setSkipInvalidRowsOnExecute] =
@@ -524,6 +536,22 @@ export function App() {
   );
   const validationFailureCount =
     batchDetail?.rows?.filter((row) => row.status === "INVALID").length || 0;
+  const trialResultByRow = useMemo(
+    () => latestTargetTrialByRow(batchDetail?.audits || [], targetProfile),
+    [batchDetail?.audits, targetProfile],
+  );
+  const targetTrialPassed = useMemo(
+    () => hasSuccessfulTargetTrial(batchDetail?.audits || [], targetProfile),
+    [batchDetail?.audits, targetProfile],
+  );
+  const formalMigrationNeedsTrial =
+    Boolean(batchDetail) &&
+    batchDetail.batch.successCount === 0 &&
+    !targetTrialPassed;
+  const inventoryTrialStatus = useMemo(
+    () => inventoryTrialCoverage(inventoryBatchDetail, targetProfile),
+    [inventoryBatchDetail, targetProfile],
+  );
 
   const dismissNotice = () => {
     if (noticeTimerRef.current) {
@@ -792,18 +820,32 @@ export function App() {
           password: loginPassword,
         },
       });
-      const [catalog, costMerges] = await Promise.all([
+      const [catalog, costMerges, persistedCostMerges] = await Promise.all([
         command("load_target_dictionaries"),
         command("load_medicine_cost_merges"),
+        command("load_cost_merge_mapping_profile", {
+          request: {
+            baseUrl: result.baseUrl,
+            tenantId: result.tenantId,
+          },
+        })
+          .then((profile) => ({ profile, error: "" }))
+          .catch((error) => ({
+            profile: null,
+            error: error?.message || `${error}`,
+          })),
       ]);
       const articleTypes = catalog.dictionaries.find(
         (dictionary) => dictionary.dicId === "rbmh.base.med.articleType",
       );
+      const restoredCostMerges = restoreCostMergeMappings(
+        articleTypes?.items || [],
+        costMerges.items,
+        persistedCostMerges.profile?.mappings,
+      );
       setDictionaryCatalog(catalog);
       setCostMergeCatalog(costMerges);
-      setCostMergeMappings(
-        recommendCostMergeMappings(articleTypes?.items || [], costMerges.items),
-      );
+      applyCostMergeMappings(restoredCostMerges.mappings);
       setTargetAuth(result);
       setEditingTargetConnection(false);
       setTargetSystemUrl(result.baseUrl);
@@ -820,19 +862,57 @@ export function App() {
       setHasSavedTargetSystem(true);
       setRememberTargetSystemPassword(saved.rememberPassword);
       setLoginPassword("");
+      const restoredMessage = restoredCostMerges.restoredCount
+        ? `；已恢复 ${restoredCostMerges.restoredCount - restoredCostMerges.staleCount} 项费用归并设置`
+        : "";
+      const staleMessage = restoredCostMerges.staleCount
+        ? `；${restoredCostMerges.staleCount} 项原费用归并已失效，已标记为未设置，请重新确认`
+        : "";
+      const persistenceWarning = persistedCostMerges.error
+        ? `；费用归并历史设置读取失败：${persistedCostMerges.error}`
+        : "";
       notify(
-        `${result.message}；${catalog.message}；${costMerges.message}${catalog.warnings?.length ? `（${catalog.warnings.length} 个可选字典暂不可用）` : ""}`,
+        `${result.message}；${catalog.message}；${costMerges.message}${restoredMessage}${staleMessage}${persistenceWarning}${catalog.warnings?.length ? `（${catalog.warnings.length} 个可选字典暂不可用）` : ""}`,
+        restoredCostMerges.staleCount || persistedCostMerges.error
+          ? "danger"
+          : "success",
       );
     } catch (error) {
       if (!targetAuth) {
         setDictionaryCatalog(null);
         setCostMergeCatalog(null);
-        setCostMergeMappings({});
+        applyCostMergeMappings({});
       }
       fail(error);
     } finally {
       setBusy("");
     }
+  }
+
+  function applyCostMergeMappings(nextMappings) {
+    costMergeMappingsRef.current = nextMappings;
+    setCostMergeMappings(nextMappings);
+  }
+
+  function updateCostMergeMapping(articleKey, costMergeId) {
+    const nextMappings = {
+      ...costMergeMappingsRef.current,
+      [articleKey]: costMergeId,
+    };
+    applyCostMergeMappings(nextMappings);
+    if (!targetAuth) return;
+    const request = {
+      baseUrl: targetAuth.baseUrl,
+      tenantId: targetAuth.tenantId,
+      mappings: nextMappings,
+    };
+    costMergeSaveQueueRef.current = costMergeSaveQueueRef.current
+      .catch(() => {})
+      .then(() => command("save_cost_merge_mapping_profile", { request }))
+      .then(
+        () => notify("费用归并映射已按当前新系统租户自动保存到本机"),
+        (error) => fail(`费用归并映射保存失败：${error?.message || error}`),
+      );
   }
 
   function acceptData(data, name, options = {}) {
@@ -1317,6 +1397,11 @@ export function App() {
     if (!inventoryReviewConfirmed) {
       return fail("请先核对本批机构、库房、药品、批号、效期、数量和价格");
     }
+    if (!inventoryTrialStatus.complete) {
+      return fail(
+        `正式执行前还需完成 ${inventoryTrialStatus.pendingStorageIds.length} 个目标库房的库存试迁移`,
+      );
+    }
     const storageCount = new Set(
       inventoryBatchDetail.rows
         .filter((row) => row.status === "VALIDATED")
@@ -1348,6 +1433,33 @@ export function App() {
       fail(error);
     } finally {
       inventoryExecutionLock.current = false;
+      setBusy("");
+    }
+  }
+
+  async function trialPhis27Inventory(row) {
+    if (!inventoryBatchDetail || inventoryTrialLock.current) return;
+    inventoryTrialLock.current = true;
+    setInventoryTrialRowId(row.rowId);
+    setBusy("inventory-trial");
+    try {
+      const response = await command("trial_phis27_inventory", {
+        request: {
+          batchId: inventoryBatchDetail.batch.batchId,
+          rowId: row.rowId,
+          target: targetProfile,
+        },
+      });
+      setInventoryBatchDetail(response.detail);
+      notify(
+        response.result.message,
+        response.result.ok ? "success" : "danger",
+      );
+    } catch (error) {
+      fail(error);
+    } finally {
+      inventoryTrialLock.current = false;
+      setInventoryTrialRowId("");
       setBusy("");
     }
   }
@@ -1516,6 +1628,8 @@ export function App() {
     inventoryReviewSearch,
     inventoryReviewStatus,
     inventoryReviewStorage,
+    inventoryTrialRowId,
+    inventoryTrialStatus,
     inventoryUndoConfirmed,
     inventoryUndoPreview,
     legacyInventoryCatalog,
@@ -1533,6 +1647,7 @@ export function App() {
     setInventoryUndoConfirmed,
     targetOrganizationCatalog,
     targetStorageCatalog,
+    trialPhis27Inventory,
     undoPhis27Inventory,
   });
 
@@ -1969,7 +2084,7 @@ export function App() {
   }
 
   async function execute(failedOnly = false) {
-    if (!batchDetail) return;
+    if (!batchDetail || migrationExecutionLock.current) return;
     if (!tenantId.trim() || !operatorId.trim())
       return fail("请填写新系统租户 ID 和操作人 ID");
     const overwrite = batchDetail.batch.conflictStrategy === "OVERWRITE";
@@ -1977,6 +2092,9 @@ export function App() {
       return fail("覆盖迁移必须先生成并确认目标字段差异");
     if (overwrite && !selectedOverwriteRowIds.length)
       return fail("请至少勾选一条需要执行的记录");
+    if (!failedOnly && formalMigrationNeedsTrial)
+      return fail("请先在迁移明细中选择一条数据完成单条试迁移");
+    migrationExecutionLock.current = true;
     setBusy(failedOnly ? "retry" : "execute");
     try {
       const detail = await command("execute_migration_batch", {
@@ -1998,7 +2116,39 @@ export function App() {
     } catch (error) {
       fail(error);
     } finally {
+      migrationExecutionLock.current = false;
       setBusy("");
+    }
+  }
+
+  async function trialMigrateRow(row) {
+    if (!batchDetail || trialMigrationLock.current) return;
+    if (!tenantId.trim() || !operatorId.trim())
+      return fail("请先完成新系统认证并确认目标库连接");
+    trialMigrationLock.current = true;
+    setTrialRowId(row.rowId);
+    try {
+      const response = await command("trial_migration_row", {
+        request: {
+          batchId: batchDetail.batch.batchId,
+          rowId: row.rowId,
+          target: targetProfile,
+          tenantId,
+          operatorId,
+          organizationId: "",
+        },
+      });
+      setBatchDetail(response.detail);
+      setActiveResultTab("rows");
+      notify(
+        response.result.message,
+        response.result.ok ? "success" : "danger",
+      );
+    } catch (error) {
+      fail(error);
+    } finally {
+      trialMigrationLock.current = false;
+      setTrialRowId("");
     }
   }
 
@@ -2100,6 +2250,7 @@ export function App() {
             inventoryReadiness,
             inventoryResolvedLocations,
             inventoryReviewConfirmed,
+            inventoryTrialStatus,
             inventorySourceExpanded,
             inventoryTargetExpanded,
             legacyInventoryCatalog,
@@ -2148,6 +2299,7 @@ export function App() {
             targetProfile,
             targetStorageCatalog,
             tenantId,
+            trialPhis27Inventory,
           }}
         />
 
@@ -2595,7 +2747,7 @@ export function App() {
                   <div>
                     <strong>药品类型 → 费用归并</strong>
                     <small>
-                      费用归并不是标准字典；系统已按药品类型生成推荐值，执行前可逐项确认
+                      费用归并不是标准字典；手动确认后会按当前新系统租户自动保存在本机，下次登录优先恢复
                     </small>
                   </div>
                 </div>
@@ -2612,10 +2764,7 @@ export function App() {
                           ariaLabel={`${article.text || article.na}费用归并`}
                           value={costMergeMappings[articleKey] || ""}
                           onChange={(next) =>
-                            setCostMergeMappings((current) => ({
-                              ...current,
-                              [articleKey]: next,
-                            }))
+                            updateCostMergeMapping(articleKey, next)
                           }
                           options={[
                             {
@@ -3065,6 +3214,24 @@ export function App() {
                       />
                     </Field>
                   </div>
+                  <div
+                    className={`trial-gate ${targetTrialPassed ? "trial-gate--passed" : ""}`}
+                  >
+                    <ShieldCheck size={22} weight="fill" />
+                    <div>
+                      <strong>
+                        {targetTrialPassed
+                          ? "单条试迁移已通过，可以执行全量迁移"
+                          : "先从迁移明细选择一条数据进行试迁移"}
+                      </strong>
+                      <span>
+                        {targetTrialPassed
+                          ? "已在当前目标库验证真实字段、约束和关联写入；测试事务已自动回滚。"
+                          : "试迁移会执行完整目标写入并强制回滚，不留下测试药品；通过后才开放正式迁移。"}
+                      </span>
+                    </div>
+                    <em>{targetTrialPassed ? "已通过 · 已回滚" : "等待单条验证"}</em>
+                  </div>
                   <div className="target-actions">
                     <button
                       className="button button--secondary"
@@ -3092,6 +3259,8 @@ export function App() {
                       className="button button--danger"
                       disabled={
                         busy === "execute" ||
+                        Boolean(trialRowId) ||
+                        formalMigrationNeedsTrial ||
                         !batchDetail.batch.validCount ||
                         (batchDetail.batch.conflictStrategy === "OVERWRITE" &&
                           (!overwritePreview ||
@@ -3102,6 +3271,8 @@ export function App() {
                       <Play weight="fill" />
                       {busy === "execute"
                         ? "正在逐行写入…"
+                        : formalMigrationNeedsTrial
+                          ? "请先完成单条试迁移"
                         : batchDetail.batch.status === "RUNNING"
                           ? `重新执行中断批次 ${batchDetail.batch.validCount} 行`
                         : batchDetail.batch.conflictStrategy === "OVERWRITE"
@@ -3265,28 +3436,74 @@ export function App() {
                       <span>药品主键</span>
                       <span>商品主键</span>
                       <span>结果说明</span>
+                      <span>单条试迁移</span>
                     </div>
-                    {batchDetail.rows.map((row) => (
-                      <div className="result-table__row" key={row.rowId}>
-                        <span>
-                          #{row.rowNo} · {row.sourceKey}
-                        </span>
-                        <span>
-                          <i
-                            className={`status-dot status-dot--${statusMeta(row.status)[1]}`}
-                          />
-                          {statusMeta(row.status)[0]}
-                        </span>
-                        <code>{row.idMed || "—"}</code>
-                        <code>{row.idMedPro || "—"}</code>
-                        <span title={row.errorMessage}>
-                          {row.errorMessage ||
-                            (row.status === "SUCCESS"
-                              ? "直接写表完成"
-                              : "等待执行")}
-                        </span>
-                      </div>
-                    ))}
+                    {batchDetail.rows.map((row) => {
+                      const trialAudit = trialResultByRow.get(row.rowId);
+                      const trialRunning = trialRowId === row.rowId;
+                      const trialEligible = ["VALIDATED", "FAILED"].includes(
+                        row.status,
+                      );
+                      return (
+                        <div className="result-table__row" key={row.rowId}>
+                          <span>
+                            #{row.rowNo} · {row.sourceKey}
+                          </span>
+                          <span>
+                            <i
+                              className={`status-dot status-dot--${statusMeta(row.status)[1]}`}
+                            />
+                            {statusMeta(row.status)[0]}
+                          </span>
+                          <code>{row.idMed || "—"}</code>
+                          <code>{row.idMedPro || "—"}</code>
+                          <span title={row.errorMessage}>
+                            {row.errorMessage ||
+                              (row.status === "SUCCESS"
+                                ? "直接写表完成"
+                                : "等待执行")}
+                          </span>
+                          <span className="trial-row-action">
+                            {trialAudit && (
+                              <small
+                                className={
+                                  trialAudit.result === "SUCCESS"
+                                    ? "trial-result trial-result--success"
+                                    : "trial-result trial-result--danger"
+                                }
+                                title={trialAudit.message}
+                              >
+                                {trialAudit.result === "SUCCESS"
+                                  ? "通过 · 已回滚"
+                                  : "未通过 · 已回滚"}
+                              </small>
+                            )}
+                            {trialEligible && (
+                              <button
+                                className="trial-row-button"
+                                disabled={
+                                  Boolean(trialRowId) ||
+                                  busy === "execute" ||
+                                  busy === "retry"
+                                }
+                                onClick={() => trialMigrateRow(row)}
+                              >
+                                {trialRunning ? (
+                                  <CircleNotch className="spin" />
+                                ) : (
+                                  <ShieldCheck />
+                                )}
+                                {trialRunning
+                                  ? "验证中…"
+                                  : trialAudit
+                                    ? "重新验证"
+                                    : "试迁移"}
+                              </button>
+                            )}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="audit-timeline">

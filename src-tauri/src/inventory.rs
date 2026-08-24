@@ -7,7 +7,7 @@ use crate::odbc::{
     configure_target_session, execute_strings, query_optional_row_strings, query_optional_string,
     query_rows_strings, with_connection,
 };
-use crate::target::target_identity;
+use crate::target::{target_identity, ActiveBatchGuard};
 use chrono::{Local, NaiveDate, Utc};
 use odbc_api::Connection;
 use rust_decimal::Decimal;
@@ -96,6 +96,34 @@ pub struct PrepareInventoryRequest {
 pub struct ExecuteInventoryRequest {
     pub batch_id: String,
     pub target: ConnectionProfile,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrialInventoryRequest {
+    pub batch_id: String,
+    pub row_id: String,
+    pub target: ConnectionProfile,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrialInventoryResult {
+    pub ok: bool,
+    pub row_id: String,
+    pub row_no: usize,
+    pub source_key: String,
+    pub id_sto: String,
+    pub storage_name: String,
+    pub message: String,
+    pub checked_tables: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrialInventoryResponse {
+    pub result: TrialInventoryResult,
+    pub detail: BatchDetail,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -195,6 +223,7 @@ struct InventoryGroup {
 // included in one module namespace. This keeps the Tauri command surface stable and
 // lets shared transaction/audit types remain private to the inventory implementation.
 include!("inventory/prepare.rs");
+include!("inventory/trial.rs");
 include!("inventory/undo.rs");
 include!("inventory/write.rs");
 include!("inventory/pg.rs");

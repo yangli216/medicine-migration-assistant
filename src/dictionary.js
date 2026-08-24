@@ -616,3 +616,42 @@ export function recommendCostMergeMappings(articleItems = [], costItems = []) {
     }),
   );
 }
+
+export function restoreCostMergeMappings(
+  articleItems = [],
+  costItems = [],
+  savedMappings = null,
+) {
+  const recommendations = recommendCostMergeMappings(articleItems, costItems);
+  const availableCostIds = new Set(
+    costItems
+      .filter((cost) => cost.active !== false)
+      .map((cost) => `${cost.key || ""}`.trim())
+      .filter(Boolean),
+  );
+  const mappings = {};
+  let restoredCount = 0;
+  let staleCount = 0;
+  articleItems.forEach((article) => {
+    const articleKey = dictionaryItemValue(article);
+    if (!articleKey) return;
+    if (
+      savedMappings &&
+      Object.prototype.hasOwnProperty.call(savedMappings, articleKey)
+    ) {
+      const savedCostId = `${savedMappings[articleKey] ?? ""}`.trim();
+      restoredCount += 1;
+      if (!savedCostId || availableCostIds.has(savedCostId)) {
+        mappings[articleKey] = savedCostId;
+      } else {
+        mappings[articleKey] = "";
+        staleCount += 1;
+      }
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(recommendations, articleKey)) {
+      mappings[articleKey] = recommendations[articleKey];
+    }
+  });
+  return { mappings, restoredCount, staleCount };
+}

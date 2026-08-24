@@ -2,7 +2,7 @@ use crate::id::new_object_id;
 use crate::local_store::LocalStore;
 use crate::model::{
     BatchDetail, ExecuteBatchRequest, MigrationRow, OverwritePreview, OverwriteRowPreview,
-    PreviewOverwriteRequest, UndoBatchRequest,
+    PreviewOverwriteRequest, TrialMigrationRequest, UndoBatchRequest,
 };
 use crate::normalize::value_text;
 use crate::odbc::{
@@ -13,8 +13,8 @@ use crate::overwrite::{medicine_patch, product_patch, restore_patch, ColumnPatch
 use crate::target::{
     alias_event_message, alias_search_fields, audit_overwrite_preview, audit_undo_failure,
     audit_undo_start, build_field_diffs, finish_undo, summarize_overwrite_preview, target_identity,
-    validate_overwrite_execution_preview, validate_undo_request, RestoreTarget, UndoEvent,
-    UndoTarget,
+    validate_overwrite_execution_preview, validate_undo_request, RestoreTarget, TrialWriteSummary,
+    UndoEvent, UndoTarget,
 };
 use crate::target_contract::validate_execution_context;
 use chrono::Utc;
@@ -332,6 +332,47 @@ pub fn execute_batch(
     })?;
     finish_batch(store, &request.batch_id, &request.operator_id)?;
     store.load_batch(&request.batch_id)
+}
+
+pub(crate) fn trial_write_row(
+    request: &TrialMigrationRequest,
+    row: &MigrationRow,
+    conflict_strategy: &str,
+    allow_create_factory: bool,
+) -> Result<TrialWriteSummary, String> {
+    with_connection(&request.target, |connection| {
+        configure_target_session(connection, &request.target)?;
+        crate::odbc::inspect_target_schema(&request.target)?;
+        connection.set_autocommit(false).map_err(db_error)?;
+        let write_result = write_row(
+            connection,
+            row,
+            conflict_strategy,
+            allow_create_factory,
+            &request.tenant_id,
+            &request.operator_id,
+            &request.organization_id,
+        );
+        let rollback_result = connection.rollback().map_err(db_error);
+        let reset_result = connection.set_autocommit(true).map_err(db_error);
+        if let Err(error) = rollback_result {
+            let _ = reset_result;
+            return Err(format!("单条试迁移结束后回滚失败：{error}"));
+        }
+        reset_result?;
+        let outcome = write_result?;
+        let mut checked_tables = outcome
+            .events
+            .iter()
+            .map(|event| event.table.to_string())
+            .collect::<Vec<_>>();
+        checked_tables.sort();
+        checked_tables.dedup();
+        Ok(TrialWriteSummary {
+            outcome_status: outcome.status,
+            checked_tables,
+        })
+    })
 }
 
 pub fn undo_batch(

@@ -40,6 +40,7 @@ export function InventoryMigrationScreen({ context }) {
     inventoryReadiness,
     inventoryResolvedLocations,
     inventoryReviewConfirmed,
+    inventoryTrialStatus,
     inventorySourceExpanded,
     inventoryTargetExpanded,
     legacyInventoryCatalog,
@@ -758,10 +759,14 @@ export function InventoryMigrationScreen({ context }) {
                     <ShieldCheck size={20} weight="fill" />
                     <div>
                       <strong>
-                        {inventoryBatchDetail.batch.validCount} 组库存可进入正式写入
+                        {inventoryTrialStatus.complete
+                          ? `${inventoryBatchDetail.batch.validCount} 组库存可进入正式写入`
+                          : `先完成目标库房试迁移（${inventoryTrialStatus.passedStorageIds.length}/${inventoryTrialStatus.requiredStorageIds.length}）`}
                       </strong>
                       <span>
-                        每个库房生成一张首次盘点单，单号为当天日期 + 3 位流水；目标库房已有盘点或库存，整库就会被阻止。
+                        {inventoryTrialStatus.complete
+                          ? "每个库房均已用一条明细完整验证写入，测试事务已回滚；正式盘点单号按当天日期 + 3 位流水生成。"
+                          : "请在上方明细中为每个目标库房任选一条数据执行试迁移；成功或失败都会自动回滚。目标库房已有盘点或库存，整库就会被阻止。"}
                       </span>
                       <label className="inventory-review-confirmation">
                         <input
@@ -797,7 +802,11 @@ export function InventoryMigrationScreen({ context }) {
                     <button
                       className="button button--danger"
                       aria-busy={busy === "inventory-execute"}
-                      disabled={busy === "inventory-execute"}
+                      disabled={
+                        busy === "inventory-execute" ||
+                        busy === "inventory-trial" ||
+                        !inventoryTrialStatus.complete
+                      }
                       onClick={executePhis27Inventory}
                     >
                       {busy === "inventory-execute" ? (
@@ -811,7 +820,9 @@ export function InventoryMigrationScreen({ context }) {
                       )}
                       {busy === "inventory-execute"
                         ? `正在执行 · ${inventoryExecutionSeconds}秒`
-                        : "正式执行首次盘点"}
+                        : inventoryTrialStatus.complete
+                          ? "正式执行首次盘点"
+                          : `请先试迁移库房 ${inventoryTrialStatus.passedStorageIds.length}/${inventoryTrialStatus.requiredStorageIds.length}`}
                     </button>
                   </div>
                 )}

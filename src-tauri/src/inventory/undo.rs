@@ -4,6 +4,7 @@ pub async fn execute(
     operator_id: &str,
     request: ExecuteInventoryRequest,
 ) -> Result<BatchDetail, String> {
+    let _active_batch = ActiveBatchGuard::enter(&request.batch_id)?;
     let detail = store.load_batch(&request.batch_id)?;
     if detail.batch.source_type != "PHIS27_INVENTORY" {
         return Err("当前批次不是二系列phis机构库存批次".into());
@@ -13,6 +14,12 @@ pub async fn execute(
     }
     if detail.rows.iter().any(|row| row.status == "INVALID") {
         return Err("本批次仍有库存预检失败项，已阻止所有目标库存写入".into());
+    }
+    if !has_successful_inventory_trials(&detail, &request.target) {
+        return Err(
+            "正式执行首次盘点前，请为本批每个目标库房选择一条库存明细完成试迁移；试迁移会完整建立盘点、库存和账簿后自动回滚"
+                .into(),
+        );
     }
     let executable = detail
         .rows

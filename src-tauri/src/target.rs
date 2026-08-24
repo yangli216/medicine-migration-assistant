@@ -4,7 +4,8 @@ use crate::local_store::{LocalStore, SourceLinkSnapshot};
 use crate::model::{
     BatchDetail, ConnectionProfile, ExecuteBatchRequest, MigrationAudit, MigrationRow,
     OverwriteFieldDiff, OverwritePreview, OverwriteRowPreview, PreviewOverwriteRequest,
-    TargetReadiness, UndoBatchRequest,
+    TargetReadiness, TrialMigrationRequest, TrialMigrationResponse, TrialMigrationResult,
+    UndoBatchRequest,
 };
 use crate::normalize::value_text;
 use crate::overwrite::{
@@ -24,12 +25,12 @@ use std::sync::{Mutex, OnceLock};
 static ACTIVE_BATCHES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Debug)]
-struct ActiveBatchGuard {
+pub(crate) struct ActiveBatchGuard {
     batch_id: String,
 }
 
 impl ActiveBatchGuard {
-    fn enter(batch_id: &str) -> Result<Self, String> {
+    pub(crate) fn enter(batch_id: &str) -> Result<Self, String> {
         let batches = ACTIVE_BATCHES.get_or_init(|| Mutex::new(HashSet::new()));
         let mut active = batches
             .lock()
@@ -70,6 +71,11 @@ pub(crate) struct WriteOutcome {
     pub(crate) id_fac: String,
     pub(crate) id_med_pro: String,
     pub(crate) events: Vec<WriteEvent>,
+}
+
+pub(crate) struct TrialWriteSummary {
+    pub(crate) outcome_status: String,
+    pub(crate) checked_tables: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +172,22 @@ pub(crate) fn target_identity(profile: &ConnectionProfile) -> Value {
         "schema": profile.schema.trim().to_ascii_lowercase(),
         "serviceName": profile.service_name.trim().to_ascii_lowercase(),
         "username": profile.username.trim().to_ascii_lowercase()
+    })
+}
+
+pub(crate) fn has_successful_trial(detail: &BatchDetail, profile: &ConnectionProfile) -> bool {
+    let expected_target = target_identity(profile);
+    detail.audits.iter().any(|audit| {
+        if audit.operation != "TRIAL_ROLLBACK" || audit.result != "SUCCESS" {
+            return false;
+        }
+        let Some(row) = detail.rows.iter().find(|row| row.row_id == audit.row_id) else {
+            return false;
+        };
+        audit.after_data.get("targetIdentity") == Some(&expected_target)
+            && audit.after_data.get("sourceHash").and_then(Value::as_str)
+                == Some(row.source_hash.as_str())
+            && audit.after_data.get("rolledBack").and_then(Value::as_bool) == Some(true)
     })
 }
 
@@ -643,6 +665,7 @@ pub async fn execute_batch(
             &request.tenant_id,
             &request.operator_id,
             &request.organization_id,
+            true,
         )
         .await
         {
@@ -739,6 +762,195 @@ pub async fn execute_batch(
     pool.close().await;
     finish_batch(store, &request.batch_id, &request.operator_id)?;
     store.load_batch(&request.batch_id)
+}
+
+pub async fn trial_row(
+    store: &LocalStore,
+    request: TrialMigrationRequest,
+) -> Result<TrialMigrationResponse, String> {
+    let _active_batch = ActiveBatchGuard::enter(&request.batch_id)?;
+    let detail = store.load_batch(&request.batch_id)?;
+    if detail.batch.source_type == "PHIS27_INVENTORY" {
+        return Err("机构库存必须按首次盘点整体核对，不支持单条试迁移".into());
+    }
+    let mut row = detail
+        .rows
+        .iter()
+        .find(|row| row.row_id == request.row_id)
+        .cloned()
+        .ok_or_else(|| "未找到需要试迁移的明细行".to_string())?;
+    if !matches!(row.status.as_str(), "VALIDATED" | "FAILED") {
+        return Err("只有校验通过或上次写入失败的明细可以试迁移".into());
+    }
+    if let Some(source_factory_key) = row
+        .normalized_data
+        .get("_sourceFactoryKey")
+        .map(value_text)
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(target_id_fac) = store.find_factory_link(
+            &request.tenant_id,
+            &detail.batch.source_type,
+            &detail.batch.source_name,
+            &source_factory_key,
+        )? {
+            row.normalized_data.insert(
+                "_sourceFactoryTargetId".into(),
+                Value::String(target_id_fac),
+            );
+        }
+    }
+
+    let write_result = if crate::pg_protocol::uses_native_connection(&request.target) {
+        crate::target_pg::trial_write_row(
+            &request,
+            &row,
+            &detail.batch.conflict_strategy,
+            detail.batch.allow_create_factory,
+        )
+        .await
+    } else if crate::odbc::is_odbc_kind(&request.target.kind) {
+        crate::target_odbc::trial_write_row(
+            &request,
+            &row,
+            &detail.batch.conflict_strategy,
+            detail.batch.allow_create_factory,
+        )
+    } else {
+        trial_mysql_write_row(
+            &request,
+            &row,
+            &detail.batch.conflict_strategy,
+            detail.batch.allow_create_factory,
+        )
+        .await
+    };
+
+    let trace_id = new_object_id();
+    let identity = target_identity(&request.target);
+    let result = match write_result {
+        Ok(summary) => {
+            let message = if summary.outcome_status == "SKIPPED" {
+                "单条试迁移通过：目标记录已存在，查重与关联逻辑正常；目标事务已自动回滚".to_string()
+            } else {
+                "单条试迁移通过：字段、约束和关联写入均成功；目标事务已自动回滚".to_string()
+            };
+            store.audit_event(
+                &request.batch_id,
+                &row.row_id,
+                "TRIAL_ROLLBACK",
+                "migration_row",
+                &row.row_id,
+                "SUCCESS",
+                Value::Object(row.normalized_data.clone()),
+                json!({
+                    "targetIdentity": identity,
+                    "sourceHash": row.source_hash,
+                    "outcomeStatus": summary.outcome_status,
+                    "checkedTables": summary.checked_tables,
+                    "rolledBack": true
+                }),
+                &message,
+                &request.operator_id,
+                &trace_id,
+            )?;
+            TrialMigrationResult {
+                ok: true,
+                row_id: row.row_id.clone(),
+                row_no: row.row_no,
+                source_key: row.source_key.clone(),
+                message,
+                checked_tables: summary.checked_tables,
+            }
+        }
+        Err(error) => {
+            let rollback_confirmed = !error.contains("试迁移回滚失败")
+                && !error.contains("回滚单条试迁移事务")
+                && !error.contains("试迁移结束后回滚失败");
+            let message = if rollback_confirmed {
+                format!(
+                    "单条试迁移未通过：{}；目标事务未提交，已自动回滚",
+                    limit(&error, 1800)
+                )
+            } else {
+                format!(
+                    "单条试迁移未通过，且无法确认目标事务已回滚：{}；请停止正式迁移并立即核对目标库",
+                    limit(&error, 1750)
+                )
+            };
+            store.audit_event(
+                &request.batch_id,
+                &row.row_id,
+                "TRIAL_ROLLBACK",
+                "migration_row",
+                &row.row_id,
+                "FAILED",
+                Value::Object(row.normalized_data.clone()),
+                json!({
+                    "targetIdentity": identity,
+                    "sourceHash": row.source_hash,
+                    "checkedTables": [],
+                    "rolledBack": rollback_confirmed
+                }),
+                &message,
+                &request.operator_id,
+                &trace_id,
+            )?;
+            TrialMigrationResult {
+                ok: false,
+                row_id: row.row_id.clone(),
+                row_no: row.row_no,
+                source_key: row.source_key.clone(),
+                message,
+                checked_tables: Vec::new(),
+            }
+        }
+    };
+    Ok(TrialMigrationResponse {
+        result,
+        detail: store.load_batch(&request.batch_id)?,
+    })
+}
+
+async fn trial_mysql_write_row(
+    request: &TrialMigrationRequest,
+    row: &MigrationRow,
+    conflict_strategy: &str,
+    allow_create_factory: bool,
+) -> Result<TrialWriteSummary, String> {
+    let pool = connect_mysql(&request.target).await?;
+    let result = async {
+        inspect_mysql_pool(&pool).await?;
+        write_row(
+            &pool,
+            row,
+            conflict_strategy,
+            allow_create_factory,
+            &request.tenant_id,
+            &request.operator_id,
+            &request.organization_id,
+            false,
+        )
+        .await
+        .map(trial_summary)
+    }
+    .await;
+    pool.close().await;
+    result
+}
+
+pub(crate) fn trial_summary(outcome: WriteOutcome) -> TrialWriteSummary {
+    let mut checked_tables = outcome
+        .events
+        .iter()
+        .map(|event| event.table.to_string())
+        .collect::<Vec<_>>();
+    checked_tables.sort();
+    checked_tables.dedup();
+    TrialWriteSummary {
+        outcome_status: outcome.status,
+        checked_tables,
+    }
 }
 
 pub async fn undo_batch(
@@ -947,6 +1159,7 @@ async fn mysql_count(
         .map_err(db_error)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn write_row(
     pool: &MySqlPool,
     row: &MigrationRow,
@@ -955,6 +1168,7 @@ async fn write_row(
     tenant_id: &str,
     operator_id: &str,
     organization_id: &str,
+    persist: bool,
 ) -> Result<WriteOutcome, String> {
     let data = &row.normalized_data;
     let now = Utc::now().naive_utc();
@@ -977,7 +1191,7 @@ async fn write_row(
             now,
         )
         .await?;
-        tx.commit().await.map_err(db_error)?;
+        finish_mysql_row_transaction(tx, persist).await?;
         return Ok(outcome);
     }
     let existing_med = if fg_pri == "1" {
@@ -1086,7 +1300,7 @@ async fn write_row(
     ensure_alias(&mut tx, &id_med, data, tenant_id, &mut events).await?;
     let id_med_unit = ensure_unit(&mut tx, &id_med, data, tenant_id, &mut events).await?;
     if !crate::normalize::has_product_data(data) {
-        tx.commit().await.map_err(db_error)?;
+        finish_mysql_row_transaction(tx, persist).await?;
         return Ok(WriteOutcome {
             status: "SUCCESS".into(),
             id_med,
@@ -1161,7 +1375,7 @@ async fn write_row(
         if conflict_strategy.eq_ignore_ascii_case("FAIL") {
             return Err("同厂家、商品名和销售规格的药品商品已存在".into());
         }
-        tx.commit().await.map_err(db_error)?;
+        finish_mysql_row_transaction(tx, persist).await?;
         events.push(WriteEvent {
             operation: "SKIP",
             table: "hi_bd_med_pro",
@@ -1215,7 +1429,7 @@ async fn write_row(
     .execute(&mut *tx)
     .await
     .map_err(db_error)?;
-    tx.commit().await.map_err(db_error)?;
+    finish_mysql_row_transaction(tx, persist).await?;
     events.push(WriteEvent {
         operation: "INSERT",
         table: "hi_bd_med_pro",
@@ -1232,6 +1446,19 @@ async fn write_row(
         id_med_pro,
         events,
     })
+}
+
+async fn finish_mysql_row_transaction(
+    tx: MySqlTransaction<'_>,
+    persist: bool,
+) -> Result<(), String> {
+    if persist {
+        tx.commit().await.map_err(db_error)
+    } else {
+        tx.rollback()
+            .await
+            .map_err(|error| format!("单条试迁移回滚失败：{}", db_error(error)))
+    }
 }
 
 async fn overwrite_mysql_row(
@@ -1843,9 +2070,14 @@ pub(crate) fn limit(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{alias_search_fields, inserted_targets, updated_targets, ActiveBatchGuard};
-    use crate::model::MigrationAudit;
-    use serde_json::Value;
+    use super::{
+        alias_search_fields, has_successful_trial, inserted_targets, target_identity,
+        updated_targets, ActiveBatchGuard,
+    };
+    use crate::model::{
+        BatchDetail, ConnectionProfile, MigrationAudit, MigrationBatch, MigrationRow,
+    };
+    use serde_json::{Map, Value};
 
     fn audit(operation: &str, table: &str, target_id: &str) -> MigrationAudit {
         MigrationAudit {
@@ -1921,5 +2153,75 @@ mod tests {
         assert_eq!(py, "amxljn");
         assert_eq!(wb, "bsoexa");
         assert_eq!(instr, "阿莫西林胶囊,amxljn,bsoexa");
+    }
+
+    #[test]
+    fn formal_execution_trial_must_match_current_target_and_source_hash() {
+        let profile = ConnectionProfile {
+            kind: "oracle".into(),
+            host: "db.example.com".into(),
+            port: 1521,
+            database: String::new(),
+            username: "phis".into(),
+            password: String::new(),
+            schema: "phis".into(),
+            service_name: "orcl".into(),
+            driver: String::new(),
+            connection_string: String::new(),
+        };
+        let mut trial = audit("TRIAL_ROLLBACK", "migration_row", "row-1");
+        trial.after_data = serde_json::json!({
+            "targetIdentity": target_identity(&profile),
+            "sourceHash": "hash-1",
+            "rolledBack": true
+        });
+        let detail = BatchDetail {
+            batch: MigrationBatch {
+                batch_id: "batch".into(),
+                batch_name: "batch".into(),
+                source_type: "PHIS27".into(),
+                source_name: "source".into(),
+                source_description: String::new(),
+                conflict_strategy: "INCREMENTAL".into(),
+                allow_create_factory: false,
+                idempotency_key: "key".into(),
+                status: "VALIDATED".into(),
+                total_count: 1,
+                valid_count: 1,
+                success_count: 0,
+                fail_count: 0,
+                skip_count: 0,
+                created_at: String::new(),
+                updated_at: String::new(),
+                finished_at: None,
+            },
+            rows: vec![MigrationRow {
+                row_id: "row-1".into(),
+                batch_id: "batch".into(),
+                row_no: 1,
+                source_key: "1:1001".into(),
+                source_hash: "hash-1".into(),
+                status: "VALIDATED".into(),
+                raw_data: Map::new(),
+                normalized_data: Map::new(),
+                error_code: String::new(),
+                error_message: String::new(),
+                id_med: String::new(),
+                id_med_unit: String::new(),
+                id_fac: String::new(),
+                id_med_pro: String::new(),
+                retry_count: 0,
+                updated_at: String::new(),
+            }],
+            audits: vec![trial],
+        };
+        assert!(has_successful_trial(&detail, &profile));
+        assert!(!has_successful_trial(
+            &detail,
+            &ConnectionProfile {
+                host: "other.example.com".into(),
+                ..profile
+            }
+        ));
     }
 }

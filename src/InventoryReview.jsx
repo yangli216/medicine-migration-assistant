@@ -32,6 +32,8 @@ export function createInventoryRenderers(context) {
     inventoryReviewSearch,
     inventoryReviewStatus,
     inventoryReviewStorage,
+    inventoryTrialRowId,
+    inventoryTrialStatus,
     inventoryUndoConfirmed,
     inventoryUndoPreview,
     legacyInventoryCatalog,
@@ -49,6 +51,7 @@ export function createInventoryRenderers(context) {
     setInventoryUndoConfirmed,
     targetOrganizationCatalog,
     targetStorageCatalog,
+    trialPhis27Inventory,
     undoPhis27Inventory,
   } = context;
 
@@ -661,12 +664,20 @@ function renderInventoryBatchReview() {
               <th>批号 / 效期</th>
               <th>数量 / 价格</th>
               <th>核对结果</th>
+              <th>库存试迁移</th>
             </tr>
           </thead>
           <tbody>
             {filteredRows.map((row) => {
               const sourceIds = row.rawData?.sourceRecordIds || [];
               const invalid = ["INVALID", "FAILED"].includes(row.status);
+              const idSto = `${row.normalizedData?.idSto || ""}`.trim();
+              const storageTrial = inventoryTrialStatus.latest.get(idSto);
+              const storageTrialPassed =
+                storageTrial?.result === "SUCCESS" &&
+                storageTrial.afterData?.rolledBack === true;
+              const trialRunning = inventoryTrialRowId === row.rowId;
+              const trialEligible = ["VALIDATED", "FAILED"].includes(row.status);
               return (
                 <tr className={invalid ? "is-invalid" : ""} key={row.rowId}>
                   <td>
@@ -723,12 +734,45 @@ function renderInventoryBatchReview() {
                       <small className="inventory-packaging-note" key={note}>{note}</small>
                     ))}
                   </td>
+                  <td className="inventory-trial-cell">
+                    {storageTrial && (
+                      <span
+                        className={`inventory-trial-result ${storageTrialPassed ? "is-success" : "is-danger"}`}
+                        title={storageTrial.message}
+                      >
+                        {storageTrialPassed
+                          ? storageTrial.rowId === row.rowId
+                            ? "样例通过 · 已回滚"
+                            : "本库房已通过"
+                          : "未通过 · 已回滚"}
+                      </span>
+                    )}
+                    {trialEligible && (
+                      <button
+                        className="button button--secondary button--compact inventory-trial-button"
+                        type="button"
+                        disabled={busy === "inventory-trial"}
+                        onClick={() => trialPhis27Inventory(row)}
+                      >
+                        {trialRunning ? (
+                          <CircleNotch className="is-spinning" size={15} weight="bold" />
+                        ) : (
+                          <ShieldCheck size={15} />
+                        )}
+                        {trialRunning
+                          ? "验证中…"
+                          : storageTrialPassed
+                            ? "换此行重验"
+                            : "试迁移此行"}
+                      </button>
+                    )}
+                  </td>
                 </tr>
               );
             })}
             {!filteredRows.length && (
               <tr>
-                <td className="inventory-review-empty" colSpan="6">
+                <td className="inventory-review-empty" colSpan="7">
                   当前筛选条件下没有库存明细
                 </td>
               </tr>
