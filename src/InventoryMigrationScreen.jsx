@@ -18,6 +18,7 @@ import {
   ConnectionPicker,
 } from "./DatabaseConnections";
 import { SearchableSelect } from "./SearchableSelect";
+import { inventoryLocationNeedsSourceResolution } from "./inventoryMapping";
 
 export function InventoryMigrationScreen({ context }) {
   const {
@@ -305,7 +306,7 @@ export function InventoryMigrationScreen({ context }) {
         <div className="prerequisite-note">
           <Info size={17} />
           <span>
-            选定本批机构后的明细阶段：药库数量取 YK_KCMX.KCSL，药房数量取 YF_KCMX.YPSL。
+            药库库存优先按 YK_YPXX 中的 YKSB + YPXH 唯一关系拆分到具体药库；无法唯一判断时，只将该药品列为待确认，不会复制库存。药库数量取 YK_KCMX.KCSL，药房数量取 YF_KCMX.YPSL。
           </span>
         </div>
         {inventoryReadiness.unresolvedSourceKeys.length > 0 && (
@@ -587,19 +588,13 @@ export function InventoryMigrationScreen({ context }) {
                             ? "药库"
                             : "药房"}
                         </span>
-                        <strong>
-                          {location.mappingStatus ===
-                          "SOURCE_LOCATION_AMBIGUOUS"
-                            ? "药库库存总账（需指定来源药库）"
-                            : location.sourceLocationName}
-                        </strong>
+                        <strong>{location.sourceLocationName}</strong>
                         <small>
                           {location.sourceLocationKey} · {location.medicineCount} 种药品
                         </small>
-                        {location.mappingStatus ===
-                          "SOURCE_LOCATION_AMBIGUOUS" && (
+                        {inventoryLocationNeedsSourceResolution(location) && (
                           <SearchableSelect
-                            ariaLabel="指定药库库存总账所属的老系统药库"
+                            ariaLabel="指定待确认药库库存所属的老系统药库"
                             value={
                               inventoryResolvedLocations[
                                 location.sourceLocationKey

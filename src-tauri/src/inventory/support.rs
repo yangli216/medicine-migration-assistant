@@ -34,6 +34,20 @@ fn validate_mappings(
         })
         .collect::<HashMap<_, _>>();
     for mapping in mappings {
+        let valid_source_location = match mapping.source_kind.as_str() {
+            "WAREHOUSE" => {
+                mapping.source_location_key.starts_with("YK:")
+                    || mapping.source_location_key.starts_with("YKORG:")
+            }
+            "PHARMACY" => mapping.source_location_key.starts_with("YF:"),
+            _ => false,
+        };
+        if !valid_source_location {
+            return Err(format!(
+                "老系统库房识别码“{}”与库房类型不匹配，请重新读取库存范围",
+                mapping.source_location_key
+            ));
+        }
         let mapped_organization = organizations
             .get(mapping.source_organization_id.as_str())
             .ok_or_else(|| {
@@ -58,8 +72,8 @@ fn validate_mappings(
             && mapping.resolved_source_location_key.trim().is_empty()
         {
             return Err(format!(
-                "机构 {} 的 YK_KCMX 未保存药库主键，请先指定这批库存属于哪个老系统药库",
-                mapping.source_organization_id
+                "药库库存“{}”无法通过 YK_YPXX 唯一确定归属，请先指定实际老系统药库",
+                mapping.source_location_name
             ));
         }
         let storage = storages
@@ -300,10 +314,14 @@ fn group_inventory(items: Vec<Phis27InventoryStockItem>) -> Result<Vec<Inventory
 fn select_inventory_items(
     items: Vec<Phis27InventoryStockItem>,
     selected_organization_ids: &HashSet<String>,
+    selected_location_keys: &HashSet<String>,
 ) -> Vec<Phis27InventoryStockItem> {
     items
         .into_iter()
-        .filter(|item| selected_organization_ids.contains(&item.source_organization_id))
+        .filter(|item| {
+            selected_organization_ids.contains(&item.source_organization_id)
+                && selected_location_keys.contains(&item.source_location_key)
+        })
         .collect()
 }
 
@@ -499,15 +517,38 @@ mod tests {
     #[test]
     fn inventory_batch_can_select_one_completed_organization() {
         let selected = HashSet::from(["ORG".to_string()]);
+        let selected_locations = HashSet::from(["YK:ORG".to_string()]);
         let first = item("1", "4");
         let mut deferred = item("2", "5");
         deferred.source_organization_id = "ORG_LATER".into();
         deferred.source_location_key = "YF:2001".into();
 
-        let items = select_inventory_items(vec![first, deferred], &selected);
+        let items = select_inventory_items(
+            vec![first, deferred],
+            &selected,
+            &selected_locations,
+        );
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].source_organization_id, "ORG");
+    }
+
+    #[test]
+    fn inventory_batch_can_select_one_location_inside_an_organization() {
+        let selected = HashSet::from(["ORG".to_string()]);
+        let selected_locations = HashSet::from(["YK:ORG".to_string()]);
+        let first = item("1", "4");
+        let mut deferred = item("2", "5");
+        deferred.source_location_key = "YK:OTHER".into();
+
+        let items = select_inventory_items(
+            vec![first, deferred],
+            &selected,
+            &selected_locations,
+        );
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].source_location_key, "YK:ORG");
     }
 
     #[test]

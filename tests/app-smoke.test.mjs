@@ -138,7 +138,8 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /任务 B · 已开放/);
   assert.match(appSource, /inspect_phis27_inventory/);
   assert.match(appSource, /读取机构与库存范围/);
-  assert.match(appSource, /读取并核对本批机构/);
+  assert.match(appSource, /读取并核对本批/);
+  assert.match(appSource, /选择本批需要迁移的药库\/\u836f房/);
   assert.match(appSource, /load_inventory_target_storages/);
   assert.match(appSource, /load_inventory_target_organizations/);
   assert.match(appSource, /load_phis27_inventory_catalog/);
@@ -151,8 +152,8 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /机构与库房对应关系/);
   assert.match(appSource, /同名自动匹配/);
   assert.match(appSource, /纳入本批/);
-  assert.match(appSource, /未勾选机构不会读取明细/);
-  assert.match(appSource, /请先完整映射机构与库房，并勾选至少一个机构纳入本批/);
+  assert.match(appSource, /其他机构和库房不进入本批校验或写入/);
+  assert.match(appSource, /请先选择并完成本批库房映射/);
   assert.match(appSource, /第 3 步 · 数据来源[\s\S]*返回选择任务/);
   assert.match(appSource, /查看范围详情/);
   assert.match(appSource, /老系统机构与库存范围已读取/);

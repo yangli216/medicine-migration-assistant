@@ -82,7 +82,10 @@ import {
 } from "./MigrationResults";
 import { createInventoryRenderers } from "./InventoryReview";
 import { InventoryMigrationScreen } from "./InventoryMigrationScreen";
-import { completeInventoryOrganizationIds } from "./inventoryMapping";
+import {
+  completeInventoryOrganizationIds,
+  inventoryLocationNeedsSourceResolution,
+} from "./inventoryMapping";
 import {
   MedicineSourceScreen,
   SourceRecognitionScreen,
@@ -183,6 +186,11 @@ export function App() {
     useState({});
   const [inventorySelectedOrganizationIds, setInventorySelectedOrganizationIds] =
     useState([]);
+  const [inventorySelectedLocationKeys, setInventorySelectedLocationKeys] =
+    useState([]);
+  const [inventoryActiveOrganizationId, setInventoryActiveOrganizationId] =
+    useState("");
+  const [inventoryLocationSearch, setInventoryLocationSearch] = useState("");
   const [targetStorageCatalog, setTargetStorageCatalog] = useState(null);
   const [inventoryLocationMappings, setInventoryLocationMappings] = useState({});
   const [inventoryResolvedLocations, setInventoryResolvedLocations] = useState({});
@@ -1168,6 +1176,9 @@ export function App() {
     setTargetOrganizationCatalog(null);
     setInventoryOrganizationMappings({});
     setInventorySelectedOrganizationIds([]);
+    setInventorySelectedLocationKeys([]);
+    setInventoryActiveOrganizationId("");
+    setInventoryLocationSearch("");
     setTargetStorageCatalog(null);
     setInventoryLocationMappings({});
     setInventoryResolvedLocations({});
@@ -1188,6 +1199,10 @@ export function App() {
       });
       await rememberSourceConnection();
       setInventoryReadiness(readiness);
+      setInventoryActiveOrganizationId(
+        readiness.locations.find((location) => location.organizationId)
+          ?.organizationId || "",
+      );
       setInventorySourceExpanded(false);
       setInventoryPreflightExpanded(false);
       notify(readiness.message);
@@ -1252,6 +1267,8 @@ export function App() {
         ),
       );
       setInventorySelectedOrganizationIds([]);
+      setInventorySelectedLocationKeys([]);
+      setInventoryLocationSearch("");
       setInventoryLocationMappings(
         Object.fromEntries(
           savedMappings
@@ -1292,18 +1309,24 @@ export function App() {
       inventoryOrganizationMappings,
       inventoryLocationMappings,
       inventoryResolvedLocations,
+      inventorySelectedLocationKeys,
     );
     const completedOrganizationIdSet = new Set(completedOrganizationIds);
     const selectedBatchOrganizationIds = inventorySelectedOrganizationIds.filter(
       (organizationId) => completedOrganizationIdSet.has(organizationId),
     );
     if (!selectedBatchOrganizationIds.length) {
-      return fail("请先完整映射机构与库房，并勾选至少一个机构纳入本批");
+      return fail("请先选择并完成本批库房映射，再勾选至少一个机构纳入本批");
     }
     const selectedOrganizationIds = new Set(selectedBatchOrganizationIds);
+    const selectedLocationKeySet = new Set(inventorySelectedLocationKeys);
     const selectedLocations = locations.filter((location) =>
-      selectedOrganizationIds.has(location.organizationId),
+      selectedOrganizationIds.has(location.organizationId) &&
+      selectedLocationKeySet.has(location.sourceLocationKey),
     );
+    if (!selectedLocations.length) {
+      return fail("请先选择本批需要迁移的药库或药房");
+    }
     const storageById = new Map(
       storages.map((storage) => [storage.idSto, storage]),
     );
@@ -1317,11 +1340,11 @@ export function App() {
     }
     const unresolvedWarehouses = selectedLocations.filter(
       (location) =>
-        location.mappingStatus === "SOURCE_LOCATION_AMBIGUOUS" &&
+        inventoryLocationNeedsSourceResolution(location) &&
         !inventoryResolvedLocations[location.sourceLocationKey],
     );
     if (unresolvedWarehouses.length) {
-      return fail("请先指定药库库存总账实际属于哪个老系统药库");
+      return fail("请先为待确认的药库库存指定实际老系统药库");
     }
     const mappings = selectedLocations.map((location) => {
       const storage = storageById.get(
@@ -1329,7 +1352,7 @@ export function App() {
       );
       const resolvedSourceLocationKey =
         inventoryResolvedLocations[location.sourceLocationKey] ||
-        (location.mappingStatus === "SOURCE_LOCATION_AMBIGUOUS"
+        (inventoryLocationNeedsSourceResolution(location)
           ? ""
           : location.sourceLocationKey);
       const resolvedLocation = legacyInventoryCatalog?.locations?.find(
@@ -1379,8 +1402,8 @@ export function App() {
       setInventoryMappingExpanded(false);
       notify(
         detail.batch.failCount
-          ? `${selectedBatchOrganizationIds.length} 个机构防重预检完成：${detail.batch.validCount} 组可写入，${detail.batch.failCount} 组需处理`
-          : `${selectedBatchOrganizationIds.length} 个机构防重预检通过：${detail.batch.validCount} 组可进入正式写入`,
+          ? `${selectedBatchOrganizationIds.length} 个机构、${selectedLocations.length} 个库房防重预检完成：${detail.batch.validCount} 组可写入，${detail.batch.failCount} 组需处理`
+          : `${selectedBatchOrganizationIds.length} 个机构、${selectedLocations.length} 个库房防重预检通过：${detail.batch.validCount} 组可进入正式写入`,
       );
     } catch (error) {
       fail(error);
@@ -1530,9 +1553,13 @@ export function App() {
     const nextOrganizations = { ...inventoryOrganizationMappings };
     const nextLocations = { ...inventoryLocationMappings };
     const nextResolved = { ...inventoryResolvedLocations };
+    const selectedLocationKeySet = new Set(inventorySelectedLocationKeys);
     const sourceOrganizationIds = [
       ...new Set(
         inventoryReadiness.locations
+          .filter((location) =>
+            selectedLocationKeySet.has(location.sourceLocationKey),
+          )
           .map((location) => location.organizationId)
           .filter(Boolean),
       ),
@@ -1555,7 +1582,9 @@ export function App() {
       const targetOrganizationId = nextOrganizations[sourceOrganizationId];
       if (!targetOrganizationId) continue;
       for (const location of inventoryReadiness.locations.filter(
-        (item) => item.organizationId === sourceOrganizationId,
+        (item) =>
+          item.organizationId === sourceOrganizationId &&
+          selectedLocationKeySet.has(item.sourceLocationKey),
       )) {
         const sourceCandidates = legacyInventoryCatalog.locations.filter(
           (item) =>
@@ -1563,8 +1592,10 @@ export function App() {
             item.sourceKind === location.sourceKind &&
             item.active,
         );
+        const needsSourceResolution =
+          inventoryLocationNeedsSourceResolution(location);
         const sourceLocation =
-          location.mappingStatus === "SOURCE_LOCATION_AMBIGUOUS"
+          needsSourceResolution
             ? sourceCandidates.find(
                 (item) =>
                   normalizeName(item.name) ===
@@ -1574,7 +1605,7 @@ export function App() {
                 (item) => item.sourceLocationKey === location.sourceLocationKey,
               );
         if (
-          location.mappingStatus === "SOURCE_LOCATION_AMBIGUOUS" &&
+          needsSourceResolution &&
           sourceLocation &&
           !nextResolved[location.sourceLocationKey]
         ) {
@@ -1623,7 +1654,10 @@ export function App() {
     inventoryLocationMappings,
     inventoryOrganizationMappings,
     inventoryReadiness,
+    inventoryActiveOrganizationId,
+    inventoryLocationSearch,
     inventoryResolvedLocations,
+    inventorySelectedLocationKeys,
     inventorySelectedOrganizationIds,
     inventoryReviewSearch,
     inventoryReviewStatus,
@@ -1636,10 +1670,13 @@ export function App() {
     preparePhis27Inventory,
     previewPhis27InventoryUndo,
     setInventoryBatchDetail,
+    setInventoryActiveOrganizationId,
+    setInventoryLocationSearch,
     setInventoryLocationMappings,
     setInventoryMappingExpanded,
     setInventoryOrganizationMappings,
     setInventoryResolvedLocations,
+    setInventorySelectedLocationKeys,
     setInventorySelectedOrganizationIds,
     setInventoryReviewSearch,
     setInventoryReviewStatus,

@@ -87,7 +87,16 @@ pub async fn prepare(
         .filter(|organization_id| !organization_id.is_empty())
         .collect::<HashSet<_>>();
     if selected_organization_ids.is_empty() {
-        return Err("请至少完整映射一个机构及其全部药库/药房".into());
+        return Err("请至少选择并完整映射一个机构下的一个药库/药房".into());
+    }
+    let selected_location_keys = request
+        .mappings
+        .iter()
+        .map(|mapping| mapping.source_location_key.trim().to_string())
+        .filter(|location_key| !location_key.is_empty())
+        .collect::<HashSet<_>>();
+    if selected_location_keys.is_empty() {
+        return Err("请至少选择一个本批需要迁移的药库或药房".into());
     }
     store.save_inventory_organization_mappings(
         tenant_id,
@@ -101,8 +110,13 @@ pub async fn prepare(
         &request.mappings,
     )?;
     let source_items = select_inventory_items(
-        load_inventory_stock_items(&request.source, &selected_organization_ids)?,
+        load_inventory_stock_items(
+            &request.source,
+            &selected_organization_ids,
+            &selected_location_keys,
+        )?,
         &selected_organization_ids,
+        &selected_location_keys,
     );
     if source_items.is_empty() {
         return Err("已选择的机构没有需要初始化的非零库存".into());

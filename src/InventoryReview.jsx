@@ -12,7 +12,10 @@ import {
   Warning,
 } from "@phosphor-icons/react";
 import { SearchableSelect } from "./SearchableSelect";
-import { completeInventoryOrganizationIds } from "./inventoryMapping";
+import {
+  completeInventoryOrganizationIds,
+  inventoryLocationNeedsSourceResolution,
+} from "./inventoryMapping";
 import {
   formatInventoryMoney,
   inventoryFinancialTotals,
@@ -23,11 +26,14 @@ export function createInventoryRenderers(context) {
     autoMatchInventoryMappings,
     busy,
     inventoryBatchDetail,
+    inventoryActiveOrganizationId,
     inventoryExecutionSeconds,
+    inventoryLocationSearch,
     inventoryLocationMappings,
     inventoryOrganizationMappings,
     inventoryReadiness,
     inventoryResolvedLocations,
+    inventorySelectedLocationKeys,
     inventorySelectedOrganizationIds,
     inventoryReviewSearch,
     inventoryReviewStatus,
@@ -40,10 +46,13 @@ export function createInventoryRenderers(context) {
     preparePhis27Inventory,
     previewPhis27InventoryUndo,
     setInventoryBatchDetail,
+    setInventoryActiveOrganizationId,
+    setInventoryLocationSearch,
     setInventoryLocationMappings,
     setInventoryMappingExpanded,
     setInventoryOrganizationMappings,
     setInventoryResolvedLocations,
+    setInventorySelectedLocationKeys,
     setInventorySelectedOrganizationIds,
     setInventoryReviewSearch,
     setInventoryReviewStatus,
@@ -70,21 +79,38 @@ function renderInventoryMappingBoard() {
         .filter(Boolean),
     ),
   ];
+  const activeOrganizationId = sourceOrganizationIds.includes(
+    inventoryActiveOrganizationId,
+  )
+    ? inventoryActiveOrganizationId
+    : sourceOrganizationIds[0] || "";
+  const selectedLocationKeySet = new Set(inventorySelectedLocationKeys);
+  const selectedLocations = inventoryReadiness.locations.filter((location) =>
+    selectedLocationKeySet.has(location.sourceLocationKey),
+  );
+  const selectedSourceOrganizationIds = [
+    ...new Set(
+      selectedLocations
+        .map((location) => location.organizationId)
+        .filter(Boolean),
+    ),
+  ];
   const completedOrganizationIds = completeInventoryOrganizationIds(
     inventoryReadiness.locations,
     inventoryOrganizationMappings,
     inventoryLocationMappings,
     inventoryResolvedLocations,
+    inventorySelectedLocationKeys,
   );
   const completedOrganizationCount = completedOrganizationIds.length;
   const completedOrganizationIdSet = new Set(completedOrganizationIds);
   const selectedOrganizationCount = inventorySelectedOrganizationIds.filter(
     (organizationId) => completedOrganizationIdSet.has(organizationId),
   ).length;
-  const completedLocationCount = inventoryReadiness.locations.filter(
+  const completedLocationCount = selectedLocations.filter(
     (location) =>
       inventoryLocationMappings[location.sourceLocationKey] &&
-      (location.mappingStatus !== "SOURCE_LOCATION_AMBIGUOUS" ||
+      (!inventoryLocationNeedsSourceResolution(location) ||
         inventoryResolvedLocations[location.sourceLocationKey]),
   ).length;
   const organizationOptions = targetOrganizationCatalog.organizations.map(
@@ -115,23 +141,46 @@ function renderInventoryMappingBoard() {
     };
     },
   );
+  const sourceOrganizationOptions = sourceOrganizationIds.map(
+    (sourceOrganizationId) => {
+      const organization = legacyInventoryCatalog.organizations.find(
+        (item) => item.id === sourceOrganizationId,
+      );
+      const locations = inventoryReadiness.locations.filter(
+        (location) => location.organizationId === sourceOrganizationId,
+      );
+      const selectedCount = locations.filter((location) =>
+        selectedLocationKeySet.has(location.sourceLocationKey),
+      ).length;
+      return {
+        value: sourceOrganizationId,
+        label: organization?.name || `机构 ${sourceOrganizationId}`,
+        description: `${sourceOrganizationId} · 药库/药房 ${locations.length}`,
+        meta: selectedCount
+          ? `本批已选 ${selectedCount} 个位置`
+          : "本批尚未选择位置",
+        keywords: `${organization?.name || ""} ${sourceOrganizationId}`,
+      };
+    },
+  );
   return (
     <div className="inventory-mapping-board">
       <div className="inventory-mapping-board__heading">
         <div>
           <strong>机构与库房对应关系</strong>
-          <span>先选目标机构，再为其下药库和药房选择同类型仓储。</span>
+          <span>先选老系统机构和本批库房，再设置对应关系；未选范围留待后续批次。</span>
         </div>
         <div className="inventory-mapping-progress">
           <span>
-            可迁移机构 {completedOrganizationCount}/{sourceOrganizationIds.length}
+            可执行机构 {completedOrganizationCount}/{selectedSourceOrganizationIds.length}
           </span>
           <span>本批已选 {selectedOrganizationCount}</span>
           <span>
-            库房 {completedLocationCount}/{inventoryReadiness.locations.length}
+            库房 {completedLocationCount}/{selectedLocations.length}
           </span>
           <button
             className="button button--secondary button--compact"
+            disabled={selectedLocations.length === 0}
             onClick={autoMatchInventoryMappings}
           >
             <LinkSimple size={16} />
@@ -149,8 +198,29 @@ function renderInventoryMappingBoard() {
           )}
         </div>
       </div>
+      <div className="inventory-scope-navigator">
+        <div>
+          <span className="eyebrow">1. 选择要处理的老系统机构</span>
+          <SearchableSelect
+            ariaLabel="选择要处理的老系统机构"
+            value={activeOrganizationId}
+            onChange={(sourceOrganizationId) => {
+              setInventoryActiveOrganizationId(sourceOrganizationId);
+              setInventoryLocationSearch("");
+            }}
+            options={sourceOrganizationOptions}
+            placeholder="按机构名称或编码查找"
+            searchPlaceholder="搜索老系统机构"
+          />
+        </div>
+        <span>
+          共 {sourceOrganizationIds.length} 个机构 · 本批已选 {selectedSourceOrganizationIds.length} 个机构 / {selectedLocations.length} 个库房
+        </span>
+      </div>
       <div className="inventory-org-groups">
-        {sourceOrganizationIds.map((sourceOrganizationId) => {
+        {sourceOrganizationIds
+          .filter((sourceOrganizationId) => sourceOrganizationId === activeOrganizationId)
+          .map((sourceOrganizationId) => {
           const sourceOrganization =
             legacyInventoryCatalog.organizations.find(
               (item) => item.id === sourceOrganizationId,
@@ -160,20 +230,32 @@ function renderInventoryMappingBoard() {
           const locations = inventoryReadiness.locations.filter(
             (location) => location.organizationId === sourceOrganizationId,
           );
+          const scopedLocations = locations.filter((location) =>
+            selectedLocationKeySet.has(location.sourceLocationKey),
+          );
+          const normalizedLocationSearch = inventoryLocationSearch
+            .trim()
+            .toLocaleLowerCase("zh-CN");
+          const visibleScopeLocations = locations.filter((location) =>
+            `${location.sourceLocationName} ${location.sourceLocationKey} ${location.sourceKind}`
+              .toLocaleLowerCase("zh-CN")
+              .includes(normalizedLocationSearch),
+          );
           const selectedOrganizationStorages =
             targetStorageCatalog.storages.filter(
               (storage) =>
                 storage.organizationId === targetOrganizationId &&
                 ["1", "2"].includes(storage.storageType),
             );
-          const organizationCompleted = locations.filter(
+          const organizationCompleted = scopedLocations.filter(
             (location) =>
               inventoryLocationMappings[location.sourceLocationKey] &&
-              (location.mappingStatus !== "SOURCE_LOCATION_AMBIGUOUS" ||
+              (!inventoryLocationNeedsSourceResolution(location) ||
                 inventoryResolvedLocations[location.sourceLocationKey]),
           ).length;
           const organizationReady =
-            organizationCompleted === locations.length &&
+            scopedLocations.length > 0 &&
+            organizationCompleted === scopedLocations.length &&
             Boolean(targetOrganizationId);
           const selectedForBatch =
             organizationReady &&
@@ -236,7 +318,7 @@ function renderInventoryMappingBoard() {
                   title={
                     organizationReady
                       ? "选择该机构纳入本次库存核对与迁移"
-                      : "完成机构和全部库房映射后才能纳入本批"
+                      : "请先选择本批库房并完成这些库房的映射"
                   }
                 >
                   <input
@@ -257,7 +339,9 @@ function renderInventoryMappingBoard() {
                         ? "已纳入本批"
                         : "纳入本批"
                       : targetOrganizationId
-                        ? `还差 ${locations.length - organizationCompleted} 项`
+                        ? scopedLocations.length
+                          ? `还差 ${scopedLocations.length - organizationCompleted} 项`
+                          : "先选本批库房"
                         : "待映射"}
                   </span>
                 </label>
@@ -271,8 +355,117 @@ function renderInventoryMappingBoard() {
                     </span>
                   </div>
                 )}
+              <div className="inventory-location-scope-picker">
+                <div className="inventory-location-scope-picker__heading">
+                  <div>
+                    <strong>2. 选择本批需要迁移的药库/药房</strong>
+                    <span>
+                      已选 {scopedLocations.length}/{locations.length}，只展开已选位置的映射项。
+                    </span>
+                  </div>
+                  <div>
+                    <button
+                      className="button button--ghost button--compact"
+                      type="button"
+                      onClick={() => {
+                        setInventorySelectedLocationKeys((current) => [
+                          ...new Set([
+                            ...current,
+                            ...locations.map((location) => location.sourceLocationKey),
+                          ]),
+                        ]);
+                        setInventorySelectedOrganizationIds((current) =>
+                          current.filter((id) => id !== sourceOrganizationId),
+                        );
+                        setInventoryBatchDetail(null);
+                      }}
+                    >
+                      全选本机构
+                    </button>
+                    <button
+                      className="button button--ghost button--compact"
+                      type="button"
+                      disabled={scopedLocations.length === 0}
+                      onClick={() => {
+                        const organizationLocationKeys = new Set(
+                          locations.map((location) => location.sourceLocationKey),
+                        );
+                        setInventorySelectedLocationKeys((current) =>
+                          current.filter(
+                            (locationKey) => !organizationLocationKeys.has(locationKey),
+                          ),
+                        );
+                        setInventorySelectedOrganizationIds((current) =>
+                          current.filter((id) => id !== sourceOrganizationId),
+                        );
+                        setInventoryBatchDetail(null);
+                      }}
+                    >
+                      清空
+                    </button>
+                  </div>
+                </div>
+                <label className="inventory-location-scope-picker__search">
+                  <MagnifyingGlass size={16} />
+                  <input
+                    aria-label="搜索本机构药库或药房"
+                    type="search"
+                    value={inventoryLocationSearch}
+                    onChange={(event) =>
+                      setInventoryLocationSearch(event.target.value)
+                    }
+                    placeholder="搜索药库/药房名称或识别码"
+                  />
+                </label>
+                <div className="inventory-location-scope-picker__options">
+                  {visibleScopeLocations.map((location) => {
+                    const checked = selectedLocationKeySet.has(
+                      location.sourceLocationKey,
+                    );
+                    return (
+                      <label
+                        className={`inventory-location-scope-option ${checked ? "is-selected" : ""}`}
+                        key={location.sourceLocationKey}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) => {
+                            setInventorySelectedLocationKeys((current) =>
+                              event.target.checked
+                                ? [...new Set([...current, location.sourceLocationKey])]
+                                : current.filter(
+                                    (locationKey) =>
+                                      locationKey !== location.sourceLocationKey,
+                                  ),
+                            );
+                            setInventorySelectedOrganizationIds((current) =>
+                              current.filter((id) => id !== sourceOrganizationId),
+                            );
+                            setInventoryBatchDetail(null);
+                          }}
+                        />
+                        <span className="inventory-location__kind">
+                          {location.sourceKind === "WAREHOUSE" ? "药库" : "药房"}
+                        </span>
+                        <span>
+                          <strong>{location.sourceLocationName}</strong>
+                          <small>
+                            {location.medicineCount} 种药品 · {location.stockRowCount} 条 · {location.sourceLocationKey}
+                          </small>
+                        </span>
+                      </label>
+                    );
+                  })}
+                  {visibleScopeLocations.length === 0 && (
+                    <div className="inventory-location-scope-picker__empty">
+                      没有匹配的药库或药房
+                    </div>
+                  )}
+                </div>
+              </div>
               <div className="inventory-org-locations">
-                {locations.map((location) => {
+                {scopedLocations.map((location) => {
                   const expectedType =
                     location.sourceKind === "WAREHOUSE" ? "1" : "2";
                   const sourceLocationOptions =
@@ -317,21 +510,15 @@ function renderInventoryMappingBoard() {
                           {location.sourceKind === "WAREHOUSE" ? "药库" : "药房"}
                         </span>
                         <div>
-                          <strong>
-                            {location.mappingStatus ===
-                            "SOURCE_LOCATION_AMBIGUOUS"
-                              ? "药库库存总账"
-                              : location.sourceLocationName}
-                          </strong>
+                          <strong>{location.sourceLocationName}</strong>
                           <small>
                             {location.medicineCount} 种药品 · {location.stockRowCount} 条
                           </small>
                         </div>
-                        {location.mappingStatus ===
-                          "SOURCE_LOCATION_AMBIGUOUS" && (
+                        {inventoryLocationNeedsSourceResolution(location) && (
                           <SearchableSelect
                             className="inventory-source-location-select"
-                            ariaLabel="指定药库库存总账所属的老系统药库"
+                            ariaLabel="指定待确认药库库存所属的老系统药库"
                             value={
                               inventoryResolvedLocations[
                                 location.sourceLocationKey
@@ -385,6 +572,11 @@ function renderInventoryMappingBoard() {
                     </div>
                   );
                 })}
+                {scopedLocations.length === 0 && (
+                  <div className="inventory-org-locations__empty">
+                    请先在上方勾选本批需要迁移的药库或药房。
+                  </div>
+                )}
               </div>
             </section>
           );
@@ -394,7 +586,7 @@ function renderInventoryMappingBoard() {
         <div>
           <ShieldCheck size={18} weight="fill" />
           <span>
-            完整映射后勾选“纳入本批”；未勾选机构不会读取明细，也不会计入本次失败。
+            只会读取“已勾选库房 + 已纳入机构”的明细；其他机构和库房不进入本批校验或写入。
           </span>
         </div>
         <button
@@ -405,7 +597,7 @@ function renderInventoryMappingBoard() {
           <ListMagnifyingGlass size={18} />
           {busy === "inventory-prepare"
             ? "正在检查…"
-            : `读取并核对本批机构（${selectedOrganizationCount}）`}
+            : `读取并核对本批（${selectedOrganizationCount} 机构 / ${selectedLocations.length} 库房）`}
         </button>
       </div>
     </div>
@@ -426,6 +618,7 @@ function renderInventoryBatchScopeSummary() {
       .map((location) => location.organizationId)
       .filter(Boolean),
   ).size;
+  const totalLocationCount = inventoryReadiness?.locations?.length || 0;
   const locationPairs = [
     ...new Map(
       inventoryBatchDetail.rows.map((row) => [
@@ -447,7 +640,7 @@ function renderInventoryBatchScopeSummary() {
             <strong>本批迁移范围已锁定</strong>
             <span>
               {sourceOrganizationIds.length} 个机构 · {locationPairs.length} 个药库/药房；
-              其余 {Math.max(totalOrganizationCount - sourceOrganizationIds.length, 0)} 个机构留待后续批次。
+              未选的 {Math.max(totalOrganizationCount - sourceOrganizationIds.length, 0)} 个机构、{Math.max(totalLocationCount - locationPairs.length, 0)} 个库房留待后续批次。
             </span>
           </div>
         </div>

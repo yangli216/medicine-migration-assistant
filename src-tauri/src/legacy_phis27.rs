@@ -242,6 +242,9 @@ pub fn inspect_inventory(
         .any(|item| item == "YK_YKLB")
         && has_physical_column(&physical_columns, "YK_YKLB", "YKSB")
         && has_physical_column(&physical_columns, "YK_YKLB", "JGID");
+    let has_warehouse_medicine_config = has_warehouse_list
+        && has_physical_column(&physical_columns, "YK_YPXX", "YKSB")
+        && has_physical_column(&physical_columns, "YK_YPXX", "YPXH");
     let has_pharmacy_list = inspection
         .checked_tables
         .iter()
@@ -276,9 +279,15 @@ pub fn inspect_inventory(
         .filter(|location| location.mapping_status == "SOURCE_LOCATION_AMBIGUOUS")
         .count();
     if ambiguous_locations > 0 {
-        warnings.push(format!(
-            "{ambiguous_locations} 个药库库存范围无法从 YK_KCMX 直接还原药库主键，选择本批机构时需人工确认"
-        ));
+        warnings.push(if has_warehouse_medicine_config {
+            format!(
+                "{ambiguous_locations} 个药品在 YK_YPXX 中对应多个药库，已单独列出并要求人工确认，未复制库存"
+            )
+        } else {
+            format!(
+                "{ambiguous_locations} 个药库库存范围无法从 YK_KCMX 直接还原药库主键，选择本批机构时需人工确认"
+            )
+        });
     }
     warnings.push("药品主键台账将在选定本批机构后，仅对所选库存明细核对".into());
     let ready_for_location_mapping = !locations.is_empty();
@@ -535,9 +544,13 @@ pub fn load_inventory_reference_catalog(
 pub fn load_inventory_stock_items(
     profile: &ConnectionProfile,
     organization_ids: &HashSet<String>,
+    location_keys: &HashSet<String>,
 ) -> Result<Vec<Phis27InventoryStockItem>, String> {
     if organization_ids.is_empty() {
         return Err("请先选择本批需要迁移的机构".into());
+    }
+    if location_keys.is_empty() {
+        return Err("请先选择本批需要迁移的药库或药房".into());
     }
     ensure_oracle(profile)?;
     let schema = source_schema(profile)?;
@@ -550,6 +563,16 @@ pub fn load_inventory_stock_items(
         .checked_tables
         .iter()
         .any(|item| item == "YF_KCMX");
+    if location_keys
+        .iter()
+        .any(|key| key.starts_with("YK:") || key.starts_with("YKORG:"))
+        && !has_warehouse_stock
+    {
+        return Err("本批选择了药库，但老系统未发现 YK_KCMX".into());
+    }
+    if location_keys.iter().any(|key| key.starts_with("YF:")) && !has_pharmacy_stock {
+        return Err("本批选择了药房，但老系统未发现 YF_KCMX".into());
+    }
     if !has_warehouse_stock && !has_pharmacy_stock {
         return Err("老系统未发现可读取的 YK_KCMX 或 YF_KCMX 库存明细表".into());
     }
@@ -569,18 +592,21 @@ pub fn load_inventory_stock_items(
         && has_physical_column(&physical_columns, "YF_YFLB", "JGID");
     let query = inventory_detail_query(
         &schema,
-        has_warehouse_stock,
-        has_pharmacy_stock,
-        has_warehouse_list,
-        has_pharmacy_list,
+        InventoryTableAvailability {
+            warehouse_stock: has_warehouse_stock,
+            pharmacy_stock: has_pharmacy_stock,
+            warehouse_list: has_warehouse_list,
+            pharmacy_list: has_pharmacy_list,
+        },
         &physical_columns,
         organization_ids,
+        location_keys,
     );
     let preview = odbc::preview_source(profile, &query, 10_000)
         .map_err(|error| format!("读取二系列phis库存明细失败：{error}"))?;
     if preview.truncated {
         return Err(
-            "本批所选机构的非零库存明细仍超过 10,000 条，请减少本批机构数量后重试；若仅选一个机构仍超限，请联系技术人员调整分批策略"
+            "本批所选机构/库房的非零库存明细仍超过 10,000 条，请减少本批药库或药房数量后重试；若仅选一个库房仍超限，请联系技术人员调整分批策略"
                 .into(),
         );
     }
@@ -591,14 +617,20 @@ pub fn load_inventory_stock_items(
         .collect()
 }
 
+#[derive(Clone, Copy)]
+struct InventoryTableAvailability {
+    warehouse_stock: bool,
+    pharmacy_stock: bool,
+    warehouse_list: bool,
+    pharmacy_list: bool,
+}
+
 fn inventory_detail_query(
     schema: &str,
-    has_warehouse_stock: bool,
-    has_pharmacy_stock: bool,
-    has_warehouse_list: bool,
-    has_pharmacy_list: bool,
+    tables: InventoryTableAvailability,
     physical_columns: &[LegacyPhysicalColumn],
     organization_ids: &HashSet<String>,
+    location_keys: &HashSet<String>,
 ) -> String {
     let mut queries = Vec::new();
     let organization_filter = oracle_organization_filter(organization_ids);
@@ -646,32 +678,18 @@ fn inventory_detail_query(
         "NVL(CAST(p.YBSPMC AS NVARCHAR2(200)),CAST(t.YPMC AS NVARCHAR2(200)))",
         "CAST(t.YPMC AS NVARCHAR2(200))",
     );
-    if has_warehouse_stock {
-        let warehouse_location_name = optional_source_expression(
-            physical_columns,
-            "YK_YKLB",
-            "YKMC",
-            "MAX(CAST(YKMC AS NVARCHAR2(200)))",
-            "N'药库 '||MAX(TO_NCHAR(YKSB))",
-        );
-        let location_join = if has_warehouse_list {
-            format!(
-                "LEFT JOIN (SELECT JGID,COUNT(*) AS OPTION_COUNT,MAX(TO_NCHAR(YKSB)) AS LOCATION_ID,{warehouse_location_name} AS LOCATION_NAME FROM {} GROUP BY JGID) l ON l.JGID=k.JGID",
-                table_name(schema, "YK_YKLB")
-            )
-        } else {
-            String::new()
-        };
-        let location_name = if has_warehouse_list {
-            "CASE WHEN l.OPTION_COUNT=1 THEN l.LOCATION_NAME ELSE N'药库库存总账' END"
-        } else {
-            "N'药库库存总账'"
-        };
-        let location_key = if has_warehouse_list {
-            "CASE WHEN l.OPTION_COUNT=1 THEN N'YK:'||l.LOCATION_ID ELSE N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128)) END"
-        } else {
-            "N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128))"
-        };
+    let selected_warehouse_keys = location_keys
+        .iter()
+        .filter(|key| key.starts_with("YK:") || key.starts_with("YKORG:"))
+        .cloned()
+        .collect::<HashSet<_>>();
+    if tables.warehouse_stock && !selected_warehouse_keys.is_empty() {
+        let warehouse_location =
+            warehouse_location_projection(schema, tables.warehouse_list, physical_columns);
+        let location_join = warehouse_location.join;
+        let location_name = warehouse_location.name;
+        let location_key = warehouse_location.key;
+        let location_filter = oracle_text_filter(&location_key, &selected_warehouse_keys);
         let purchase_total = optional_source_expression(
             physical_columns,
             "YK_KCMX",
@@ -710,14 +728,19 @@ fn inventory_detail_query(
              {batch_code} AS BATCH_CODE,{effective_date} AS EFFECTIVE_DATE \
              FROM {} k INNER JOIN {} t ON t.YPXH=k.YPXH \
              LEFT JOIN {} p ON p.YPXH=k.YPXH AND p.YPCD=k.YPCD \
-             LEFT JOIN {} f ON f.YPCD=k.YPCD {location_join} WHERE NVL(k.KCSL,0)<>0{organization_filter}",
+             LEFT JOIN {} f ON f.YPCD=k.YPCD {location_join} WHERE NVL(k.KCSL,0)<>0{organization_filter}{location_filter}",
             table_name(schema, "YK_KCMX"),
             table_name(schema, "YK_TYPK"),
             table_name(schema, "YK_YPCD"),
             table_name(schema, "YK_CDDZ")
         ));
     }
-    if has_pharmacy_stock {
+    let selected_pharmacy_keys = location_keys
+        .iter()
+        .filter(|key| key.starts_with("YF:"))
+        .cloned()
+        .collect::<HashSet<_>>();
+    if tables.pharmacy_stock && !selected_pharmacy_keys.is_empty() {
         let pharmacy_location_name = optional_source_expression(
             physical_columns,
             "YF_YFLB",
@@ -725,7 +748,7 @@ fn inventory_detail_query(
             "NVL(CAST(l.YFMC AS NVARCHAR2(200)),N'未命名药房')",
             "N'药房 '||CAST(k.YFSB AS NVARCHAR2(128))",
         );
-        let location_join = if has_pharmacy_list {
+        let location_join = if tables.pharmacy_list {
             format!(
                 "LEFT JOIN {} l ON l.YFSB=k.YFSB",
                 table_name(schema, "YF_YFLB")
@@ -733,11 +756,15 @@ fn inventory_detail_query(
         } else {
             String::new()
         };
-        let location_name = if has_pharmacy_list {
+        let location_name = if tables.pharmacy_list {
             pharmacy_location_name
         } else {
             "N'未命名药房'"
         };
+        let location_filter = oracle_text_filter(
+            "N'YF:'||CAST(k.YFSB AS NVARCHAR2(128))",
+            &selected_pharmacy_keys,
+        );
         let pharmacy_specification = optional_source_expression(
             physical_columns,
             "YF_YPXX",
@@ -784,7 +811,7 @@ fn inventory_detail_query(
              FROM {} k INNER JOIN {} t ON t.YPXH=k.YPXH \
              LEFT JOIN {} y ON y.JGID=k.JGID AND y.YFSB=k.YFSB AND y.YPXH=k.YPXH \
              LEFT JOIN {} p ON p.YPXH=k.YPXH AND p.YPCD=k.YPCD \
-             LEFT JOIN {} f ON f.YPCD=k.YPCD {location_join} WHERE NVL(k.YPSL,0)<>0{organization_filter}",
+             LEFT JOIN {} f ON f.YPCD=k.YPCD {location_join} WHERE NVL(k.YPSL,0)<>0{organization_filter}{location_filter}",
             table_name(schema, "YF_KCMX"),
             table_name(schema, "YK_TYPK"),
             table_name(schema, "YF_YPXX"),
@@ -811,6 +838,21 @@ fn oracle_organization_filter(organization_ids: &HashSet<String>) -> String {
         .collect::<Vec<_>>();
     ids.sort();
     format!(" AND CAST(k.JGID AS NVARCHAR2(128)) IN ({})", ids.join(","))
+}
+
+fn oracle_text_filter(expression: &str, values: &HashSet<String>) -> String {
+    let mut values = values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("N'{}'", value.replace('\'', "''")))
+        .collect::<Vec<_>>();
+    values.sort();
+    let clauses = values
+        .chunks(900)
+        .map(|chunk| format!("{expression} IN ({})", chunk.join(",")))
+        .collect::<Vec<_>>();
+    format!(" AND ({})", clauses.join(" OR "))
 }
 
 fn inventory_stock_item_from_row(
@@ -868,34 +910,12 @@ fn inventory_group_query(
 ) -> String {
     let mut queries = Vec::new();
     if has_warehouse_stock {
-        let warehouse_location_name = optional_source_expression(
-            physical_columns,
-            "YK_YKLB",
-            "YKMC",
-            "MAX(CAST(YKMC AS NVARCHAR2(200)))",
-            "N'药库 '||MAX(TO_NCHAR(YKSB))",
-        );
-        let location_join = if has_warehouse_list {
-            format!(
-                "LEFT JOIN (SELECT JGID,COUNT(*) AS OPTION_COUNT,MAX(TO_NCHAR(YKSB)) AS LOCATION_ID,{warehouse_location_name} AS LOCATION_NAME FROM {} GROUP BY JGID) l ON l.JGID=k.JGID",
-                table_name(schema, "YK_YKLB")
-            )
-        } else {
-            String::new()
-        };
-        let (option_count, location_name) = if has_warehouse_list {
-            (
-                "NVL(l.OPTION_COUNT,0)",
-                "CASE WHEN l.OPTION_COUNT=1 THEN l.LOCATION_NAME ELSE N'药库库存总账' END",
-            )
-        } else {
-            ("0", "N'药库库存总账'")
-        };
-        let location_key = if has_warehouse_list {
-            "CASE WHEN l.OPTION_COUNT=1 THEN N'YK:'||l.LOCATION_ID ELSE N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128)) END"
-        } else {
-            "N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128))"
-        };
+        let warehouse_location =
+            warehouse_location_projection(schema, has_warehouse_list, physical_columns);
+        let location_join = warehouse_location.join;
+        let location_name = warehouse_location.name;
+        let location_key = warehouse_location.key;
+        let option_count = warehouse_location.option_count;
         queries.push(format!(
             "SELECT N'WAREHOUSE' AS SOURCE_KIND,{location_key} AS LOCATION_KEY,\
              {location_name} AS LOCATION_NAME,CAST(k.JGID AS NVARCHAR2(128)) AS ORGANIZATION_ID,\
@@ -951,6 +971,69 @@ fn inventory_location_summary_query(grouped_query: &str) -> String {
     )
 }
 
+struct WarehouseLocationProjection {
+    join: String,
+    key: String,
+    name: String,
+    option_count: String,
+}
+
+fn warehouse_location_projection(
+    schema: &str,
+    has_warehouse_list: bool,
+    physical_columns: &[LegacyPhysicalColumn],
+) -> WarehouseLocationProjection {
+    let has_medicine_config = has_warehouse_list
+        && has_physical_column(physical_columns, "YK_YPXX", "YKSB")
+        && has_physical_column(physical_columns, "YK_YPXX", "YPXH");
+    if has_medicine_config {
+        let warehouse_name = if has_physical_column(physical_columns, "YK_YKLB", "YKMC") {
+            "MAX(CAST(wl.YKMC AS NVARCHAR2(200)))"
+        } else {
+            "N'药库 '||MAX(TO_NCHAR(y.YKSB))"
+        };
+        let organization_join = if has_physical_column(physical_columns, "YK_YPXX", "JGID") {
+            " AND y.JGID=wl.JGID"
+        } else {
+            ""
+        };
+        return WarehouseLocationProjection {
+            join: format!(
+                "LEFT JOIN (SELECT wl.JGID,y.YPXH,COUNT(DISTINCT y.YKSB) AS OPTION_COUNT,MAX(TO_NCHAR(y.YKSB)) AS LOCATION_ID,{warehouse_name} AS LOCATION_NAME FROM {} y INNER JOIN {} wl ON wl.YKSB=y.YKSB{organization_join} GROUP BY wl.JGID,y.YPXH) l ON l.JGID=k.JGID AND l.YPXH=k.YPXH",
+                table_name(schema, "YK_YPXX"),
+                table_name(schema, "YK_YKLB")
+            ),
+            key: "CASE WHEN l.OPTION_COUNT=1 THEN N'YK:'||l.LOCATION_ID ELSE N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128))||N':'||CAST(k.YPXH AS NVARCHAR2(64)) END".into(),
+            name: "CASE WHEN l.OPTION_COUNT=1 THEN l.LOCATION_NAME ELSE N'药库库存待确认（YPXH '||TO_NCHAR(k.YPXH)||N'）' END".into(),
+            option_count: "NVL(l.OPTION_COUNT,0)".into(),
+        };
+    }
+
+    if has_warehouse_list {
+        let warehouse_name = if has_physical_column(physical_columns, "YK_YKLB", "YKMC") {
+            "MAX(CAST(YKMC AS NVARCHAR2(200)))"
+        } else {
+            "N'药库 '||MAX(TO_NCHAR(YKSB))"
+        };
+        return WarehouseLocationProjection {
+            join: format!(
+                "LEFT JOIN (SELECT JGID,COUNT(DISTINCT YKSB) AS OPTION_COUNT,MAX(TO_NCHAR(YKSB)) AS LOCATION_ID,{warehouse_name} AS LOCATION_NAME FROM {} GROUP BY JGID) l ON l.JGID=k.JGID",
+                table_name(schema, "YK_YKLB")
+            ),
+            key: "CASE WHEN l.OPTION_COUNT=1 THEN N'YK:'||l.LOCATION_ID ELSE N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128)) END".into(),
+            name: "CASE WHEN l.OPTION_COUNT=1 THEN l.LOCATION_NAME ELSE N'药库库存总账' END".into(),
+            option_count: "NVL(l.OPTION_COUNT,0)".into(),
+        };
+    }
+
+    WarehouseLocationProjection {
+        join: String::new(),
+        key: "N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128))".into(),
+        name: "N'药库库存总账'".into(),
+        option_count: "0".into(),
+    }
+}
+
 fn inventory_location_from_row(
     row: &Map<String, Value>,
 ) -> Result<Phis27InventoryLocation, String> {
@@ -967,19 +1050,33 @@ fn inventory_location_from_row(
             .map_err(|_| format!("库存统计字段 {key} 无法识别"))
     };
     let source_kind = text("SOURCE_KIND");
+    let source_location_key = text("LOCATION_KEY");
     let source_option_count = number("OPTION_COUNT")?;
+    let medicine_scoped_warehouse = source_location_key
+        .strip_prefix("YKORG:")
+        .is_some_and(|key| key.contains(':'));
     let (mapping_status, mapping_message) = if source_kind == "WAREHOUSE" && source_option_count > 1
     {
         (
             "SOURCE_LOCATION_AMBIGUOUS",
-            format!(
-                "YK_KCMX 未保存药库主键；该机构有 {source_option_count} 个药库，需人工指定实际药库"
-            ),
+            if medicine_scoped_warehouse {
+                format!(
+                    "该药品在 YK_YPXX 中配置到 {source_option_count} 个药库，无法唯一判断库存归属，需人工指定"
+                )
+            } else {
+                format!(
+                    "YK_KCMX 未保存药库主键；该机构有 {source_option_count} 个药库，需人工指定实际药库"
+                )
+            },
         )
     } else if source_option_count == 0 {
         (
             "SOURCE_LOCATION_MISSING",
-            "未读取到对应的老系统库房定义，需人工指定实际库房".into(),
+            if medicine_scoped_warehouse {
+                "该药品未在 YK_YPXX 中找到对应药库，需人工指定实际药库".into()
+            } else {
+                "未读取到对应的老系统库房定义，需人工指定实际库房".into()
+            },
         )
     } else {
         (
@@ -987,7 +1084,6 @@ fn inventory_location_from_row(
             "老系统位置已识别，可选择对应的新系统库房".into(),
         )
     };
-    let source_location_key = text("LOCATION_KEY");
     if source_location_key.is_empty() {
         return Err("库存范围缺少库房标识".into());
     }
@@ -1649,7 +1745,7 @@ fn load_physical_columns_from_connection(
          FROM ALL_TAB_COLUMNS c \
          LEFT JOIN ALL_COL_COMMENTS m ON m.OWNER=c.OWNER AND m.TABLE_NAME=c.TABLE_NAME AND m.COLUMN_NAME=c.COLUMN_NAME \
          WHERE c.OWNER='{schema}' AND c.TABLE_NAME IN (\
-         'YK_TYPK','YK_YPCD','YK_CDDZ','YK_CDXX','YK_KCMX','YK_YKLB',\
+         'YK_TYPK','YK_YPCD','YK_CDDZ','YK_YPXX','YK_CDXX','YK_KCMX','YK_YKLB',\
          'YF_YPXX','YF_KCMX','YF_YFLB','SYS_ORGANIZATION') \
          ORDER BY DECODE(c.TABLE_NAME,'YK_TYPK',1,'YK_YPCD',2,3),c.COLUMN_ID"
     );
@@ -2220,7 +2316,7 @@ mod tests {
         inventory_location_summary_query, medicine_query, medicine_query_with_physical_columns,
         normalize_scope, phis27_column_definitions, phis27_source_dictionary, source_schema,
         table_dictionary_query, validate_inventory_source_columns,
-        validate_medicine_source_columns, LegacyPhysicalColumn, Scope,
+        validate_medicine_source_columns, InventoryTableAvailability, LegacyPhysicalColumn, Scope,
     };
     use crate::model::ConnectionProfile;
     use std::collections::HashSet;
@@ -2271,6 +2367,8 @@ mod tests {
             ("YK_YKLB", "YKSB"),
             ("YK_YKLB", "JGID"),
             ("YK_YKLB", "YKMC"),
+            ("YK_YPXX", "YKSB"),
+            ("YK_YPXX", "YPXH"),
             ("YF_KCMX", "SBXH"),
             ("YF_KCMX", "YFSB"),
             ("YF_KCMX", "JGID"),
@@ -2309,6 +2407,10 @@ mod tests {
 
     fn selected_organizations() -> HashSet<String> {
         HashSet::from(["420100001".into()])
+    }
+
+    fn selected_locations() -> HashSet<String> {
+        HashSet::from(["YK:1001".into(), "YF:1001".into()])
     }
 
     #[test]
@@ -2507,13 +2609,18 @@ mod tests {
         assert!(query.contains(
             "CAST(k.YPXH AS NVARCHAR2(64))||N':'||CAST(k.YPCD AS NVARCHAR2(64)) AS SOURCE_KEY"
         ));
-        assert!(query.contains("MAX(TO_NCHAR(YKSB)) AS LOCATION_ID"));
+        assert!(query.contains("FROM PHIS27.YK_YPXX y INNER JOIN PHIS27.YK_YKLB wl"));
+        assert!(query.contains("COUNT(DISTINCT y.YKSB) AS OPTION_COUNT"));
+        assert!(query.contains("l.YPXH=k.YPXH"));
+        assert!(query.contains("MAX(TO_NCHAR(y.YKSB)) AS LOCATION_ID"));
         assert!(query.contains("N'YK:'||l.LOCATION_ID"));
-        assert!(query.contains("N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128))"));
+        assert!(query.contains(
+            "N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128))||N':'||CAST(k.YPXH AS NVARCHAR2(64))"
+        ));
         assert!(query.contains("N'YF:'||CAST(k.YFSB AS NVARCHAR2(128)) AS LOCATION_KEY"));
         assert!(query.contains("NVL(CAST(l.YFMC AS NVARCHAR2(200)),N'未命名药房')"));
         assert!(!query.contains("NVL(l.YFMC,'未命名药房')"));
-        assert!(!query.contains("YK_YPXX"));
+        assert!(query.contains("YK_YPXX"));
         assert!(!query.contains("YF_YPXX"));
         assert!(!query.contains(';'));
 
@@ -2526,15 +2633,21 @@ mod tests {
 
         let detail = inventory_detail_query(
             "PHIS27",
-            true,
-            true,
-            true,
-            true,
+            InventoryTableAvailability {
+                warehouse_stock: true,
+                pharmacy_stock: true,
+                warehouse_list: true,
+                pharmacy_list: true,
+            },
             &physical_columns,
             &selected_organizations(),
+            &selected_locations(),
         );
         assert!(detail.contains("N'YK:'||l.LOCATION_ID"));
-        assert!(detail.contains("N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128))"));
+        assert!(detail.contains("LEFT JOIN (SELECT wl.JGID,y.YPXH"));
+        assert!(detail.contains(
+            "N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128))||N':'||CAST(k.YPXH AS NVARCHAR2(64))"
+        ));
         assert!(detail.contains("CAST(k.YPPH AS NVARCHAR2(200)) AS BATCH_CODE"));
         assert!(detail.contains("TO_NCHAR(k.YPXQ,'YYYY-MM-DD') AS EFFECTIVE_DATE"));
         assert!(detail.contains("CAST(t.ZXBZ AS NVARCHAR2(80)) AS UNIT_SALE_FACTOR"));
@@ -2545,7 +2658,43 @@ mod tests {
         assert!(detail.contains("CAST(k.JHJE AS NVARCHAR2(80)) AS PURCHASE_TOTAL"));
         assert!(detail.contains("CAST(k.LSJE AS NVARCHAR2(80)) AS RETAIL_TOTAL"));
         assert!(detail.contains("CAST(k.JGID AS NVARCHAR2(128)) IN (N'420100001')"));
+        assert!(detail.contains("IN (N'YK:1001')"));
+        assert!(detail.contains("IN (N'YF:1001')"));
         assert!(!detail.contains("NVL(k.YPPH,'')"));
+    }
+
+    #[test]
+    fn warehouse_inventory_falls_back_to_institution_ledger_without_yk_ypxx_relation() {
+        let physical_columns = inventory_physical_columns()
+            .into_iter()
+            .filter(|column| column.table != "YK_YPXX")
+            .collect::<Vec<_>>();
+        let query = inventory_group_query("PHIS27", true, false, true, false, &physical_columns);
+        assert!(!query.contains("PHIS27.YK_YPXX"));
+        assert!(query.contains("COUNT(DISTINCT YKSB) AS OPTION_COUNT"));
+        assert!(query.contains("N'药库库存总账'"));
+        assert!(query.contains("N'YKORG:'||CAST(k.JGID AS NVARCHAR2(128)) END"));
+    }
+
+    #[test]
+    fn inventory_detail_query_reads_only_selected_locations() {
+        let detail = inventory_detail_query(
+            "PHIS27",
+            InventoryTableAvailability {
+                warehouse_stock: true,
+                pharmacy_stock: true,
+                warehouse_list: true,
+                pharmacy_list: true,
+            },
+            &inventory_physical_columns(),
+            &selected_organizations(),
+            &HashSet::from(["YK:1001".into()]),
+        );
+
+        assert!(detail.contains("IN (N'YK:1001')"));
+        assert!(detail.contains("PHIS27.YK_KCMX"));
+        assert!(!detail.contains("PHIS27.YF_KCMX"));
+        assert!(!detail.contains("YF:1001"));
     }
 
     #[test]
@@ -2558,12 +2707,15 @@ mod tests {
         }
         let detail = inventory_detail_query(
             "PHIS27",
-            true,
-            false,
-            true,
-            false,
+            InventoryTableAvailability {
+                warehouse_stock: true,
+                pharmacy_stock: false,
+                warehouse_list: true,
+                pharmacy_list: false,
+            },
             &physical_columns,
             &selected_organizations(),
+            &HashSet::from(["YK:1001".into()]),
         );
         assert!(detail.contains("SUBSTR(CAST(k.YPXQ AS NVARCHAR2(200)),1,10) AS EFFECTIVE_DATE"));
         assert!(!detail.contains("TO_NCHAR(k.YPXQ,'YYYY-MM-DD')"));
@@ -2594,12 +2746,15 @@ mod tests {
         validate_inventory_source_columns(&physical_columns, true, true).unwrap();
         let detail = inventory_detail_query(
             "PHIS27",
-            true,
-            true,
-            true,
-            true,
+            InventoryTableAvailability {
+                warehouse_stock: true,
+                pharmacy_stock: true,
+                warehouse_list: true,
+                pharmacy_list: true,
+            },
             &physical_columns,
             &selected_organizations(),
+            &selected_locations(),
         );
         assert!(!detail.contains("k.JHJE"));
         assert!(!detail.contains("k.LSJE"));
@@ -2764,26 +2919,36 @@ mod tests {
             .take(1)
             .map(|organization| organization.id.clone())
             .collect::<HashSet<_>>();
+        let selected_locations = reference_catalog
+            .locations
+            .iter()
+            .filter(|location| selected_organizations.contains(&location.organization_id))
+            .take(1)
+            .map(|location| location.source_location_key.clone())
+            .collect::<HashSet<_>>();
         let inventory_detail = inventory_detail_query(
             &schema,
-            inspection
-                .checked_tables
-                .iter()
-                .any(|table| table == "YK_KCMX"),
-            inspection
-                .checked_tables
-                .iter()
-                .any(|table| table == "YF_KCMX"),
-            inspection
-                .checked_tables
-                .iter()
-                .any(|table| table == "YK_YKLB"),
-            inspection
-                .checked_tables
-                .iter()
-                .any(|table| table == "YF_YFLB"),
+            InventoryTableAvailability {
+                warehouse_stock: inspection
+                    .checked_tables
+                    .iter()
+                    .any(|table| table == "YK_KCMX"),
+                pharmacy_stock: inspection
+                    .checked_tables
+                    .iter()
+                    .any(|table| table == "YF_KCMX"),
+                warehouse_list: inspection
+                    .checked_tables
+                    .iter()
+                    .any(|table| table == "YK_YKLB"),
+                pharmacy_list: inspection
+                    .checked_tables
+                    .iter()
+                    .any(|table| table == "YF_YFLB"),
+            },
             &physical_columns,
             &selected_organizations,
+            &selected_locations,
         );
         let inventory_detail_preview = crate::odbc::preview_source(&live, &inventory_detail, 1)
             .expect("PHIS27 inventory detail");

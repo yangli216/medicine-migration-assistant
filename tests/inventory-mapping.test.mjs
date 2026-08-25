@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { completeInventoryOrganizationIds } from "../src/inventoryMapping.js";
+import {
+  completeInventoryOrganizationIds,
+  inventoryLocationNeedsSourceResolution,
+} from "../src/inventoryMapping.js";
 
 const locations = [
   {
@@ -48,5 +51,47 @@ test("requires an explicit legacy warehouse for ambiguous stock ledgers", () => 
       { "warehouse-b": "legacy-warehouse-b" },
     ),
     ["org-a", "org-b"],
+  );
+});
+
+test("requires source resolution for missing or ambiguous YKORG inventory groups", () => {
+  assert.equal(
+    inventoryLocationNeedsSourceResolution({
+      sourceKind: "WAREHOUSE",
+      sourceLocationKey: "YKORG:ORG-1:YPXH-10",
+      mappingStatus: "SOURCE_LOCATION_MISSING",
+    }),
+    true,
+  );
+  assert.equal(
+    inventoryLocationNeedsSourceResolution({
+      sourceKind: "WAREHOUSE",
+      sourceLocationKey: "YK:1001",
+      mappingStatus: "PENDING_TARGET_MAPPING",
+    }),
+    false,
+  );
+});
+
+test("allows one organization batch to include only selected storages", () => {
+  assert.deepEqual(
+    completeInventoryOrganizationIds(
+      locations,
+      { "org-a": "target-org-a" },
+      { "warehouse-a": "target-storage-1" },
+      {},
+      ["warehouse-a"],
+    ),
+    ["org-a"],
+  );
+  assert.deepEqual(
+    completeInventoryOrganizationIds(
+      locations,
+      { "org-a": "target-org-a" },
+      { "warehouse-a": "target-storage-1" },
+      {},
+      [],
+    ),
+    [],
   );
 });

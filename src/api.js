@@ -312,11 +312,23 @@ export async function command(name, args = {}) {
           sourceLocationName: "中心药库",
           organizationId: "420100001",
           sourceOptionCount: 1,
-          stockRowCount: 74,
-          stockGroupCount: 68,
-          medicineCount: 58,
+          stockRowCount: 49,
+          stockGroupCount: 43,
+          medicineCount: 39,
           mappingStatus: "PENDING_TARGET_MAPPING",
-          mappingMessage: "老系统位置已识别，可选择对应的新系统库房",
+          mappingMessage: "已通过 YK_YPXX 唯一关系识别药库",
+        },
+        {
+          sourceKind: "WAREHOUSE",
+          sourceLocationKey: "YK:1002",
+          sourceLocationName: "住院药库",
+          organizationId: "420100001",
+          sourceOptionCount: 1,
+          stockRowCount: 25,
+          stockGroupCount: 25,
+          medicineCount: 23,
+          mappingStatus: "PENDING_TARGET_MAPPING",
+          mappingMessage: "已通过 YK_YPXX 唯一关系识别药库",
         },
         {
           sourceKind: "PHARMACY",
@@ -377,6 +389,15 @@ export async function command(name, args = {}) {
           active: true,
         },
         {
+          sourceKind: "WAREHOUSE",
+          sourceLocationKey: "YK:1002",
+          id: "1002",
+          name: "住院药库",
+          organizationId: "420100001",
+          category: "1",
+          active: true,
+        },
+        {
           sourceKind: "PHARMACY",
           sourceLocationKey: "YF:1001",
           id: "1001",
@@ -396,7 +417,7 @@ export async function command(name, args = {}) {
         },
       ],
       warnings: [],
-      message: "浏览器预览：已读取 2 个老系统机构、3 个药库/药房",
+      message: "浏览器预览：已读取 2 个老系统机构、4 个药库/药房",
     };
   if (name === "load_inventory_target_organizations")
     return {
@@ -442,6 +463,14 @@ export async function command(name, args = {}) {
           organizationId: "5b7e12988ddd9446d42a03c8",
         },
         {
+          idSto: "64b2fca10a1f2e3d4c5b6003",
+          name: "住院药库",
+          storageType: "1",
+          storageTypeName: "药库",
+          productTypes: "药品",
+          organizationId: "5b7e12988ddd9446d42a03c8",
+        },
+        {
           idSto: "64b2fca10a1f2e3d4c5b6002",
           name: "门诊西药房",
           storageType: "2",
@@ -450,7 +479,7 @@ export async function command(name, args = {}) {
           organizationId: "5b7e12988ddd9446d42a03c8",
         },
       ],
-      message: "浏览器预览：已读取 2 个有效新系统仓储",
+      message: "浏览器预览：已读取 3 个有效新系统仓储",
     };
   if (name === "load_inventory_location_mappings")
     return mockInventoryLocationMappings;
