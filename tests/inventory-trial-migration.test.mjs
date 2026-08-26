@@ -72,3 +72,24 @@ test("其它目标库的试迁移不能解锁库存正式执行", () => {
     false,
   );
 });
+
+test("人工确认库存例外会使原库房试迁移失效", () => {
+  const detail = {
+    rows: [{ status: "VALIDATED", normalizedData: { idSto: "sto-1" } }],
+    audits: [
+      audit("sto-1", "SUCCESS"),
+      {
+        ...audit("sto-1", "INVALIDATED", "2026-08-21T10:00:00Z"),
+        afterData: {
+          ...audit("sto-1", "INVALIDATED").afterData,
+          rolledBack: false,
+          invalidatedBy: "INVENTORY_VALIDATION_EXCEPTION",
+        },
+      },
+    ],
+  };
+
+  const coverage = inventoryTrialCoverage(detail, target);
+  assert.equal(coverage.complete, false);
+  assert.deepEqual(coverage.pendingStorageIds, ["sto-1"]);
+});

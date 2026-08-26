@@ -647,6 +647,8 @@ export async function command(name, args = {}) {
     return mockExecuteInventory(args.request);
   if (name === "trial_phis27_inventory")
     return mockTrialInventory(args.request);
+  if (name === "confirm_phis27_inventory_exception")
+    return mockConfirmInventoryException(args.request);
   if (name === "undo_migration_batch") return mockUndo(args.request);
   if (name === "load_migration_batch") return mockBatches.get(args.batchId);
   if (name === "list_recent_batches")
@@ -666,13 +668,29 @@ function mockPrepareInventory(request) {
       `${sourceProductKey}::${mapping.targetIdOrg}`,
     );
     const missingMedicine = !savedMedicine;
+    const packagingException =
+      !missingMedicine && mapping.sourceKind === "PHARMACY" && index % 2 === 0;
+    const validationIssues = missingMedicine
+      ? [{
+          code: "MEDICINE_LEDGER_REQUIRED",
+          message: `药品 ${sourceProductKey} 缺少完整的 id_med/id_med_pro 基础迁移台账`,
+          reviewable: false,
+        }]
+      : packagingException
+        ? [{
+            code: "PHARMACY_SINGLE_PACKAGE_UNCONFIRMED",
+            message: "药房包装系数为 1，但库存单位“盒”与最小单位“粒”不一致，而 YK_TYPK.ZXBZ 当前值为“12”（需为 1）",
+            reviewable: true,
+          }]
+        : [];
+    const invalid = validationIssues.length > 0;
     return {
       rowId: objectId(),
       batchId,
       rowNo: index + 1,
       sourceKey: `${mapping.sourceKind === "WAREHOUSE" ? "YK" : "YF"}:${1001 + index}`,
       sourceHash: objectId(),
-      status: missingMedicine ? "INVALID" : "VALIDATED",
+      status: invalid ? "INVALID" : "VALIDATED",
       rawData: {
         sourceKind: mapping.sourceKind,
         sourceOrganizationId: mapping.sourceOrganizationId,
@@ -692,6 +710,7 @@ function mockPrepareInventory(request) {
         packagingNotes: index % 2
           ? []
           : ["已采用当前药房的实际包装：粒×1；商品主档为 盒×36"],
+        inventoryValidationIssues: validationIssues,
       },
       normalizedData: {
         idSto: mapping.targetIdSto,
@@ -708,10 +727,8 @@ function mockPrepareInventory(request) {
         batchCode: `B20260${index + 1}`,
         effectiveDate: "2028-12-31",
       },
-      errorCode: missingMedicine ? "INVENTORY_PREFLIGHT" : "",
-      errorMessage: missingMedicine
-        ? `药品 ${sourceProductKey} 缺少完整的 id_med/id_med_pro 基础迁移台账`
-        : "",
+      errorCode: invalid ? "INVENTORY_PREFLIGHT" : "",
+      errorMessage: validationIssues.map((issue) => issue.message).join("；"),
       idMed: savedMedicine?.idMed || "",
       idMedUnit: savedMedicine ? objectId() : "",
       idFac: "",
@@ -746,6 +763,79 @@ function mockPrepareInventory(request) {
     audits: [],
   };
   mockBatches.set(batchId, detail);
+  return detail;
+}
+
+function mockConfirmInventoryException(request) {
+  const detail = mockBatches.get(request.batchId);
+  if (!detail || detail.batch.sourceType !== "PHIS27_INVENTORY") {
+    throw new Error("浏览器预览中未找到对应的库存预检批次");
+  }
+  const row = detail.rows.find((item) => item.rowId === request.rowId);
+  const issues = row?.rawData?.inventoryValidationIssues || [];
+  if (
+    !row ||
+    row.status !== "INVALID" ||
+    !issues.length ||
+    issues.some((issue) => issue.reviewable !== true)
+  ) {
+    throw new Error("该库存组包含硬性错误，不能人工放行");
+  }
+  const reason = `${request.reason || ""}`.trim();
+  if (reason.length < 2) throw new Error("请填写至少 2 个字的人工确认原因");
+  const now = new Date().toISOString();
+  const originalMessage = row.errorMessage;
+  row.status = "VALIDATED";
+  row.errorCode = "INVENTORY_EXCEPTION_CONFIRMED";
+  row.errorMessage = `人工确认例外：${reason}；原校验：${originalMessage}`;
+  row.updatedAt = now;
+  detail.batch.validCount = detail.rows.filter(
+    (item) => item.status === "VALIDATED",
+  ).length;
+  detail.batch.failCount = detail.rows.filter((item) =>
+    ["INVALID", "FAILED"].includes(item.status),
+  ).length;
+  detail.batch.status = detail.batch.validCount ? "VALIDATED" : "INVALID";
+  detail.batch.updatedAt = now;
+  const targetIdentity = targetTrialIdentity(request.target);
+  detail.audits.unshift(
+    {
+      auditId: objectId(),
+      batchId: request.batchId,
+      rowId: row.rowId,
+      traceId: objectId(),
+      operation: "INVENTORY_VALIDATION_EXCEPTION",
+      targetTable: "migration_row",
+      targetId: row.rowId,
+      result: "CONFIRMED",
+      beforeData: { status: "INVALID", errorMessage: originalMessage, issues },
+      afterData: { status: "VALIDATED", reason, targetIdentity },
+      message: `人工确认库存预检例外：${reason}`,
+      operatorId: "browser-demo",
+      operatedAt: now,
+    },
+    {
+      auditId: objectId(),
+      batchId: request.batchId,
+      rowId: row.rowId,
+      traceId: objectId(),
+      operation: "INVENTORY_TRIAL_ROLLBACK",
+      targetTable: "migration_batch",
+      targetId: row.normalizedData?.idSto || "",
+      result: "INVALIDATED",
+      beforeData: null,
+      afterData: {
+        targetIdentity,
+        idSto: row.normalizedData?.idSto || "",
+        rolledBack: false,
+        invalidatedBy: "INVENTORY_VALIDATION_EXCEPTION",
+      },
+      message: "人工确认库存例外后，原目标库房试迁移结果已失效",
+      operatorId: "browser-demo",
+      operatedAt: now,
+    },
+  );
+  mockBatches.set(request.batchId, detail);
   return detail;
 }
 

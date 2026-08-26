@@ -2,7 +2,7 @@ use crate::datasource::connect_mysql;
 use crate::id::new_object_id;
 use crate::legacy_phis27::{load_inventory_stock_items, Phis27InventoryStockItem};
 use crate::local_store::{InventoryLocationMapping, InventoryOrganizationMapping, LocalStore};
-use crate::model::{BatchDetail, ConnectionProfile, MigrationBatch, MigrationRow};
+use crate::model::{BatchDetail, ConnectionProfile, MigrationAudit, MigrationBatch, MigrationRow};
 use crate::odbc::{
     configure_target_session, execute_strings, query_optional_row_strings, query_optional_string,
     query_rows_strings, with_connection,
@@ -262,6 +262,15 @@ pub struct TrialInventoryRequest {
     pub target: ConnectionProfile,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmInventoryExceptionRequest {
+    pub batch_id: String,
+    pub row_id: String,
+    pub target: ConnectionProfile,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrialInventoryResult {
@@ -362,6 +371,7 @@ struct InventoryGroup {
     sale_unit: String,
     sale_specification: String,
     unit_sale_factor: String,
+    typk_unit_sale_factor: String,
     product_sale_unit: String,
     product_unit_sale_factor: String,
     factory_name: String,
@@ -393,6 +403,7 @@ impl ResolvedInventoryMedicine {
 // included in one module namespace. This keeps the Tauri command surface stable and
 // lets shared transaction/audit types remain private to the inventory implementation.
 include!("inventory/prepare.rs");
+include!("inventory/exception.rs");
 include!("inventory/matching.rs");
 include!("inventory/trial.rs");
 include!("inventory/undo.rs");

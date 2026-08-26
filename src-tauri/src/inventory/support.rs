@@ -259,13 +259,14 @@ fn group_inventory(items: Vec<Phis27InventoryStockItem>) -> Result<Vec<Inventory
         let purchase_total = parse_optional_decimal(&item.purchase_total, "进货金额")?;
         let retail_total = parse_optional_decimal(&item.retail_total, "零售金额")?;
         let key = format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             item.source_kind,
             item.source_location_key,
             item.source_product_key,
             item.sale_unit,
             item.sale_specification,
             item.unit_sale_factor,
+            item.typk_unit_sale_factor,
             price_pur,
             price_sale,
             item.batch_code,
@@ -293,6 +294,7 @@ fn group_inventory(items: Vec<Phis27InventoryStockItem>) -> Result<Vec<Inventory
                     sale_unit: item.sale_unit,
                     sale_specification: item.sale_specification,
                     unit_sale_factor: item.unit_sale_factor,
+                    typk_unit_sale_factor: item.typk_unit_sale_factor,
                     product_sale_unit: item.product_sale_unit,
                     product_unit_sale_factor: item.product_unit_sale_factor,
                     factory_name: item.factory_name,
@@ -368,37 +370,8 @@ fn decimal_distance(left: Decimal, right: Decimal) -> Decimal {
     }
 }
 
-fn is_single_minimum_unit_package(
-    specification: &str,
-    minimum_unit: &str,
-    sale_unit: &str,
-) -> bool {
-    let minimum_unit = minimum_unit.trim();
-    let sale_unit = sale_unit.trim();
-    if specification.trim().is_empty() || minimum_unit.is_empty() || sale_unit.is_empty() {
-        return false;
-    }
-    let normalized = specification
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .collect::<String>()
-        .replace('×', "*")
-        .replace('／', "/");
-    [
-        format!("1{minimum_unit}/{sale_unit}"),
-        format!("1{minimum_unit}装/{sale_unit}"),
-        format!("每{sale_unit}1{minimum_unit}"),
-        format!("1{minimum_unit}*1{sale_unit}"),
-    ]
-    .iter()
-    .any(|pattern| {
-        normalized.match_indices(pattern).any(|(index, _)| {
-            normalized[..index]
-                .chars()
-                .next_back()
-                .is_none_or(|character| !character.is_ascii_digit() && character != '.')
-        })
-    })
+fn typk_confirms_single_minimum_unit_package(value: &str) -> bool {
+    Decimal::from_str(value.trim()).is_ok_and(|factor| factor == Decimal::ONE)
 }
 
 fn inventory_source_hash(group: &InventoryGroup) -> String {
@@ -415,6 +388,7 @@ fn inventory_source_hash(group: &InventoryGroup) -> String {
                 "unitSale":group.sale_unit,
                 "specSale":group.sale_specification,
                 "unitSaleFactor":group.unit_sale_factor,
+                "typkUnitSaleFactor":group.typk_unit_sale_factor,
                 "purchaseTotal":group.purchase_total.map(|value| value.to_string()),
                 "retailTotal":group.retail_total.map(|value| value.to_string()),
                 "batch":group.batch_code,
@@ -442,9 +416,10 @@ mod tests {
     use super::{
         group_inventory, has_successful_inventory_trials, inventory_date_parameter_sql,
         inventory_date_text_sql, inventory_storage_hash, inventory_undo_preview,
-        inventory_target_backend, is_single_minimum_unit_package, next_check_number,
+        inventory_target_backend, next_check_number,
         select_inventory_items, storage_type_name, InventoryTargetBackend,
-        InventoryUndoRow, InventoryUndoStorage, Phis27InventoryStockItem,
+        typk_confirms_single_minimum_unit_package, InventoryUndoRow, InventoryUndoStorage,
+        Phis27InventoryStockItem,
     };
     use crate::model::{BatchDetail, ConnectionProfile};
     use rust_decimal::Decimal;
@@ -466,6 +441,7 @@ mod tests {
             sale_unit: "盒".into(),
             sale_specification: "10mg*12片/盒".into(),
             unit_sale_factor: "12".into(),
+            typk_unit_sale_factor: "12".into(),
             product_sale_unit: "盒".into(),
             product_unit_sale_factor: "12".into(),
             factory_name: "测试药厂".into(),
@@ -506,16 +482,11 @@ mod tests {
     }
 
     #[test]
-    fn one_bottle_or_capsule_per_box_is_a_valid_factor_one_package() {
-        assert!(is_single_minimum_unit_package("100ml×1瓶/盒", "瓶", "盒"));
-        assert!(is_single_minimum_unit_package("1粒/盒", "粒", "盒"));
-        assert!(is_single_minimum_unit_package("每盒1支", "支", "盒"));
-    }
-
-    #[test]
-    fn multiple_minimum_units_cannot_be_misread_as_a_single_unit_package() {
-        assert!(!is_single_minimum_unit_package("11粒/盒", "粒", "盒"));
-        assert!(!is_single_minimum_unit_package("10ml×12支/盒", "支", "盒"));
+    fn typk_zxbz_one_is_the_only_single_unit_package_evidence() {
+        assert!(typk_confirms_single_minimum_unit_package("1"));
+        assert!(typk_confirms_single_minimum_unit_package("1.0"));
+        assert!(!typk_confirms_single_minimum_unit_package("12"));
+        assert!(!typk_confirms_single_minimum_unit_package(""));
     }
 
     #[test]

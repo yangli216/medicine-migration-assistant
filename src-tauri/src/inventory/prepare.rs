@@ -1,3 +1,29 @@
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InventoryValidationIssue {
+    code: String,
+    message: String,
+    reviewable: bool,
+}
+
+impl InventoryValidationIssue {
+    fn hard(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            reviewable: false,
+        }
+    }
+
+    fn reviewable(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            reviewable: true,
+        }
+    }
+}
+
 pub async fn load_target_storages(
     profile: &ConnectionProfile,
     tenant_id: &str,
@@ -212,39 +238,47 @@ pub async fn prepare(
             &group.source_stock_key,
             &target_identity_text,
         )?;
-        let mut errors = Vec::new();
+        let mut issues = Vec::new();
         if mapping.is_none() {
-            errors.push("库存位置尚未映射到新系统仓储".to_string());
+            issues.push(InventoryValidationIssue::hard(
+                "STORAGE_MAPPING_REQUIRED",
+                "库存位置尚未映射到新系统仓储",
+            ));
         }
         if !medicine.complete() {
-            errors.push(format!(
-                "药品 {} 缺少完整的 id_med/id_med_pro 基础迁移台账",
-                group.source_product_key
+            issues.push(InventoryValidationIssue::hard(
+                "MEDICINE_LEDGER_REQUIRED",
+                format!(
+                    "药品 {} 缺少完整的 id_med/id_med_pro 基础迁移台账",
+                    group.source_product_key
+                ),
             ));
         }
         if group.amount < Decimal::ZERO {
-            errors.push("库存数量小于 0，新系统不允许初始化负库存".into());
+            issues.push(InventoryValidationIssue::hard(
+                "NEGATIVE_INVENTORY",
+                "库存数量小于 0，新系统不允许初始化负库存",
+            ));
         }
         let unit_sale_factor = group.unit_sale_factor.trim().parse::<i64>().ok();
         if group.sale_unit.trim().is_empty() {
-            errors.push("未读取到库房/药房实际库存单位，不能确定数量和单价口径".into());
+            issues.push(InventoryValidationIssue::hard(
+                "INVENTORY_UNIT_REQUIRED",
+                "未读取到库房/药房实际库存单位，不能确定数量和单价口径",
+            ));
         }
         if unit_sale_factor.is_none_or(|factor| factor <= 0) {
-            errors.push(format!(
-                "库房/药房包装系数“{}”无效，不能确定库存数量和单价口径",
-                group.unit_sale_factor
+            issues.push(InventoryValidationIssue::hard(
+                "INVENTORY_FACTOR_INVALID",
+                format!(
+                    "库房/药房包装系数“{}”无效，不能确定库存数量和单价口径",
+                    group.unit_sale_factor
+                ),
             ));
         }
         let mut packaging_notes = Vec::new();
-        let is_single_unit_package = is_single_minimum_unit_package(
-            &group.sale_specification,
-            &group.minimum_unit,
-            &group.sale_unit,
-        ) || is_single_minimum_unit_package(
-            &group.specification,
-            &group.minimum_unit,
-            &group.sale_unit,
-        );
+        let typk_confirms_single_unit =
+            typk_confirms_single_minimum_unit_package(&group.typk_unit_sale_factor);
         if group.source_kind == "PHARMACY"
             && unit_sale_factor == Some(1)
             && !group.minimum_unit.trim().is_empty()
@@ -253,15 +287,23 @@ pub async fn prepare(
                 .trim()
                 .eq_ignore_ascii_case(group.minimum_unit.trim())
         {
-            if is_single_unit_package {
+            if typk_confirms_single_unit {
                 packaging_notes.push(format!(
-                    "包装规格明确为每{}仅含 1{}，包装系数 1 合法",
-                    group.sale_unit, group.minimum_unit
+                    "YK_TYPK.ZXBZ=1，确认每{}仅含 1{}，药房包装系数 1 合法",
+                    group.sale_unit, group.minimum_unit,
                 ));
             } else {
-                errors.push(format!(
-                    "药房包装系数为 1，但库存单位“{}”与最小单位“{}”不一致，且规格未明确表示 1{}/{}；请核实 YF_YPXX.YFBZ/YFDW",
-                    group.sale_unit, group.minimum_unit, group.minimum_unit, group.sale_unit
+                let typk_factor = if group.typk_unit_sale_factor.trim().is_empty() {
+                    "未读取".to_string()
+                } else {
+                    group.typk_unit_sale_factor.clone()
+                };
+                issues.push(InventoryValidationIssue::reviewable(
+                    "PHARMACY_SINGLE_PACKAGE_UNCONFIRMED",
+                    format!(
+                        "药房包装系数为 1，但库存单位“{}”与最小单位“{}”不一致，而 YK_TYPK.ZXBZ 当前值为“{}”（需为 1）；请核实 YK_TYPK.ZXBZ 及 YF_YPXX.YFBZ/YFDW",
+                        group.sale_unit, group.minimum_unit, typk_factor
+                    ),
                 ));
             }
         }
@@ -288,9 +330,16 @@ pub async fn prepare(
             if let Some(source_total) = source_total {
                 let difference = decimal_distance(source_total, calculated_total);
                 if difference > Decimal::new(5, 2) {
-                    errors.push(format!(
-                        "来源{label}金额 {} 与库存数量×单价 {} 不一致（差额 {}）",
-                        source_total, calculated_total, difference
+                    issues.push(InventoryValidationIssue::hard(
+                        if label == "进货" {
+                            "PURCHASE_AMOUNT_MISMATCH"
+                        } else {
+                            "RETAIL_AMOUNT_MISMATCH"
+                        },
+                        format!(
+                            "来源{label}金额 {} 与库存数量×单价 {} 不一致（差额 {}）",
+                            source_total, calculated_total, difference
+                        ),
                     ));
                 } else if difference > Decimal::new(1, 2) {
                     packaging_notes.push(format!(
@@ -304,20 +353,24 @@ pub async fn prepare(
             .as_ref()
             .is_some_and(|link| link.source_hash != source_hash)
         {
-            errors.push("该库存来源组已迁移但数量、价格、批号或效期发生变化，禁止重复覆盖".into());
+            issues.push(InventoryValidationIssue::hard(
+                "SOURCE_CHANGED_AFTER_MIGRATION",
+                "该库存来源组已迁移但数量、价格、批号或效期发生变化，禁止重复覆盖",
+            ));
         }
         let unchanged = previous
             .as_ref()
             .is_some_and(|link| link.source_hash == source_hash);
         if !unchanged && duplicate_flags.get(index).copied().unwrap_or(false) {
-            errors.push(
-                "目标库已存在相同仓储、商品、价格、批号和效期的有效库存，已阻止重复初始化".into(),
-            );
+            issues.push(InventoryValidationIssue::hard(
+                "TARGET_INVENTORY_DUPLICATE",
+                "目标库已存在相同仓储、商品、价格、批号和效期的有效库存，已阻止重复初始化",
+            ));
         }
         let status = if unchanged {
             skip_count += 1;
             "SKIPPED"
-        } else if errors.is_empty() {
+        } else if issues.is_empty() {
             valid_count += 1;
             "VALIDATED"
         } else {
@@ -385,6 +438,10 @@ pub async fn prepare(
             Value::String(group.unit_sale_factor.clone()),
         );
         raw_data.insert(
+            "typkUnitSaleFactor".into(),
+            Value::String(group.typk_unit_sale_factor.clone()),
+        );
+        raw_data.insert(
             "productSaleUnit".into(),
             Value::String(group.product_sale_unit.clone()),
         );
@@ -395,6 +452,10 @@ pub async fn prepare(
         raw_data.insert(
             "packagingNotes".into(),
             Value::Array(packaging_notes.into_iter().map(Value::String).collect()),
+        );
+        raw_data.insert(
+            "inventoryValidationIssues".into(),
+            serde_json::to_value(&issues).unwrap_or_else(|_| Value::Array(Vec::new())),
         );
         raw_data.insert(
             "factoryName".into(),
@@ -471,12 +532,16 @@ pub async fn prepare(
             status: status.into(),
             raw_data,
             normalized_data,
-            error_code: if errors.is_empty() {
+            error_code: if issues.is_empty() {
                 String::new()
             } else {
                 "INVENTORY_PREFLIGHT".into()
             },
-            error_message: errors.join("；"),
+            error_message: issues
+                .iter()
+                .map(|issue| issue.message.as_str())
+                .collect::<Vec<_>>()
+                .join("；"),
             id_med: medicine.id_med,
             id_med_unit: medicine.id_med_unit,
             id_fac: medicine.id_fac,

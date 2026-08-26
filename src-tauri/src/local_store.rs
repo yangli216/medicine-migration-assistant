@@ -1151,6 +1151,57 @@ impl LocalStore {
         Ok(())
     }
 
+    pub fn commit_inventory_exception_confirmation(
+        &self,
+        row: &MigrationRow,
+        batch: &MigrationBatch,
+        audits: &[MigrationAudit],
+    ) -> Result<(), String> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                r#"UPDATE migration_row SET status=?2,error_code=?3,error_message=?4,id_med=?5,
+                    id_med_unit=?6,id_fac=?7,id_med_pro=?8,retry_count=?9,updated_at=?10 WHERE row_id=?1"#,
+                params![row.row_id,row.status,row.error_code,row.error_message,row.id_med,row.id_med_unit,
+                    row.id_fac,row.id_med_pro,row.retry_count,row.updated_at],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                r#"UPDATE migration_batch SET status=?2,valid_count=?3,success_count=?4,
+                    fail_count=?5,skip_count=?6,updated_at=?7,finished_at=NULL WHERE batch_id=?1"#,
+                params![
+                    batch.batch_id,
+                    batch.status,
+                    batch.valid_count,
+                    batch.success_count,
+                    batch.fail_count,
+                    batch.skip_count,
+                    batch.updated_at
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        for audit in audits {
+            transaction
+                .execute(
+                    r#"INSERT INTO migration_audit(audit_id,batch_id,row_id,trace_id,operation,target_table,
+                        target_id,result,before_json,after_json,message,operator_id,operated_at)
+                        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"#,
+                    params![audit.audit_id,audit.batch_id,audit.row_id,audit.trace_id,audit.operation,
+                        audit.target_table,audit.target_id,audit.result,audit.before_data.to_string(),
+                        audit.after_data.to_string(),audit.message,audit.operator_id,audit.operated_at],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn update_batch_counts(
         &self,

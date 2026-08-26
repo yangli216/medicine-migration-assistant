@@ -33,6 +33,8 @@ export function createInventoryRenderers(context) {
     inventoryBatchDetail,
     inventoryActiveOrganizationId,
     inventoryExecutionSeconds,
+    inventoryExceptionReason,
+    inventoryExceptionRow,
     inventoryLocationSearch,
     inventoryLocationMappings,
     inventoryMedicineCatalog,
@@ -58,10 +60,13 @@ export function createInventoryRenderers(context) {
     inventoryUndoPreview,
     legacyInventoryCatalog,
     preparePhis27Inventory,
+    confirmPhis27InventoryException,
     openInventoryMedicineMatching,
     searchInventoryTargetMedicines,
     previewPhis27InventoryUndo,
     setInventoryBatchDetail,
+    setInventoryExceptionReason,
+    setInventoryExceptionRow,
     setInventoryActiveOrganizationId,
     setInventoryLocationSearch,
     setInventoryLocationMappings,
@@ -968,6 +973,13 @@ function renderInventoryBatchReview() {
             {filteredRows.map((row) => {
               const sourceIds = row.rawData?.sourceRecordIds || [];
               const invalid = ["INVALID", "FAILED"].includes(row.status);
+              const exceptionConfirmed =
+                row.errorCode === "INVENTORY_EXCEPTION_CONFIRMED";
+              const validationIssues = row.rawData?.inventoryValidationIssues || [];
+              const canConfirmException =
+                row.status === "INVALID" &&
+                validationIssues.length > 0 &&
+                validationIssues.every((issue) => issue.reviewable === true);
               const idSto = `${row.normalizedData?.idSto || ""}`.trim();
               const storageTrial = inventoryTrialStatus.latest.get(idSto);
               const storageTrialPassed =
@@ -1023,10 +1035,23 @@ function renderInventoryBatchReview() {
                     <small>零售金额 {row.normalizedData?.retailTotal || "—"}</small>
                   </td>
                   <td>
-                    <span className={`inventory-review-status ${invalid ? "is-invalid" : "is-ready"}`}>
-                      {statusLabel(row.status)}
+                    <span className={`inventory-review-status ${invalid ? "is-invalid" : exceptionConfirmed ? "is-exception" : "is-ready"}`}>
+                      {exceptionConfirmed ? "人工确认" : statusLabel(row.status)}
                     </span>
                     {row.errorMessage && <p>{row.errorMessage}</p>}
+                    {canConfirmException && (
+                      <button
+                        className="button button--secondary button--compact inventory-exception-trigger"
+                        type="button"
+                        onClick={() => {
+                          setInventoryExceptionRow(row);
+                          setInventoryExceptionReason("");
+                        }}
+                      >
+                        <ShieldCheck size={15} />
+                        确认例外
+                      </button>
+                    )}
                     {(row.rawData?.packagingNotes || []).map((note) => (
                       <small className="inventory-packaging-note" key={note}>{note}</small>
                     ))}
@@ -1077,6 +1102,87 @@ function renderInventoryBatchReview() {
           </tbody>
         </table>
       </div>
+      {inventoryExceptionRow && createPortal(
+        <div className="inventory-exception-overlay">
+          <section
+            className="inventory-exception-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="人工确认库存校验例外"
+          >
+            <header>
+              <div>
+                <span className="eyebrow">机构库存 · 人工复核</span>
+                <h2>确认本组库存例外</h2>
+                <p>该库存仍会完整迁移，并保留原校验结果、确认原因和操作人审计记录。</p>
+              </div>
+              <button
+                type="button"
+                aria-label="关闭人工确认窗口"
+                disabled={busy === "inventory-exception"}
+                onClick={() => setInventoryExceptionRow(null)}
+              >
+                <X size={20} />
+              </button>
+            </header>
+            <div className="inventory-exception-dialog__body">
+              <div className="inventory-exception-medicine">
+                <strong>{inventoryExceptionRow.rawData?.drugName || "未读取药品名称"}</strong>
+                <span>{inventoryExceptionRow.rawData?.specification || "规格未提供"}</span>
+                <code>{inventoryExceptionRow.rawData?.sourceProductKey || inventoryExceptionRow.sourceKey}</code>
+              </div>
+              <div className="inventory-exception-original">
+                <Warning size={18} weight="fill" />
+                <div>
+                  <strong>原校验原因</strong>
+                  <p>{inventoryExceptionRow.errorMessage}</p>
+                </div>
+              </div>
+              <label>
+                <span>人工确认原因 <b>必填</b></span>
+                <textarea
+                  autoFocus
+                  maxLength="300"
+                  value={inventoryExceptionReason}
+                  onChange={(event) => setInventoryExceptionReason(event.target.value)}
+                  placeholder="例如：已与药房负责人核对，现场确认为每盒 1 支，按盒管理库存。"
+                />
+                <small>{inventoryExceptionReason.trim().length}/300 字</small>
+              </label>
+              <p className="inventory-exception-warning">
+                确认后该目标库房原有试迁移结果会失效，必须重新试迁移后才能正式写入。
+              </p>
+            </div>
+            <footer>
+              <button
+                className="button button--secondary"
+                type="button"
+                disabled={busy === "inventory-exception"}
+                onClick={() => setInventoryExceptionRow(null)}
+              >
+                取消
+              </button>
+              <button
+                className="button button--primary"
+                type="button"
+                disabled={
+                  busy === "inventory-exception" ||
+                  inventoryExceptionReason.trim().length < 2
+                }
+                onClick={confirmPhis27InventoryException}
+              >
+                {busy === "inventory-exception" ? (
+                  <CircleNotch className="is-spinning" size={16} weight="bold" />
+                ) : (
+                  <ShieldCheck size={16} />
+                )}
+                {busy === "inventory-exception" ? "正在记录…" : "确认例外并继续"}
+              </button>
+            </footer>
+          </section>
+        </div>,
+        document.body,
+      )}
       {inventoryMedicineMatchOpen && inventoryMedicineCatalog && createPortal(
         <div className="inventory-medicine-match-overlay">
           <section

@@ -6818,6 +6818,139 @@ button:disabled {
   background: #fde7e4;
   color: #c84d45;
 }
+.inventory-review-status.is-exception {
+  background: #fff0cf;
+  color: #9b6814;
+}
+.inventory-exception-trigger {
+  margin-top: 7px;
+}
+.inventory-exception-overlay {
+  position: fixed;
+  z-index: 190;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(20, 42, 54, 0.48);
+  backdrop-filter: blur(4px);
+}
+.inventory-exception-dialog {
+  width: min(640px, 94vw);
+  overflow: hidden;
+  border: 1px solid #b8d8d4;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(13, 42, 49, 0.28);
+}
+.inventory-exception-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 18px 13px;
+  border-bottom: 1px solid #dce9e8;
+}
+.inventory-exception-dialog > header h2 {
+  margin: 2px 0 3px;
+  color: #18394b;
+  font-size: 20px;
+}
+.inventory-exception-dialog > header p {
+  margin: 0;
+  color: #6f838c;
+  font-size: 11px;
+}
+.inventory-exception-dialog > header > button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: #edf6f4;
+  color: #55727a;
+  cursor: pointer;
+}
+.inventory-exception-dialog__body {
+  display: grid;
+  gap: 12px;
+  padding: 15px 18px;
+}
+.inventory-exception-medicine {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  color: #405b69;
+  font-size: 12px;
+}
+.inventory-exception-medicine strong {
+  color: #213f52;
+  font-size: 14px;
+}
+.inventory-exception-medicine code {
+  margin-left: auto;
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: #edf7f5;
+  color: #287d75;
+}
+.inventory-exception-original {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 11px;
+  border: 1px solid #f0cbc7;
+  border-radius: 8px;
+  background: #fff7f6;
+  color: #b34d45;
+}
+.inventory-exception-original p {
+  margin: 3px 0 0;
+  color: #7d514d;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.inventory-exception-dialog__body > label {
+  display: grid;
+  gap: 6px;
+  color: #365261;
+  font-size: 12px;
+  font-weight: 700;
+}
+.inventory-exception-dialog__body > label b {
+  color: #c14e47;
+}
+.inventory-exception-dialog textarea {
+  min-height: 90px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid #bdd6d3;
+  border-radius: 8px;
+  color: #294756;
+  font: inherit;
+  font-weight: 400;
+  line-height: 1.55;
+}
+.inventory-exception-dialog__body > label small {
+  justify-self: end;
+  color: #82939a;
+  font-weight: 400;
+}
+.inventory-exception-warning {
+  margin: 0;
+  color: #8b681e;
+  font-size: 11px;
+}
+.inventory-exception-dialog > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 11px 18px;
+  border-top: 1px solid #dce9e8;
+  background: #f5faf9;
+}
 .inventory-review-table td > p {
   margin: 5px 0 0;
   color: #a1453f;

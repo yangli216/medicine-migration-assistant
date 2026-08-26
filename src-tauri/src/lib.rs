@@ -355,6 +355,16 @@ async fn trial_phis27_inventory(
 }
 
 #[tauri::command]
+fn confirm_phis27_inventory_exception(
+    store: State<'_, LocalStore>,
+    client: State<'_, target_system::TargetSystemClient>,
+    request: inventory::ConfirmInventoryExceptionRequest,
+) -> Result<BatchDetail, String> {
+    let (_, operator_id) = client.execution_identity()?;
+    inventory::confirm_validation_exception(&store, &operator_id, request)
+}
+
+#[tauri::command]
 async fn preview_phis27_inventory_undo(
     store: State<'_, LocalStore>,
     client: State<'_, target_system::TargetSystemClient>,
@@ -583,6 +593,7 @@ pub fn run() {
             prepare_phis27_inventory,
             execute_phis27_inventory,
             trial_phis27_inventory,
+            confirm_phis27_inventory_exception,
             preview_phis27_inventory_undo,
             undo_phis27_inventory,
             prepare_migration_batch,

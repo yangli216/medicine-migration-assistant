@@ -133,6 +133,7 @@ pub struct Phis27InventoryStockItem {
     pub sale_unit: String,
     pub sale_specification: String,
     pub unit_sale_factor: String,
+    pub typk_unit_sale_factor: String,
     pub product_sale_unit: String,
     pub product_unit_sale_factor: String,
     pub factory_name: String,
@@ -720,7 +721,7 @@ fn inventory_detail_query(
              CAST(t.YPMC AS NVARCHAR2(200)) AS DRUG_NAME,{specification} AS SPECIFICATION,\
              {dosage_form} AS DOSAGE_FORM,CAST(t.ZXDW AS NVARCHAR2(80)) AS MINIMUM_UNIT,\
              CAST(t.YPDW AS NVARCHAR2(80)) AS SALE_UNIT,{specification} AS SALE_SPECIFICATION,\
-             CAST(t.ZXBZ AS NVARCHAR2(80)) AS UNIT_SALE_FACTOR,{product_sale_unit} AS PRODUCT_SALE_UNIT,\
+             CAST(t.ZXBZ AS NVARCHAR2(80)) AS UNIT_SALE_FACTOR,CAST(t.ZXBZ AS NVARCHAR2(80)) AS TYPK_UNIT_SALE_FACTOR,{product_sale_unit} AS PRODUCT_SALE_UNIT,\
              {product_unit_sale_factor} AS PRODUCT_UNIT_SALE_FACTOR,{factory_name} AS FACTORY_NAME,\
              {product_name} AS PRODUCT_NAME,\
              CAST(k.KCSL AS NVARCHAR2(80)) AS AMOUNT,CAST(k.JHJG AS NVARCHAR2(80)) AS PRICE_PUR,CAST(k.LSJG AS NVARCHAR2(80)) AS PRICE_SALE,\
@@ -802,7 +803,7 @@ fn inventory_detail_query(
              CAST(t.YPMC AS NVARCHAR2(200)) AS DRUG_NAME,{specification} AS SPECIFICATION,\
              {dosage_form} AS DOSAGE_FORM,CAST(t.ZXDW AS NVARCHAR2(80)) AS MINIMUM_UNIT,\
              CAST(y.YFDW AS NVARCHAR2(80)) AS SALE_UNIT,{pharmacy_specification} AS SALE_SPECIFICATION,\
-             CAST(y.YFBZ AS NVARCHAR2(80)) AS UNIT_SALE_FACTOR,{product_sale_unit} AS PRODUCT_SALE_UNIT,\
+             CAST(y.YFBZ AS NVARCHAR2(80)) AS UNIT_SALE_FACTOR,CAST(t.ZXBZ AS NVARCHAR2(80)) AS TYPK_UNIT_SALE_FACTOR,{product_sale_unit} AS PRODUCT_SALE_UNIT,\
              {product_unit_sale_factor} AS PRODUCT_UNIT_SALE_FACTOR,{factory_name} AS FACTORY_NAME,\
              {product_name} AS PRODUCT_NAME,\
              CAST(k.YPSL AS NVARCHAR2(80)) AS AMOUNT,CAST(k.JHJG AS NVARCHAR2(80)) AS PRICE_PUR,CAST(k.LSJG AS NVARCHAR2(80)) AS PRICE_SALE,\
@@ -821,7 +822,7 @@ fn inventory_detail_query(
     }
     format!(
         "SELECT SOURCE_KIND,SOURCE_RECORD_ID,LOCATION_KEY,LOCATION_NAME,ORGANIZATION_ID,SOURCE_KEY,\
-         DRUG_NAME,SPECIFICATION,DOSAGE_FORM,MINIMUM_UNIT,SALE_UNIT,SALE_SPECIFICATION,UNIT_SALE_FACTOR,\
+         DRUG_NAME,SPECIFICATION,DOSAGE_FORM,MINIMUM_UNIT,SALE_UNIT,SALE_SPECIFICATION,UNIT_SALE_FACTOR,TYPK_UNIT_SALE_FACTOR,\
          PRODUCT_SALE_UNIT,PRODUCT_UNIT_SALE_FACTOR,FACTORY_NAME,PRODUCT_NAME,\
          AMOUNT,PRICE_PUR,PRICE_SALE,PURCHASE_TOTAL,RETAIL_TOTAL,BATCH_CODE,EFFECTIVE_DATE FROM ({}) \
          ORDER BY SOURCE_KIND,LOCATION_KEY,SOURCE_KEY,SOURCE_RECORD_ID",
@@ -879,6 +880,7 @@ fn inventory_stock_item_from_row(
         sale_unit: text("SALE_UNIT"),
         sale_specification: text("SALE_SPECIFICATION"),
         unit_sale_factor: text("UNIT_SALE_FACTOR"),
+        typk_unit_sale_factor: text("TYPK_UNIT_SALE_FACTOR"),
         product_sale_unit: text("PRODUCT_SALE_UNIT"),
         product_unit_sale_factor: text("PRODUCT_UNIT_SALE_FACTOR"),
         factory_name: text("FACTORY_NAME"),
@@ -1498,6 +1500,7 @@ fn validate_inventory_source_columns(
     }
     if has_pharmacy_stock {
         required.extend([
+            ("YK_TYPK", "ZXBZ"),
             ("YF_KCMX", "SBXH"),
             ("YF_KCMX", "YFSB"),
             ("YF_KCMX", "JGID"),
@@ -2651,6 +2654,7 @@ mod tests {
         assert!(detail.contains("CAST(k.YPPH AS NVARCHAR2(200)) AS BATCH_CODE"));
         assert!(detail.contains("TO_NCHAR(k.YPXQ,'YYYY-MM-DD') AS EFFECTIVE_DATE"));
         assert!(detail.contains("CAST(t.ZXBZ AS NVARCHAR2(80)) AS UNIT_SALE_FACTOR"));
+        assert!(detail.contains("CAST(t.ZXBZ AS NVARCHAR2(80)) AS TYPK_UNIT_SALE_FACTOR"));
         assert!(detail.contains("CAST(t.YPDW AS NVARCHAR2(80)) AS SALE_UNIT"));
         assert!(detail.contains("LEFT JOIN PHIS27.YF_YPXX y"));
         assert!(detail.contains("CAST(y.YFBZ AS NVARCHAR2(80)) AS UNIT_SALE_FACTOR"));
@@ -2661,6 +2665,18 @@ mod tests {
         assert!(detail.contains("IN (N'YK:1001')"));
         assert!(detail.contains("IN (N'YF:1001')"));
         assert!(!detail.contains("NVL(k.YPPH,'')"));
+    }
+
+    #[test]
+    fn pharmacy_inventory_requires_typk_zxbz_for_single_package_validation() {
+        let physical_columns = inventory_physical_columns()
+            .into_iter()
+            .filter(|column| !(column.table == "YK_TYPK" && column.column == "ZXBZ"))
+            .collect::<Vec<_>>();
+
+        let error = validate_inventory_source_columns(&physical_columns, false, true).unwrap_err();
+
+        assert!(error.contains("YK_TYPK.ZXBZ"));
     }
 
     #[test]

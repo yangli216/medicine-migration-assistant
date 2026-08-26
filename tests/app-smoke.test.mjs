@@ -148,6 +148,14 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
     new URL("../src-tauri/src/local_store.rs", import.meta.url),
     "utf8",
   );
+  const inventoryExceptionSource = await readFile(
+    new URL("../src-tauri/src/inventory/exception.rs", import.meta.url),
+    "utf8",
+  );
+  const inventoryPrepareSource = await readFile(
+    new URL("../src-tauri/src/inventory/prepare.rs", import.meta.url),
+    "utf8",
+  );
   assert.doesNotMatch(
     `${appSource}\n${selectSource}`,
     /<(?:select|datalist)\b/i,
@@ -215,6 +223,15 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /商品主档包装/);
   assert.match(appSource, /normalizedData\?\.unitSale/);
   assert.match(appSource, /packagingNotes/);
+  assert.match(appSource, /确认例外并继续/);
+  assert.match(appSource, /人工确认原因/);
+  assert.match(appSource, /confirm_phis27_inventory_exception/);
+  assert.match(appSource, /原有试迁移结果会失效/);
+  assert.match(inventoryPrepareSource, /PHARMACY_SINGLE_PACKAGE_UNCONFIRMED/);
+  assert.match(inventoryPrepareSource, /reviewable: true/);
+  assert.match(inventoryExceptionSource, /INVENTORY_VALIDATION_EXCEPTION/);
+  assert.match(inventoryExceptionSource, /result: "INVALIDATED"/);
+  assert.match(localStoreSource, /commit_inventory_exception_confirmation/);
   assert.match(appSource, /inventoryExecutionLock/);
   assert.match(appSource, /已等待 \{inventoryExecutionSeconds\} 秒/);
   assert.match(appSource, /正在执行 · \$\{inventoryExecutionSeconds\}秒/);

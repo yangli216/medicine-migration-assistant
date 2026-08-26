@@ -214,6 +214,8 @@ export function App() {
   const [inventoryReviewStorage, setInventoryReviewStorage] = useState("");
   const [inventoryReviewStatus, setInventoryReviewStatus] = useState("ALL");
   const [inventoryReviewConfirmed, setInventoryReviewConfirmed] = useState(false);
+  const [inventoryExceptionRow, setInventoryExceptionRow] = useState(null);
+  const [inventoryExceptionReason, setInventoryExceptionReason] = useState("");
   const [inventoryExecutionSeconds, setInventoryExecutionSeconds] = useState(0);
   const [inventoryUndoPreview, setInventoryUndoPreview] = useState(null);
   const [inventoryUndoConfirmed, setInventoryUndoConfirmed] = useState(false);
@@ -1410,6 +1412,8 @@ export function App() {
     setInventoryReviewSearch("");
     setInventoryReviewStorage("");
     setInventoryReviewStatus("ALL");
+    setInventoryExceptionRow(null);
+    setInventoryExceptionReason("");
     try {
       const detail = await command("prepare_phis27_inventory", {
         request: {
@@ -1608,6 +1612,32 @@ export function App() {
     }
   }
 
+  async function confirmPhis27InventoryException() {
+    if (!inventoryBatchDetail || !inventoryExceptionRow) return;
+    const reason = inventoryExceptionReason.trim();
+    if (reason.length < 2) return fail("请填写至少 2 个字的人工确认原因");
+    setBusy("inventory-exception");
+    try {
+      const detail = await command("confirm_phis27_inventory_exception", {
+        request: {
+          batchId: inventoryBatchDetail.batch.batchId,
+          rowId: inventoryExceptionRow.rowId,
+          target: targetProfile,
+          reason,
+        },
+      });
+      setInventoryBatchDetail(detail);
+      setInventoryExceptionRow(null);
+      setInventoryExceptionReason("");
+      setInventoryReviewConfirmed(false);
+      notify("已记录人工确认例外；该目标库房需要重新完成试迁移");
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function previewPhis27InventoryUndo() {
     if (!inventoryBatchDetail) return;
     setBusy("inventory-undo-preview");
@@ -1772,6 +1802,8 @@ export function App() {
     busy,
     inventoryBatchDetail,
     inventoryExecutionSeconds,
+    inventoryExceptionReason,
+    inventoryExceptionRow,
     inventoryLocationMappings,
     inventoryMedicineCatalog,
     inventoryMedicineConfirmations,
@@ -1798,10 +1830,13 @@ export function App() {
     inventoryUndoPreview,
     legacyInventoryCatalog,
     preparePhis27Inventory,
+    confirmPhis27InventoryException,
     openInventoryMedicineMatching,
     searchInventoryTargetMedicines,
     previewPhis27InventoryUndo,
     setInventoryBatchDetail,
+    setInventoryExceptionReason,
+    setInventoryExceptionRow,
     setInventoryActiveOrganizationId,
     setInventoryLocationSearch,
     setInventoryLocationMappings,
