@@ -2141,7 +2141,7 @@ dependencies = [
 
 [[package]]
 name = "medicine-migration-assistant"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "base64 0.22.1",
  "bson",
@@ -2163,6 +2163,7 @@ dependencies = [
  "tauri-build",
  "tempfile",
  "thiserror 2.0.19",
+ "unicode-normalization",
 ]
 
 [[package]]

@@ -536,7 +536,9 @@ pub fn query_rows_strings(
     values: Vec<String>,
     limit: usize,
 ) -> Result<Vec<Vec<Option<String>>>, String> {
-    let row_limit = limit.clamp(1, 10_000);
+    // This helper is also used by the target medicine matcher, whose complete active catalog can
+    // legitimately exceed the 10,000-row preview boundary. Callers choose their own explicit cap.
+    let row_limit = limit.clamp(1, 50_000);
     let parameters = values
         .into_iter()
         .map(stable_string_parameter)

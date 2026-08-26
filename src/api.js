@@ -5,6 +5,7 @@ import {
   targetTrialIdentity,
 } from "./trialMigration";
 import { inventoryTrialCoverage } from "./inventoryTrialMigration";
+import { recommendInventoryMedicineMatches } from "./inventoryMedicineMatching";
 
 export const isDesktop =
   typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
@@ -535,6 +536,53 @@ export async function command(name, args = {}) {
       medicines: mockInventoryTargetMedicines,
       message: `浏览器预览：已读取 ${mockInventoryTargetMedicines.length} 个有效新系统药品商品用于目录匹配`,
     };
+  if (name === "recommend_inventory_medicine_matches") {
+    const started = performance.now();
+    const suggestions = recommendInventoryMedicineMatches(
+      args.request.sources || [],
+      mockInventoryTargetMedicines,
+      args.request.limit || 8,
+    );
+    return {
+      suggestions,
+      catalogCount: mockInventoryTargetMedicines.length,
+      comparedCount:
+        (args.request.sources?.length || 0) * mockInventoryTargetMedicines.length,
+      elapsedMs: Math.round(performance.now() - started),
+      cacheHit: true,
+      message: `浏览器预览：已索引 ${mockInventoryTargetMedicines.length} 个新系统药品商品，完成 ${suggestions.length} 种推荐`,
+    };
+  }
+  if (name === "search_inventory_target_medicines") {
+    const query = `${args.request.query || ""}`
+      .trim()
+      .toLocaleLowerCase("zh-CN");
+    const organizationId = args.request.targetOrganizationId;
+    const medicines = mockInventoryTargetMedicines
+      .filter(
+        (medicine) =>
+          (!medicine.private || medicine.organizationId === organizationId) &&
+          [
+            medicine.drugName,
+            medicine.productName,
+            medicine.specification,
+            medicine.saleSpecification,
+            medicine.factoryName,
+            medicine.externalCode,
+            medicine.approvalCode,
+          ]
+            .filter(Boolean)
+            .join(" ")
+            .toLocaleLowerCase("zh-CN")
+            .includes(query),
+      )
+      .slice(0, args.request.limit || 60);
+    return {
+      medicines,
+      catalogCount: mockInventoryTargetMedicines.length,
+      message: `浏览器预览：找到 ${medicines.length} 个可选药品商品`,
+    };
+  }
   if (name === "save_inventory_medicine_matches") {
     for (const match of args.request.matches || []) {
       mockInventoryMedicineMatches.set(

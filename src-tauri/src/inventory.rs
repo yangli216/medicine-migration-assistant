@@ -21,6 +21,7 @@ use sqlx_mysql::{MySql, MySqlPool, MySqlTransaction};
 use sqlx_postgres::{PgPool, PgTransaction, Postgres};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::{Arc, RwLock};
 
 const INVENTORY_TARGET_TABLE_PROJECTIONS: &[(&str, &str)] = &[
     (
@@ -119,6 +120,95 @@ pub struct InventoryTargetMedicine {
 pub struct InventoryTargetMedicineCatalog {
     pub medicines: Vec<InventoryTargetMedicine>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryMedicineMatchSource {
+    pub key: String,
+    pub source_product_key: String,
+    pub target_organization_id: String,
+    #[serde(default)]
+    pub drug_name: String,
+    #[serde(default)]
+    pub specification: String,
+    #[serde(default)]
+    pub factory_name: String,
+    #[serde(default)]
+    pub product_name: String,
+    #[serde(default)]
+    pub row_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecommendInventoryMedicineMatchesRequest {
+    pub target: ConnectionProfile,
+    pub sources: Vec<InventoryMedicineMatchSource>,
+    #[serde(default = "default_inventory_match_limit")]
+    pub limit: usize,
+}
+
+fn default_inventory_match_limit() -> usize {
+    8
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryMedicineMatchCandidate {
+    pub target: InventoryTargetMedicine,
+    pub score: f64,
+    pub score_percent: u8,
+    pub exact: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryMedicineMatchSuggestion {
+    #[serde(flatten)]
+    pub source: InventoryMedicineMatchSource,
+    pub candidates: Vec<InventoryMedicineMatchCandidate>,
+    pub auto_candidate: Option<InventoryTargetMedicine>,
+    pub confidence: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecommendInventoryMedicineMatchesResponse {
+    pub suggestions: Vec<InventoryMedicineMatchSuggestion>,
+    pub catalog_count: usize,
+    pub compared_count: usize,
+    pub elapsed_ms: u128,
+    pub cache_hit: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchInventoryTargetMedicinesRequest {
+    pub target: ConnectionProfile,
+    pub target_organization_id: String,
+    pub query: String,
+    #[serde(default = "default_inventory_search_limit")]
+    pub limit: usize,
+}
+
+fn default_inventory_search_limit() -> usize {
+    60
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchInventoryTargetMedicinesResponse {
+    pub medicines: Vec<InventoryTargetMedicine>,
+    pub catalog_count: usize,
+    pub message: String,
+}
+
+#[derive(Default)]
+pub struct InventoryMedicineMatchEngine {
+    indexes: RwLock<HashMap<String, Arc<MedicineMatchIndex>>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

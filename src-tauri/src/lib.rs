@@ -272,13 +272,35 @@ async fn load_inventory_target_medicines(
 }
 
 #[tauri::command]
+async fn recommend_inventory_medicine_matches(
+    engine: State<'_, inventory::InventoryMedicineMatchEngine>,
+    client: State<'_, target_system::TargetSystemClient>,
+    request: inventory::RecommendInventoryMedicineMatchesRequest,
+) -> Result<inventory::RecommendInventoryMedicineMatchesResponse, String> {
+    let (tenant_id, _) = client.execution_identity()?;
+    inventory::recommend_inventory_medicine_matches(&engine, &tenant_id, request).await
+}
+
+#[tauri::command]
+async fn search_inventory_target_medicines(
+    engine: State<'_, inventory::InventoryMedicineMatchEngine>,
+    client: State<'_, target_system::TargetSystemClient>,
+    request: inventory::SearchInventoryTargetMedicinesRequest,
+) -> Result<inventory::SearchInventoryTargetMedicinesResponse, String> {
+    let (tenant_id, _) = client.execution_identity()?;
+    inventory::search_inventory_target_medicines(&engine, &tenant_id, request).await
+}
+
+#[tauri::command]
 async fn save_inventory_medicine_matches(
+    engine: State<'_, inventory::InventoryMedicineMatchEngine>,
     store: State<'_, LocalStore>,
     client: State<'_, target_system::TargetSystemClient>,
     request: inventory::SaveInventoryMedicineMatchesRequest,
 ) -> Result<inventory::SaveInventoryMedicineMatchesResponse, String> {
     let (tenant_id, operator_id) = client.execution_identity()?;
-    inventory::save_inventory_medicine_matches(&store, &tenant_id, &operator_id, request).await
+    inventory::save_inventory_medicine_matches(&engine, &store, &tenant_id, &operator_id, request)
+        .await
 }
 
 #[tauri::command]
@@ -519,6 +541,7 @@ pub fn run() {
             app.manage(credential_cipher);
             app.manage(store);
             app.manage(target_system::TargetSystemClient::new().map_err(std::io::Error::other)?);
+            app.manage(inventory::InventoryMedicineMatchEngine::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -552,6 +575,8 @@ pub fn run() {
             load_inventory_target_organizations,
             load_inventory_target_storages,
             load_inventory_target_medicines,
+            recommend_inventory_medicine_matches,
+            search_inventory_target_medicines,
             save_inventory_medicine_matches,
             load_inventory_location_mappings,
             load_inventory_organization_mappings,

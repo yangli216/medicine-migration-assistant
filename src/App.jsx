@@ -88,7 +88,6 @@ import {
 } from "./inventoryMapping";
 import {
   inventoryUnmatchedMedicines,
-  recommendInventoryMedicineMatches,
 } from "./inventoryMedicineMatching";
 import {
   MedicineSourceScreen,
@@ -202,10 +201,13 @@ export function App() {
   const [inventoryMedicineCatalog, setInventoryMedicineCatalog] = useState(null);
   const [inventoryMedicineSuggestions, setInventoryMedicineSuggestions] = useState([]);
   const [inventoryMedicineSelections, setInventoryMedicineSelections] = useState({});
+  const [inventoryMedicineSelectedTargets, setInventoryMedicineSelectedTargets] =
+    useState({});
   const [inventoryMedicineConfirmations, setInventoryMedicineConfirmations] = useState({});
   const [inventoryMedicineMatchOpen, setInventoryMedicineMatchOpen] = useState(false);
   const [inventoryMedicineMatchSearch, setInventoryMedicineMatchSearch] = useState("");
   const [inventoryMedicineMatchFilter, setInventoryMedicineMatchFilter] = useState("ALL");
+  const [inventoryMedicineMatchPage, setInventoryMedicineMatchPage] = useState(1);
   const [inventoryTrialRowId, setInventoryTrialRowId] = useState("");
   const [inventoryMappingExpanded, setInventoryMappingExpanded] = useState(true);
   const [inventoryReviewSearch, setInventoryReviewSearch] = useState("");
@@ -1396,10 +1398,12 @@ export function App() {
     setInventoryMedicineCatalog(null);
     setInventoryMedicineSuggestions([]);
     setInventoryMedicineSelections({});
+    setInventoryMedicineSelectedTargets({});
     setInventoryMedicineConfirmations({});
     setInventoryMedicineMatchOpen(false);
     setInventoryMedicineMatchSearch("");
     setInventoryMedicineMatchFilter("ALL");
+    setInventoryMedicineMatchPage(1);
     setInventoryUndoPreview(null);
     setInventoryUndoConfirmed(false);
     setInventoryReviewConfirmed(false);
@@ -1442,28 +1446,36 @@ export function App() {
     }
     setBusy("inventory-medicine-catalog");
     try {
-      const catalog = await command("load_inventory_target_medicines", {
-        target: targetProfile,
+      const result = await command("recommend_inventory_medicine_matches", {
+        request: {
+          target: targetProfile,
+          sources: unmatched,
+          limit: 8,
+        },
       });
-      const suggestions = recommendInventoryMedicineMatches(
-        unmatched,
-        catalog.medicines,
-      );
+      const suggestions = result.suggestions || [];
       const selections = Object.fromEntries(
         suggestions
           .filter((item) => item.candidates[0]?.target)
           .map((item) => [item.key, item.candidates[0].target.idMedPro]),
       );
-      setInventoryMedicineCatalog(catalog);
+      const selectedTargets = Object.fromEntries(
+        suggestions
+          .filter((item) => item.candidates[0]?.target)
+          .map((item) => [item.key, item.candidates[0].target]),
+      );
+      setInventoryMedicineCatalog(result);
       setInventoryMedicineSuggestions(suggestions);
       setInventoryMedicineSelections(selections);
+      setInventoryMedicineSelectedTargets(selectedTargets);
       setInventoryMedicineConfirmations({});
       setInventoryMedicineMatchSearch("");
       setInventoryMedicineMatchFilter("ALL");
+      setInventoryMedicineMatchPage(1);
       setInventoryMedicineMatchOpen(true);
       const selectedCount = Object.keys(selections).length;
       notify(
-        `${catalog.message}；已按相似度为 ${selectedCount} 项药品预选最优候选，请逐项轻量确认`,
+        `${result.message}，耗时 ${Math.max(0, Number(result.elapsedMs || 0))} 毫秒；已为 ${selectedCount} 项预选最优候选`,
       );
     } catch (error) {
       fail(error);
@@ -1472,15 +1484,23 @@ export function App() {
     }
   }
 
+  async function searchInventoryTargetMedicines(targetOrganizationId, query) {
+    const result = await command("search_inventory_target_medicines", {
+      request: {
+        target: targetProfile,
+        targetOrganizationId,
+        query,
+        limit: 60,
+      },
+    });
+    return result.medicines || [];
+  }
+
   async function saveInventoryMedicineMatches() {
     if (!inventoryBatchDetail) return;
     const matches = inventoryMedicineSuggestions.flatMap((suggestion) => {
       if (!inventoryMedicineConfirmations[suggestion.key]) return [];
-      const idMedPro = inventoryMedicineSelections[suggestion.key];
-      if (!idMedPro) return [];
-      const target = inventoryMedicineCatalog?.medicines?.find(
-        (medicine) => medicine.idMedPro === idMedPro,
-      );
+      const target = inventoryMedicineSelectedTargets[suggestion.key];
       if (!target) return [];
       return [{
         sourceProductKey: suggestion.sourceProductKey,
@@ -1757,7 +1777,9 @@ export function App() {
     inventoryMedicineConfirmations,
     inventoryMedicineMatchFilter,
     inventoryMedicineMatchOpen,
+    inventoryMedicineMatchPage,
     inventoryMedicineMatchSearch,
+    inventoryMedicineSelectedTargets,
     inventoryMedicineSelections,
     inventoryMedicineSuggestions,
     inventoryOrganizationMappings,
@@ -1777,6 +1799,7 @@ export function App() {
     legacyInventoryCatalog,
     preparePhis27Inventory,
     openInventoryMedicineMatching,
+    searchInventoryTargetMedicines,
     previewPhis27InventoryUndo,
     setInventoryBatchDetail,
     setInventoryActiveOrganizationId,
@@ -1785,8 +1808,10 @@ export function App() {
     setInventoryMedicineConfirmations,
     setInventoryMedicineMatchFilter,
     setInventoryMedicineMatchOpen,
+    setInventoryMedicineMatchPage,
     setInventoryMedicineMatchSearch,
     setInventoryMedicineSelections,
+    setInventoryMedicineSelectedTargets,
     setInventoryMappingExpanded,
     setInventoryOrganizationMappings,
     setInventoryResolvedLocations,

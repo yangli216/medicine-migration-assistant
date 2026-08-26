@@ -185,6 +185,11 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /确认匹配/);
   assert.match(appSource, /inventoryMedicineConfirmations/);
   assert.match(appSource, /item\.candidates\[0\]\.target\.idMedPro/);
+  assert.match(appSource, /recommend_inventory_medicine_matches/);
+  assert.match(appSource, /search_inventory_target_medicines/);
+  assert.match(appSource, /medicineMatchPageSize = 30/);
+  assert.match(appSource, /loadOptions=\{async \(query\)/);
+  assert.doesNotMatch(appSource, /inventoryMedicineCatalog\.medicines\.filter/);
   assert.match(appSource, /批准文号/);
   assert.match(appSource, /更换候选|\[source\.key\]: false/);
   assert.match(appSource, /第 3 步 · 数据来源[\s\S]*返回选择任务/);

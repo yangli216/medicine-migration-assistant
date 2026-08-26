@@ -39,8 +39,10 @@ export function createInventoryRenderers(context) {
     inventoryMedicineConfirmations,
     inventoryMedicineMatchFilter,
     inventoryMedicineMatchOpen,
+    inventoryMedicineMatchPage,
     inventoryMedicineMatchSearch,
     inventoryMedicineSelections,
+    inventoryMedicineSelectedTargets,
     inventoryMedicineSuggestions,
     inventoryOrganizationMappings,
     inventoryReadiness,
@@ -57,6 +59,7 @@ export function createInventoryRenderers(context) {
     legacyInventoryCatalog,
     preparePhis27Inventory,
     openInventoryMedicineMatching,
+    searchInventoryTargetMedicines,
     previewPhis27InventoryUndo,
     setInventoryBatchDetail,
     setInventoryActiveOrganizationId,
@@ -65,8 +68,10 @@ export function createInventoryRenderers(context) {
     setInventoryMedicineConfirmations,
     setInventoryMedicineMatchFilter,
     setInventoryMedicineMatchOpen,
+    setInventoryMedicineMatchPage,
     setInventoryMedicineMatchSearch,
     setInventoryMedicineSelections,
+    setInventoryMedicineSelectedTargets,
     setInventoryMappingExpanded,
     setInventoryOrganizationMappings,
     setInventoryResolvedLocations,
@@ -786,6 +791,19 @@ function renderInventoryBatchReview() {
       .toLocaleLowerCase("zh-CN")
       .includes(normalizedMedicineMatchSearch);
   });
+  const medicineMatchPageSize = 30;
+  const medicineMatchPageCount = Math.max(
+    1,
+    Math.ceil(visibleMatchingMedicines.length / medicineMatchPageSize),
+  );
+  const currentMedicineMatchPage = Math.min(
+    Math.max(1, inventoryMedicineMatchPage),
+    medicineMatchPageCount,
+  );
+  const pagedMatchingMedicines = visibleMatchingMedicines.slice(
+    (currentMedicineMatchPage - 1) * medicineMatchPageSize,
+    currentMedicineMatchPage * medicineMatchPageSize,
+  );
   const batchFinancials = inventoryFinancialTotals(rows);
   const filteredFinancials = inventoryFinancialTotals(filteredRows);
   const statusLabel = (status) => {
@@ -1078,6 +1096,7 @@ function renderInventoryBatchReview() {
               <div className="inventory-medicine-match-dialog__summary">
                 <span>待处理 {unmatchedMedicines.length}</span>
                 <strong>已确认 {confirmedMedicineCount}</strong>
+                <span>目标目录 {inventoryMedicineCatalog.catalogCount || 0}</span>
                 <button
                   type="button"
                   aria-label="关闭药品匹配工作台"
@@ -1092,7 +1111,10 @@ function renderInventoryBatchReview() {
                 <MagnifyingGlass size={17} />
                 <input
                   value={inventoryMedicineMatchSearch}
-                  onChange={(event) => setInventoryMedicineMatchSearch(event.target.value)}
+                  onChange={(event) => {
+                    setInventoryMedicineMatchSearch(event.target.value);
+                    setInventoryMedicineMatchPage(1);
+                  }}
                   placeholder="搜索老系统药品、规格、厂家或来源键"
                 />
               </label>
@@ -1105,31 +1127,29 @@ function renderInventoryBatchReview() {
                   <button
                     type="button"
                     className={inventoryMedicineMatchFilter === value ? "is-active" : ""}
-                    onClick={() => setInventoryMedicineMatchFilter(value)}
+                    onClick={() => {
+                      setInventoryMedicineMatchFilter(value);
+                      setInventoryMedicineMatchPage(1);
+                    }}
                     key={value}
                   >
                     {label} {count}
                   </button>
                 ))}
               </div>
-              <span>显示 {visibleMatchingMedicines.length}/{unmatchedMedicines.length} 种</span>
+              <span>
+                显示 {visibleMatchingMedicines.length}/{unmatchedMedicines.length} 种 · 第 {currentMedicineMatchPage}/{medicineMatchPageCount} 页
+              </span>
             </div>
             <div className="inventory-medicine-match-dialog__body">
-              {visibleMatchingMedicines.map((source) => {
+              {pagedMatchingMedicines.map((source) => {
                 const suggestion = suggestionByKey.get(source.key);
                 const ranked = suggestion?.candidates || [];
                 const rankedById = new Map(
                   ranked.map((candidate) => [candidate.target.idMedPro, candidate]),
                 );
-                const eligibleCatalog = inventoryMedicineCatalog.medicines.filter(
-                  (medicine) =>
-                    !medicine.private ||
-                    medicine.organizationId === source.targetOrganizationId,
-                );
                 const selectedId = inventoryMedicineSelections[source.key] || "";
-                const selectedTarget = eligibleCatalog.find(
-                  (medicine) => medicine.idMedPro === selectedId,
-                );
+                const selectedTarget = inventoryMedicineSelectedTargets[source.key];
                 const selectedCandidate = rankedById.get(selectedId);
                 const confirmed = Boolean(inventoryMedicineConfirmations[source.key]);
                 const recommendedOptions = ranked.map((candidate) => ({
@@ -1139,17 +1159,17 @@ function renderInventoryBatchReview() {
                   meta: `${candidate.exact ? "完全一致" : `相似度 ${candidate.scorePercent}%`} · ${candidate.reason}`,
                   keywords: `${candidate.target.productName || ""} ${candidate.target.externalCode || ""} ${candidate.target.approvalCode || ""}`,
                   group: "智能推荐",
+                  data: candidate.target,
                 }));
-                const otherOptions = eligibleCatalog
-                  .filter((medicine) => !rankedById.has(medicine.idMedPro))
-                  .map((medicine) => ({
-                    value: medicine.idMedPro,
-                    label: medicine.drugName || medicine.productName,
-                    description: `${medicine.specification || medicine.saleSpecification || "规格未提供"} · ${medicine.factoryName || "厂家未提供"}`,
-                    meta: `${medicine.private ? "机构私有商品" : "租户通用商品"} · ${medicine.externalCode || medicine.approvalCode || medicine.idMedPro}`,
-                    keywords: `${medicine.productName || ""} ${medicine.externalCode || ""} ${medicine.approvalCode || ""}`,
-                    group: "搜索全部目录",
-                  }));
+                const targetOption = (medicine) => ({
+                  value: medicine.idMedPro,
+                  label: medicine.drugName || medicine.productName,
+                  description: `${medicine.specification || medicine.saleSpecification || "规格未提供"} · ${medicine.factoryName || "厂家未提供"}`,
+                  meta: `${medicine.private ? "机构私有商品" : "租户通用商品"} · ${medicine.externalCode || medicine.approvalCode || medicine.idMedPro}`,
+                  keywords: `${medicine.productName || ""} ${medicine.externalCode || ""} ${medicine.approvalCode || ""}`,
+                  group: "完整目录搜索结果",
+                  data: medicine,
+                });
                 return (
                   <article
                     className={`inventory-medicine-match-card ${confirmed ? "is-confirmed" : ""}`}
@@ -1171,20 +1191,35 @@ function renderInventoryBatchReview() {
                         <SearchableSelect
                           ariaLabel={`为${source.drugName || source.sourceProductKey}选择新系统药品`}
                           value={selectedId}
-                          onChange={(idMedPro) => {
+                          onChange={(idMedPro, option) => {
+                            const target =
+                              option?.data || rankedById.get(idMedPro)?.target;
                             setInventoryMedicineSelections((current) => ({
                               ...current,
                               [source.key]: idMedPro,
+                            }));
+                            setInventoryMedicineSelectedTargets((current) => ({
+                              ...current,
+                              [source.key]: target,
                             }));
                             setInventoryMedicineConfirmations((current) => ({
                               ...current,
                               [source.key]: false,
                             }));
                           }}
-                          options={[...recommendedOptions, ...otherOptions]}
+                          options={recommendedOptions}
+                          loadOptions={async (query) =>
+                            (
+                              await searchInventoryTargetMedicines(
+                                source.targetOrganizationId,
+                                query,
+                              )
+                            ).map(targetOption)
+                          }
                           placeholder="选择新系统药品商品"
-                          searchPlaceholder="搜索名称、规格、厂家、批准文号或商品编码"
-                          maxVisibleOptions={120}
+                          searchPlaceholder="输入关键词搜索完整目标目录"
+                          emptyText="请输入名称、规格、厂家、批准文号或商品编码"
+                          maxVisibleOptions={60}
                         />
                         {selectedCandidate ? (
                           <span className={`inventory-medicine-match-score ${selectedCandidate.exact ? "is-exact" : ""}`}>
@@ -1253,6 +1288,27 @@ function renderInventoryBatchReview() {
                 已确认 {confirmedMedicineCount}/{unmatchedMedicines.length} 种；未确认项仍保留异常，不会写入库存。
               </span>
               <div>
+                {medicineMatchPageCount > 1 && (
+                  <div className="inventory-medicine-match-pagination" aria-label="药品匹配分页">
+                    <button
+                      className="button button--secondary button--compact"
+                      type="button"
+                      disabled={currentMedicineMatchPage <= 1}
+                      onClick={() => setInventoryMedicineMatchPage(currentMedicineMatchPage - 1)}
+                    >
+                      上一页
+                    </button>
+                    <span>{currentMedicineMatchPage}/{medicineMatchPageCount}</span>
+                    <button
+                      className="button button--secondary button--compact"
+                      type="button"
+                      disabled={currentMedicineMatchPage >= medicineMatchPageCount}
+                      onClick={() => setInventoryMedicineMatchPage(currentMedicineMatchPage + 1)}
+                    >
+                      下一页
+                    </button>
+                  </div>
+                )}
                 <button
                   className="button button--secondary"
                   type="button"

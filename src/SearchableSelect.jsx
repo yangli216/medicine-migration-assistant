@@ -19,6 +19,7 @@ function normalizeOption(option) {
       description: "",
       meta: "",
       group: "",
+      data: undefined,
     };
   }
   return {
@@ -29,6 +30,7 @@ function normalizeOption(option) {
     meta: `${option.meta ?? ""}`,
     group: `${option.group ?? ""}`,
     disabled: Boolean(option.disabled),
+    data: option.data,
   };
 }
 
@@ -44,6 +46,9 @@ export function SearchableSelect({
   disabled = false,
   className = "",
   maxVisibleOptions = 200,
+  loadOptions,
+  minimumSearchLength = 1,
+  loadingText = "正在搜索…",
 }) {
   const rawId = useId();
   const listboxId = `searchable-select-${rawId.replace(/:/g, "")}`;
@@ -54,10 +59,23 @@ export function SearchableSelect({
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const [menuStyle, setMenuStyle] = useState({});
+  const [remoteOptions, setRemoteOptions] = useState([]);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const loadOptionsRef = useRef(loadOptions);
+  loadOptionsRef.current = loadOptions;
 
+  const mergedOptions = useMemo(() => {
+    const seen = new Set();
+    return [...options, ...remoteOptions].filter((option) => {
+      const key = `${typeof option === "string" ? option : option.value ?? ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [options, remoteOptions]);
   const normalizedOptions = useMemo(
-    () => options.map(normalizeOption),
-    [options],
+    () => mergedOptions.map(normalizeOption),
+    [mergedOptions],
   );
   const selected = normalizedOptions.find(
     (option) => option.value === `${value ?? ""}`,
@@ -149,6 +167,36 @@ export function SearchableSelect({
   }, [query]);
 
   useEffect(() => {
+    const remoteLoader = loadOptionsRef.current;
+    const normalizedSearch = query.trim();
+    if (
+      !open ||
+      !remoteLoader ||
+      normalizedSearch.length < minimumSearchLength
+    ) {
+      setRemoteOptions([]);
+      setRemoteLoading(false);
+      return undefined;
+    }
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      setRemoteLoading(true);
+      try {
+        const loaded = await remoteLoader(normalizedSearch);
+        if (active) setRemoteOptions(Array.isArray(loaded) ? loaded : []);
+      } catch {
+        if (active) setRemoteOptions([]);
+      } finally {
+        if (active) setRemoteLoading(false);
+      }
+    }, 220);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [open, query, minimumSearchLength]);
+
+  useEffect(() => {
     if (!open) return;
     menuRef.current
       ?.querySelector('[data-active="true"]')
@@ -162,7 +210,7 @@ export function SearchableSelect({
     window.requestAnimationFrame(() =>
       rootRef.current?.querySelector("button")?.focus(),
     );
-    startTransition(() => onChange(option.value));
+    startTransition(() => onChange(option.value, option));
   };
 
   const handleKeyboard = (event) => {
@@ -274,7 +322,12 @@ export function SearchableSelect({
                   </button>
                 </Fragment>
               ))}
-              {!displayedOptions.length && (
+              {remoteLoading && (
+                <div className="searchable-select__empty" role="status">
+                  {loadingText}
+                </div>
+              )}
+              {!remoteLoading && !displayedOptions.length && (
                 <div className="searchable-select__empty">{emptyText}</div>
               )}
               {displayedOptions.length > visibleOptions.length && (
