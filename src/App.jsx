@@ -202,6 +202,10 @@ export function App() {
   const [inventoryMedicineCatalog, setInventoryMedicineCatalog] = useState(null);
   const [inventoryMedicineSuggestions, setInventoryMedicineSuggestions] = useState([]);
   const [inventoryMedicineSelections, setInventoryMedicineSelections] = useState({});
+  const [inventoryMedicineConfirmations, setInventoryMedicineConfirmations] = useState({});
+  const [inventoryMedicineMatchOpen, setInventoryMedicineMatchOpen] = useState(false);
+  const [inventoryMedicineMatchSearch, setInventoryMedicineMatchSearch] = useState("");
+  const [inventoryMedicineMatchFilter, setInventoryMedicineMatchFilter] = useState("ALL");
   const [inventoryTrialRowId, setInventoryTrialRowId] = useState("");
   const [inventoryMappingExpanded, setInventoryMappingExpanded] = useState(true);
   const [inventoryReviewSearch, setInventoryReviewSearch] = useState("");
@@ -1392,6 +1396,10 @@ export function App() {
     setInventoryMedicineCatalog(null);
     setInventoryMedicineSuggestions([]);
     setInventoryMedicineSelections({});
+    setInventoryMedicineConfirmations({});
+    setInventoryMedicineMatchOpen(false);
+    setInventoryMedicineMatchSearch("");
+    setInventoryMedicineMatchFilter("ALL");
     setInventoryUndoPreview(null);
     setInventoryUndoConfirmed(false);
     setInventoryReviewConfirmed(false);
@@ -1428,6 +1436,10 @@ export function App() {
     if (!unmatched.length) {
       return notify("本批没有需要补充目录匹配的药品");
     }
+    if (inventoryMedicineCatalog && inventoryMedicineSuggestions.length) {
+      setInventoryMedicineMatchOpen(true);
+      return;
+    }
     setBusy("inventory-medicine-catalog");
     try {
       const catalog = await command("load_inventory_target_medicines", {
@@ -1439,15 +1451,19 @@ export function App() {
       );
       const selections = Object.fromEntries(
         suggestions
-          .filter((item) => item.autoCandidate)
-          .map((item) => [item.key, item.autoCandidate.idMedPro]),
+          .filter((item) => item.candidates[0]?.target)
+          .map((item) => [item.key, item.candidates[0].target.idMedPro]),
       );
       setInventoryMedicineCatalog(catalog);
       setInventoryMedicineSuggestions(suggestions);
       setInventoryMedicineSelections(selections);
-      const exactCount = Object.keys(selections).length;
+      setInventoryMedicineConfirmations({});
+      setInventoryMedicineMatchSearch("");
+      setInventoryMedicineMatchFilter("ALL");
+      setInventoryMedicineMatchOpen(true);
+      const selectedCount = Object.keys(selections).length;
       notify(
-        `${catalog.message}；已为 ${exactCount} 项唯一同名、同规格、同厂家药品预选，其余请按相似度确认`,
+        `${catalog.message}；已按相似度为 ${selectedCount} 项药品预选最优候选，请逐项轻量确认`,
       );
     } catch (error) {
       fail(error);
@@ -1459,6 +1475,7 @@ export function App() {
   async function saveInventoryMedicineMatches() {
     if (!inventoryBatchDetail) return;
     const matches = inventoryMedicineSuggestions.flatMap((suggestion) => {
+      if (!inventoryMedicineConfirmations[suggestion.key]) return [];
       const idMedPro = inventoryMedicineSelections[suggestion.key];
       if (!idMedPro) return [];
       const target = inventoryMedicineCatalog?.medicines?.find(
@@ -1477,7 +1494,7 @@ export function App() {
       }];
     });
     if (!matches.length) {
-      return fail("请至少选择一个确认无误的新系统药品");
+      return fail("请至少确认一个匹配结果后再保存");
     }
     setBusy("inventory-medicine-save");
     try {
@@ -1737,6 +1754,10 @@ export function App() {
     inventoryExecutionSeconds,
     inventoryLocationMappings,
     inventoryMedicineCatalog,
+    inventoryMedicineConfirmations,
+    inventoryMedicineMatchFilter,
+    inventoryMedicineMatchOpen,
+    inventoryMedicineMatchSearch,
     inventoryMedicineSelections,
     inventoryMedicineSuggestions,
     inventoryOrganizationMappings,
@@ -1761,6 +1782,10 @@ export function App() {
     setInventoryActiveOrganizationId,
     setInventoryLocationSearch,
     setInventoryLocationMappings,
+    setInventoryMedicineConfirmations,
+    setInventoryMedicineMatchFilter,
+    setInventoryMedicineMatchOpen,
+    setInventoryMedicineMatchSearch,
     setInventoryMedicineSelections,
     setInventoryMappingExpanded,
     setInventoryOrganizationMappings,

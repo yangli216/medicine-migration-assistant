@@ -179,6 +179,14 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /纳入本批/);
   assert.match(appSource, /其他机构和库房不进入本批校验或写入/);
   assert.match(appSource, /请先选择并完成本批库房映射/);
+  assert.match(appSource, /未匹配药品智能匹配工作台/);
+  assert.match(appSource, /aria-modal="true"/);
+  assert.match(appSource, /已按名称、规格、厂家综合相似度预选最匹配商品/);
+  assert.match(appSource, /确认匹配/);
+  assert.match(appSource, /inventoryMedicineConfirmations/);
+  assert.match(appSource, /item\.candidates\[0\]\.target\.idMedPro/);
+  assert.match(appSource, /批准文号/);
+  assert.match(appSource, /更换候选|\[source\.key\]: false/);
   assert.match(appSource, /第 3 步 · 数据来源[\s\S]*返回选择任务/);
   assert.match(appSource, /查看范围详情/);
   assert.match(appSource, /老系统机构与库存范围已读取/);

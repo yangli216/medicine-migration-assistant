@@ -6241,6 +6241,319 @@ button:disabled {
   color: #5f777e;
   font-size: 10px;
 }
+.inventory-medicine-match-overlay {
+  position: fixed;
+  z-index: 180;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(20, 42, 54, 0.48);
+  backdrop-filter: blur(4px);
+}
+.inventory-medicine-match-dialog {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  width: min(1500px, 96vw);
+  height: min(900px, 94vh);
+  overflow: hidden;
+  border: 1px solid #b8d8d4;
+  border-radius: 14px;
+  background: #f7fbfa;
+  box-shadow: 0 26px 80px rgba(13, 42, 49, 0.28);
+}
+.inventory-medicine-match-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid #d7e7e5;
+  background: #fff;
+}
+.inventory-medicine-match-dialog__header h2 {
+  margin: 2px 0;
+  color: #18394b;
+  font-size: 21px;
+}
+.inventory-medicine-match-dialog__header p {
+  margin: 0;
+  color: #70848d;
+  font-size: 11px;
+}
+.inventory-medicine-match-dialog__summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+}
+.inventory-medicine-match-dialog__summary > span,
+.inventory-medicine-match-dialog__summary > strong {
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+.inventory-medicine-match-dialog__summary > span {
+  background: #fff0ee;
+  color: #bd514a;
+}
+.inventory-medicine-match-dialog__summary > strong {
+  background: #e1f5f0;
+  color: #168175;
+}
+.inventory-medicine-match-dialog__summary > button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  margin-left: 4px;
+  border: 1px solid #d4e2e2;
+  border-radius: 8px;
+  background: #fff;
+  color: #607681;
+  cursor: pointer;
+}
+.inventory-medicine-match-dialog__toolbar {
+  display: grid;
+  grid-template-columns: minmax(300px, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #d9e7e6;
+  background: #f3f9f8;
+}
+.inventory-medicine-match-dialog__toolbar > label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid #c7ddda;
+  border-radius: 8px;
+  background: #fff;
+  color: #738890;
+}
+.inventory-medicine-match-dialog__toolbar input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #2b4656;
+}
+.inventory-medicine-match-dialog__toolbar > div {
+  display: flex;
+  padding: 3px;
+  border: 1px solid #cfdfdf;
+  border-radius: 8px;
+  background: #fff;
+}
+.inventory-medicine-match-dialog__toolbar > div button {
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #687d86;
+  font-size: 10px;
+  cursor: pointer;
+}
+.inventory-medicine-match-dialog__toolbar > div button.is-active {
+  background: #dff3ef;
+  color: #167e73;
+  font-weight: 700;
+}
+.inventory-medicine-match-dialog__toolbar > span {
+  color: #7b8e96;
+  font-size: 10px;
+}
+.inventory-medicine-match-dialog__body {
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+  scrollbar-gutter: stable;
+}
+.inventory-medicine-match-card {
+  display: grid;
+  grid-template-columns: minmax(235px, 0.72fr) 24px minmax(620px, 1.7fr);
+  align-items: stretch;
+  gap: 10px;
+  margin-bottom: 9px;
+  padding: 10px;
+  border: 1px solid #d7e4e4;
+  border-radius: 10px;
+  background: #fff;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.inventory-medicine-match-card.is-confirmed {
+  border-color: #8fd1c7;
+  box-shadow: inset 3px 0 #31a597;
+}
+.inventory-medicine-match-card__arrow {
+  align-self: center;
+  color: #49a89d;
+}
+.inventory-medicine-match-card__source {
+  min-width: 0;
+  padding: 8px 9px;
+  border-radius: 8px;
+  background: #f6f8f9;
+}
+.inventory-medicine-match-card__source > span,
+.inventory-medicine-match-card__selected-heading span {
+  color: #78909a;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.inventory-medicine-match-card__source > strong {
+  display: block;
+  overflow: hidden;
+  margin: 3px 0 7px;
+  color: #263f52;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inventory-medicine-match-card dl {
+  margin: 0;
+}
+.inventory-medicine-match-card__source dl {
+  display: grid;
+  gap: 4px;
+}
+.inventory-medicine-match-card dl > div {
+  min-width: 0;
+}
+.inventory-medicine-match-card dt {
+  color: #8a999f;
+  font-size: 9px;
+}
+.inventory-medicine-match-card dd {
+  overflow: hidden;
+  margin: 1px 0 0;
+  color: #4c6572;
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inventory-medicine-match-card__target {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+.inventory-medicine-match-card__select-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.inventory-medicine-match-card__select-row .searchable-select__trigger {
+  min-height: 36px;
+  background: #fbfefd;
+}
+.inventory-medicine-match-score {
+  min-width: 76px;
+  padding: 5px 7px;
+  border-radius: 999px;
+  background: #fff0dd;
+  color: #a2641e;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+.inventory-medicine-match-score.is-exact {
+  background: #dff5ef;
+  color: #167f73;
+}
+.inventory-medicine-match-card__selected {
+  padding: 7px 9px;
+  border: 1px solid #d3e5e2;
+  border-radius: 8px;
+  background: #f7fcfb;
+}
+.inventory-medicine-match-card__selected-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.inventory-medicine-match-card__selected-heading > div {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+.inventory-medicine-match-card__selected-heading strong {
+  overflow: hidden;
+  color: #1d4a53;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inventory-medicine-match-card__selected-heading button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  border: 1px solid #7ec8bd;
+  border-radius: 7px;
+  background: #fff;
+  color: #168175;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.inventory-medicine-match-card__selected-heading button.is-confirmed {
+  border-color: #2f9e91;
+  background: #2f9e91;
+  color: #fff;
+}
+.inventory-medicine-match-card__selected dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px 10px;
+}
+.inventory-medicine-match-card__selected p {
+  margin: 6px 0 0;
+  padding-top: 5px;
+  border-top: 1px dashed #d2e2df;
+  color: #5e7d7d;
+  font-size: 9px;
+}
+.inventory-medicine-match-card__empty,
+.inventory-medicine-match-dialog__empty {
+  display: grid;
+  place-items: center;
+  min-height: 80px;
+  color: #85969c;
+  font-size: 11px;
+}
+.inventory-medicine-match-dialog__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+  border-top: 1px solid #d4e4e2;
+  background: #fff;
+}
+.inventory-medicine-match-dialog__footer > span {
+  color: #617780;
+  font-size: 10px;
+}
+.inventory-medicine-match-dialog__footer > div {
+  display: flex;
+  gap: 8px;
+}
+@media (max-width: 1100px) {
+  .inventory-medicine-match-card {
+    grid-template-columns: minmax(200px, 0.65fr) 20px minmax(500px, 1.5fr);
+  }
+  .inventory-medicine-match-card__selected dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 .inventory-financial-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
