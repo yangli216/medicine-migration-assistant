@@ -76,6 +76,31 @@ test("every used Phosphor JSX icon is explicitly imported", async () => {
   }
 });
 
+test("inventory verification keeps the complete wide table horizontally reachable", async () => {
+  const reviewSource = await readFile(
+    new URL("../src/InventoryReview.jsx", import.meta.url),
+    "utf8",
+  );
+  const stylesSource = await readFile(
+    new URL("../src/styles.css", import.meta.url),
+    "utf8",
+  );
+  assert.match(reviewSource, /横向滚动查看完整字段/);
+  assert.match(reviewSource, /tabIndex="0"/);
+  assert.match(
+    stylesSource,
+    /\.inventory-review-table-wrap\s*\{[\s\S]*?overflow-x:\s*scroll;/,
+  );
+  assert.match(
+    stylesSource,
+    /\.inventory-review-table-wrap::-webkit-scrollbar\s*\{[\s\S]*?height:\s*12px;/,
+  );
+  assert.match(
+    stylesSource,
+    /\.inventory-mapping-list,\s*\n\.inventory-preflight-result\s*\{[\s\S]*?min-width:\s*0;/,
+  );
+});
+
 test("all dropdowns use the searchable combobox and medicine previews use business labels", async () => {
   const uiSourceFiles = [
     "App.jsx",

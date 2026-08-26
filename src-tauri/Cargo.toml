@@ -1,6 +1,6 @@
 [package]
 name = "medicine-migration-assistant"
-version = "0.1.13"
+version = "0.1.14"
 description = "轻量级药品数据迁移助手"
 authors = ["RBMH"]
 edition = "2021"

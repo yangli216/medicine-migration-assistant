@@ -847,7 +847,15 @@ function renderInventoryBatchReview() {
           )}
         </span>
       </div>
-      <div className="inventory-review-table-wrap">
+      <div className="inventory-review-scroll-guide" aria-hidden="true">
+        <span>← 横向滚动查看完整字段 →</span>
+      </div>
+      <div
+        className="inventory-review-table-wrap"
+        tabIndex="0"
+        role="region"
+        aria-label="库存核对明细，可横向和纵向滚动查看完整内容"
+      >
         <table className="inventory-review-table">
           <thead>
             <tr>
