@@ -97,6 +97,55 @@ pub struct TargetStorageCatalog {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryTargetMedicine {
+    pub id_med: String,
+    pub id_med_pro: String,
+    pub drug_name: String,
+    pub specification: String,
+    pub minimum_unit: String,
+    pub product_name: String,
+    pub sale_specification: String,
+    pub factory_name: String,
+    pub external_code: String,
+    pub approval_code: String,
+    pub private: bool,
+    pub organization_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryTargetMedicineCatalog {
+    pub medicines: Vec<InventoryTargetMedicine>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryMedicineMatchSelection {
+    pub source_product_key: String,
+    pub target_organization_id: String,
+    pub id_med: String,
+    pub id_med_pro: String,
+    pub match_method: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveInventoryMedicineMatchesRequest {
+    pub batch_id: String,
+    pub target: ConnectionProfile,
+    pub matches: Vec<InventoryMedicineMatchSelection>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveInventoryMedicineMatchesResponse {
+    pub saved_count: usize,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrepareInventoryRequest {
@@ -236,10 +285,25 @@ struct InventoryGroup {
     effective_date: String,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ResolvedInventoryMedicine {
+    id_med: String,
+    id_med_unit: String,
+    id_fac: String,
+    id_med_pro: String,
+}
+
+impl ResolvedInventoryMedicine {
+    fn complete(&self) -> bool {
+        !self.id_med.trim().is_empty() && !self.id_med_pro.trim().is_empty()
+    }
+}
+
 // The inventory workflow is intentionally split by responsibility while the files are
 // included in one module namespace. This keeps the Tauri command surface stable and
 // lets shared transaction/audit types remain private to the inventory implementation.
 include!("inventory/prepare.rs");
+include!("inventory/matching.rs");
 include!("inventory/trial.rs");
 include!("inventory/undo.rs");
 include!("inventory/write.rs");

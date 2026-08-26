@@ -154,11 +154,13 @@ async fn target_duplicate_flags(
     profile: &ConnectionProfile,
     tenant_id: &str,
     groups: &[InventoryGroup],
+    medicines: &[ResolvedInventoryMedicine],
     mappings: &HashMap<String, &InventoryLocationMapping>,
 ) -> Result<Vec<bool>, String> {
     match inventory_target_backend(profile) {
         InventoryTargetBackend::PostgreSqlWire => {
-            return target_duplicate_flags_pg(profile, tenant_id, groups, mappings).await;
+            return target_duplicate_flags_pg(profile, tenant_id, groups, medicines, mappings)
+                .await;
         }
         InventoryTargetBackend::Odbc => return with_connection(profile, |connection| {
             configure_target_session(connection, profile)?;
@@ -177,19 +179,23 @@ async fn target_duplicate_flags(
             }
             groups
                 .iter()
-                .map(|group| {
+                .zip(medicines)
+                .map(|(group, medicine)| {
                     let Some(mapping) = mappings.get(&group.source_location_key) else {
                         return Ok(false);
                     };
+                    if !medicine.complete() {
+                        return Ok(false);
+                    }
                     query_optional_string(
                         connection,
                         &format!("SELECT id_sto_inv FROM hi_sto_inv WHERE id_tet=? AND id_org=? AND id_sto=? \
-                         AND id_med_pro IN (SELECT id_med_pro FROM hi_bd_med_pro WHERE cd_med_pro=? AND id_tet=? AND fg_active='1') \
+                         AND id_med_pro=? \
                          AND price_sale=? AND price_pur=? AND COALESCE(cd_batch,'')=? \
                          AND {date_text_sql}=? AND fg_active='1'"),
                         vec![
                             tenant_id.into(), mapping.target_id_org.clone(), mapping.target_id_sto.clone(),
-                            group.source_product_key.clone(), tenant_id.into(), group.price_sale.to_string(),
+                            medicine.id_med_pro.clone(), group.price_sale.to_string(),
                             group.price_pur.to_string(), group.batch_code.clone(), group.effective_date.clone(),
                         ],
                     )
@@ -201,22 +207,25 @@ async fn target_duplicate_flags(
     }
     let pool = connect_mysql(profile).await?;
     let mut flags = Vec::with_capacity(groups.len());
-    for group in groups {
+    for (group, medicine) in groups.iter().zip(medicines) {
         let Some(mapping) = mappings.get(&group.source_location_key) else {
             flags.push(false);
             continue;
         };
+        if !medicine.complete() {
+            flags.push(false);
+            continue;
+        }
         let existing = query_scalar::<MySql, String>(
-            "SELECT i.id_sto_inv FROM hi_sto_inv i INNER JOIN hi_bd_med_pro p ON p.id_med_pro=i.id_med_pro \
-             WHERE i.id_tet=? AND i.id_org=? AND i.id_sto=? AND p.cd_med_pro=? AND p.id_tet=? \
-             AND p.fg_active='1' AND i.price_sale=? AND i.price_pur=? AND COALESCE(i.cd_batch,'')=? \
+            "SELECT i.id_sto_inv FROM hi_sto_inv i \
+             WHERE i.id_tet=? AND i.id_org=? AND i.id_sto=? AND i.id_med_pro=? \
+             AND i.price_sale=? AND i.price_pur=? AND COALESCE(i.cd_batch,'')=? \
              AND COALESCE(DATE_FORMAT(i.dt_effect,'%Y-%m-%d'),'')=? AND i.fg_active='1' LIMIT 1",
         )
         .bind(tenant_id)
         .bind(&mapping.target_id_org)
         .bind(&mapping.target_id_sto)
-        .bind(&group.source_product_key)
-        .bind(tenant_id)
+        .bind(&medicine.id_med_pro)
         .bind(group.price_sale)
         .bind(group.price_pur)
         .bind(&group.batch_code)

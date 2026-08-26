@@ -146,8 +146,56 @@ pub async fn prepare(
     if groups.is_empty() {
         return Err("老系统没有需要初始化的非零库存".into());
     }
-    let duplicate_flags =
-        target_duplicate_flags(&request.target, tenant_id, &groups, &mapping_by_location).await?;
+    let resolved_medicines = groups
+        .iter()
+        .map(|group| {
+            let source_link = store.find_source_link(
+                tenant_id,
+                "PHIS27",
+                request.source_name.trim(),
+                &group.source_product_key,
+            )?;
+            if let Some(link) = source_link.filter(|link| {
+                !link.id_med.trim().is_empty() && !link.id_med_pro.trim().is_empty()
+            }) {
+                return Ok(ResolvedInventoryMedicine {
+                    id_med: link.id_med,
+                    id_med_unit: link.id_med_unit,
+                    id_fac: link.id_fac,
+                    id_med_pro: link.id_med_pro,
+                });
+            }
+            let target_organization_id = mapping_by_location
+                .get(&group.source_location_key)
+                .map(|mapping| mapping.target_id_org.trim())
+                .unwrap_or_default();
+            if target_organization_id.is_empty() {
+                return Ok(ResolvedInventoryMedicine::default());
+            }
+            let manual = store.find_inventory_medicine_mapping(
+                tenant_id,
+                request.source_name.trim(),
+                &group.source_product_key,
+                &target_identity_text,
+                target_organization_id,
+            )?;
+            Ok(manual
+                .map(|mapping| ResolvedInventoryMedicine {
+                    id_med: mapping.id_med,
+                    id_med_pro: mapping.id_med_pro,
+                    ..ResolvedInventoryMedicine::default()
+                })
+                .unwrap_or_default())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let duplicate_flags = target_duplicate_flags(
+        &request.target,
+        tenant_id,
+        &groups,
+        &resolved_medicines,
+        &mapping_by_location,
+    )
+    .await?;
     let now = Utc::now().to_rfc3339();
     let batch_id = new_object_id();
     let mut rows = Vec::with_capacity(groups.len());
@@ -157,12 +205,7 @@ pub async fn prepare(
     for (index, group) in groups.into_iter().enumerate() {
         let source_hash = inventory_source_hash(&group);
         let mapping = mapping_by_location.get(&group.source_location_key).copied();
-        let base_link = store.find_source_link(
-            tenant_id,
-            "PHIS27",
-            request.source_name.trim(),
-            &group.source_product_key,
-        )?;
+        let medicine = resolved_medicines.get(index).cloned().unwrap_or_default();
         let previous = store.find_inventory_link(
             tenant_id,
             request.source_name.trim(),
@@ -173,10 +216,7 @@ pub async fn prepare(
         if mapping.is_none() {
             errors.push("库存位置尚未映射到新系统仓储".to_string());
         }
-        if base_link
-            .as_ref()
-            .is_none_or(|link| link.id_med.is_empty() || link.id_med_pro.is_empty())
-        {
+        if !medicine.complete() {
             errors.push(format!(
                 "药品 {} 缺少完整的 id_med/id_med_pro 基础迁移台账",
                 group.source_product_key
@@ -411,10 +451,16 @@ pub async fn prepare(
             normalized_data.insert("idOrg".into(), Value::String(mapping.target_id_org.clone()));
             normalized_data.insert("naSto".into(), Value::String(mapping.target_name.clone()));
         }
-        if let Some(link) = &base_link {
-            normalized_data.insert("idMed".into(), Value::String(link.id_med.clone()));
-            normalized_data.insert("idMedUnit".into(), Value::String(link.id_med_unit.clone()));
-            normalized_data.insert("idMedPro".into(), Value::String(link.id_med_pro.clone()));
+        if medicine.complete() {
+            normalized_data.insert("idMed".into(), Value::String(medicine.id_med.clone()));
+            normalized_data.insert(
+                "idMedUnit".into(),
+                Value::String(medicine.id_med_unit.clone()),
+            );
+            normalized_data.insert(
+                "idMedPro".into(),
+                Value::String(medicine.id_med_pro.clone()),
+            );
         }
         rows.push(MigrationRow {
             row_id: new_object_id(),
@@ -431,22 +477,10 @@ pub async fn prepare(
                 "INVENTORY_PREFLIGHT".into()
             },
             error_message: errors.join("；"),
-            id_med: base_link
-                .as_ref()
-                .map(|link| link.id_med.clone())
-                .unwrap_or_default(),
-            id_med_unit: base_link
-                .as_ref()
-                .map(|link| link.id_med_unit.clone())
-                .unwrap_or_default(),
-            id_fac: base_link
-                .as_ref()
-                .map(|link| link.id_fac.clone())
-                .unwrap_or_default(),
-            id_med_pro: base_link
-                .as_ref()
-                .map(|link| link.id_med_pro.clone())
-                .unwrap_or_default(),
+            id_med: medicine.id_med,
+            id_med_unit: medicine.id_med_unit,
+            id_fac: medicine.id_fac,
+            id_med_pro: medicine.id_med_pro,
             retry_count: 0,
             updated_at: now.clone(),
         });

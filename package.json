@@ -1,6 +1,6 @@
 {
   "name": "guided-migration-prototype",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "desktop:dev": "tauri dev",
     "desktop:build": "npm run prepare:oracle-driver && tauri build",
     "preview": "vite preview",
-    "test": "node --test tests/transforms.test.mjs tests/dictionary.test.mjs tests/field-mapping-status.test.mjs tests/inventory-mapping.test.mjs tests/inventory-trial-migration.test.mjs tests/source-dictionary-overrides.test.mjs tests/trial-migration.test.mjs tests/app-smoke.test.mjs",
+    "test": "node --test tests/transforms.test.mjs tests/dictionary.test.mjs tests/field-mapping-status.test.mjs tests/inventory-mapping.test.mjs tests/inventory-medicine-matching.test.mjs tests/inventory-trial-migration.test.mjs tests/source-dictionary-overrides.test.mjs tests/trial-migration.test.mjs tests/app-smoke.test.mjs",
     "test:drivers": "node --test tests/driver-delivery.test.mjs",
     "prepare:oracle-driver": "node scripts/prepare-oracle-windows-driver.mjs",
     "verify:oracle-driver": "node scripts/prepare-oracle-windows-driver.mjs --verify",

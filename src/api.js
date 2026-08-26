@@ -20,6 +20,51 @@ let mockPhis27MappingProfile = null;
 const mockCostMergeMappingProfiles = new Map();
 let mockInventoryLocationMappings = [];
 let mockInventoryOrganizationMappings = [];
+const mockInventoryMedicineMatches = new Map();
+const mockInventoryTargetMedicines = [
+  {
+    idMed: "64b2fca10a1f2e3d4c5b7101",
+    idMedPro: "64b2fca10a1f2e3d4c5b7201",
+    drugName: "维生素D滴剂",
+    specification: "400IU*36粒/盒",
+    minimumUnit: "粒",
+    productName: "维生素D滴剂",
+    saleSpecification: "400IU*36粒/盒",
+    factoryName: "示例生产厂家",
+    externalCode: "MED-VITD-001",
+    approvalCode: "国药准字H20000001",
+    private: false,
+    organizationId: "",
+  },
+  {
+    idMed: "64b2fca10a1f2e3d4c5b7102",
+    idMedPro: "64b2fca10a1f2e3d4c5b7202",
+    drugName: "维生素D3滴剂",
+    specification: "400IU*30粒/盒",
+    minimumUnit: "粒",
+    productName: "维生素D3滴剂",
+    saleSpecification: "400IU*30粒/盒",
+    factoryName: "示例医药有限公司",
+    externalCode: "MED-VITD-002",
+    approvalCode: "国药准字H20000002",
+    private: false,
+    organizationId: "",
+  },
+  {
+    idMed: "64b2fca10a1f2e3d4c5b7103",
+    idMedPro: "64b2fca10a1f2e3d4c5b7203",
+    drugName: "阿莫西林胶囊",
+    specification: "0.25g*24粒/盒",
+    minimumUnit: "粒",
+    productName: "阿莫西林胶囊",
+    saleSpecification: "0.25g*24粒/盒",
+    factoryName: "示例生产厂家",
+    externalCode: "MED-AMX-001",
+    approvalCode: "国药准字H20000003",
+    private: false,
+    organizationId: "",
+  },
+];
 
 export async function command(name, args = {}) {
   if (isDesktop) return invoke(name, args);
@@ -485,6 +530,23 @@ export async function command(name, args = {}) {
     return mockInventoryLocationMappings;
   if (name === "load_inventory_organization_mappings")
     return mockInventoryOrganizationMappings;
+  if (name === "load_inventory_target_medicines")
+    return {
+      medicines: mockInventoryTargetMedicines,
+      message: `浏览器预览：已读取 ${mockInventoryTargetMedicines.length} 个有效新系统药品商品用于目录匹配`,
+    };
+  if (name === "save_inventory_medicine_matches") {
+    for (const match of args.request.matches || []) {
+      mockInventoryMedicineMatches.set(
+        `${match.sourceProductKey}::${match.targetOrganizationId}`,
+        { ...match },
+      );
+    }
+    return {
+      savedCount: args.request.matches?.length || 0,
+      message: `浏览器预览：已保存 ${args.request.matches?.length || 0} 项药品目录匹配`,
+    };
+  }
   if (name === "prepare_phis27_inventory") {
     mockInventoryLocationMappings = args.request.mappings.map((mapping) => ({
       ...mapping,
@@ -550,57 +612,68 @@ export async function command(name, args = {}) {
 function mockPrepareInventory(request) {
   const batchId = objectId();
   const now = new Date().toISOString();
-  const rows = request.mappings.map((mapping, index) => ({
-    rowId: objectId(),
-    batchId,
-    rowNo: index + 1,
-    sourceKey: `${mapping.sourceKind === "WAREHOUSE" ? "YK" : "YF"}:${1001 + index}`,
-    sourceHash: objectId(),
-    status: "VALIDATED",
-    rawData: {
-      sourceKind: mapping.sourceKind,
-      sourceOrganizationId: mapping.sourceOrganizationId,
-      sourceLocationKey: mapping.sourceLocationKey,
-      sourceLocationName: mapping.sourceLocationName,
-      sourceProductKey: `${26911 + index}:${12000 + index}`,
-      drugName: index % 2 ? "阿莫西林胶囊" : "维生素D滴剂",
-      specification: index % 2 ? "0.25g*24粒/盒" : "400IU*36粒/盒",
-      minimumUnit: "粒",
-      saleSpecification: index % 2 ? "0.25g*24粒/盒" : "400IU*36粒/盒",
-      saleUnit: index % 2 ? "盒" : "粒",
-      unitSaleFactor: index % 2 ? "24" : "1",
-      productSaleUnit: "盒",
-      productUnitSaleFactor: index % 2 ? "24" : "36",
-      productName: index % 2 ? "阿莫西林胶囊" : "维生素D滴剂",
-      factoryName: "示例生产厂家",
-      packagingNotes: index % 2
-        ? []
-        : ["已采用当前药房的实际包装：粒×1；商品主档为 盒×36"],
-    },
-    normalizedData: {
-      idSto: mapping.targetIdSto,
-      naSto: mapping.targetName,
-      idOrg: mapping.targetIdOrg,
-      amount: `${28 + index}`,
-      pricePur: "1.20",
-      priceSale: "1.50",
-      unitSale: index % 2 ? "盒" : "粒",
-      unitSaleFactor: index % 2 ? "24" : "1",
-      specSale: index % 2 ? "0.25g*24粒/盒" : "400IU*36粒/盒",
-      purchaseTotal: `${(28 + index) * 1.2}`,
-      retailTotal: `${(28 + index) * 1.5}`,
-      batchCode: `B20260${index + 1}`,
-      effectiveDate: "2028-12-31",
-    },
-    errorCode: "",
-    errorMessage: "",
-    idMed: objectId(),
-    idMedUnit: objectId(),
-    idFac: objectId(),
-    idMedPro: objectId(),
-    retryCount: 0,
-    updatedAt: now,
-  }));
+  const rows = request.mappings.map((mapping, index) => {
+    const sourceProductKey = `${26911 + index}:${12000 + index}`;
+    const savedMedicine = mockInventoryMedicineMatches.get(
+      `${sourceProductKey}::${mapping.targetIdOrg}`,
+    );
+    const missingMedicine = !savedMedicine;
+    return {
+      rowId: objectId(),
+      batchId,
+      rowNo: index + 1,
+      sourceKey: `${mapping.sourceKind === "WAREHOUSE" ? "YK" : "YF"}:${1001 + index}`,
+      sourceHash: objectId(),
+      status: missingMedicine ? "INVALID" : "VALIDATED",
+      rawData: {
+        sourceKind: mapping.sourceKind,
+        sourceOrganizationId: mapping.sourceOrganizationId,
+        sourceLocationKey: mapping.sourceLocationKey,
+        sourceLocationName: mapping.sourceLocationName,
+        sourceProductKey,
+        drugName: index % 2 ? "阿莫西林胶囊" : "维生素D滴剂",
+        specification: index % 2 ? "0.25g*24粒/盒" : "400IU*36粒/盒",
+        minimumUnit: "粒",
+        saleSpecification: index % 2 ? "0.25g*24粒/盒" : "400IU*36粒/盒",
+        saleUnit: index % 2 ? "盒" : "粒",
+        unitSaleFactor: index % 2 ? "24" : "1",
+        productSaleUnit: "盒",
+        productUnitSaleFactor: index % 2 ? "24" : "36",
+        productName: index % 2 ? "阿莫西林胶囊" : "维生素D滴剂",
+        factoryName: "示例生产厂家",
+        packagingNotes: index % 2
+          ? []
+          : ["已采用当前药房的实际包装：粒×1；商品主档为 盒×36"],
+      },
+      normalizedData: {
+        idSto: mapping.targetIdSto,
+        naSto: mapping.targetName,
+        idOrg: mapping.targetIdOrg,
+        amount: `${28 + index}`,
+        pricePur: "1.20",
+        priceSale: "1.50",
+        unitSale: index % 2 ? "盒" : "粒",
+        unitSaleFactor: index % 2 ? "24" : "1",
+        specSale: index % 2 ? "0.25g*24粒/盒" : "400IU*36粒/盒",
+        purchaseTotal: `${(28 + index) * 1.2}`,
+        retailTotal: `${(28 + index) * 1.5}`,
+        batchCode: `B20260${index + 1}`,
+        effectiveDate: "2028-12-31",
+      },
+      errorCode: missingMedicine ? "INVENTORY_PREFLIGHT" : "",
+      errorMessage: missingMedicine
+        ? `药品 ${sourceProductKey} 缺少完整的 id_med/id_med_pro 基础迁移台账`
+        : "",
+      idMed: savedMedicine?.idMed || "",
+      idMedUnit: savedMedicine ? objectId() : "",
+      idFac: "",
+      idMedPro: savedMedicine?.idMedPro || "",
+      retryCount: 0,
+      updatedAt: now,
+    };
+  });
+  const validCount = rows.filter((row) => row.status === "VALIDATED").length;
+  const failCount = rows.filter((row) => row.status === "INVALID").length;
   const detail = {
     batch: {
       batchId,
@@ -611,11 +684,11 @@ function mockPrepareInventory(request) {
       conflictStrategy: "FAIL",
       allowCreateFactory: false,
       idempotencyKey: objectId(),
-      status: "VALIDATED",
+      status: validCount ? "VALIDATED" : "INVALID",
       totalCount: rows.length,
-      validCount: rows.length,
+      validCount,
       successCount: 0,
-      failCount: 0,
+      failCount,
       skipCount: 0,
       createdAt: now,
       updatedAt: now,

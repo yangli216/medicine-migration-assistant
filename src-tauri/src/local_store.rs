@@ -58,6 +58,20 @@ pub struct InventoryOrganizationMapping {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct InventoryMedicineMapping {
+    pub source_product_key: String,
+    pub target_identity: String,
+    pub target_organization_id: String,
+    pub id_med: String,
+    pub id_med_pro: String,
+    pub match_method: String,
+    pub source_snapshot: Value,
+    pub target_snapshot: Value,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InventoryLinkSnapshot {
     pub tenant_id: String,
     pub source_name: String,
@@ -221,6 +235,28 @@ impl LocalStore {
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY(tenant_id,source_name,source_organization_id)
                 );
+                CREATE TABLE IF NOT EXISTS migration_inventory_medicine_mapping (
+                    tenant_id TEXT NOT NULL,
+                    source_name TEXT NOT NULL,
+                    source_product_key TEXT NOT NULL,
+                    target_identity TEXT NOT NULL,
+                    target_organization_id TEXT NOT NULL DEFAULT '',
+                    id_med TEXT NOT NULL,
+                    id_med_pro TEXT NOT NULL,
+                    match_method TEXT NOT NULL DEFAULT 'MANUAL',
+                    source_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                    target_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(
+                        tenant_id,source_name,source_product_key,target_identity,target_organization_id
+                    )
+                );
+                CREATE INDEX IF NOT EXISTS ix_mig_inv_med_target
+                    ON migration_inventory_medicine_mapping(
+                        tenant_id,target_identity,target_organization_id,id_med_pro
+                    );
                 CREATE TABLE IF NOT EXISTS migration_inventory_link (
                     tenant_id TEXT NOT NULL,
                     source_name TEXT NOT NULL,
@@ -468,6 +504,106 @@ impl LocalStore {
             })
             .map_err(|error| error.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn find_inventory_medicine_mapping(
+        &self,
+        tenant_id: &str,
+        source_name: &str,
+        source_product_key: &str,
+        target_identity: &str,
+        target_organization_id: &str,
+    ) -> Result<Option<InventoryMedicineMapping>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        connection
+            .query_row(
+                r#"SELECT source_product_key,target_identity,target_organization_id,
+                   id_med,id_med_pro,match_method,source_snapshot_json,target_snapshot_json,
+                   updated_at FROM migration_inventory_medicine_mapping
+                   WHERE tenant_id=?1 AND source_name=?2 AND source_product_key=?3
+                     AND target_identity=?4 AND target_organization_id=?5 AND active=1"#,
+                params![
+                    tenant_id,
+                    source_name,
+                    source_product_key,
+                    target_identity,
+                    target_organization_id
+                ],
+                |row| {
+                    let source_snapshot: String = row.get(6)?;
+                    let target_snapshot: String = row.get(7)?;
+                    Ok(InventoryMedicineMapping {
+                        source_product_key: row.get(0)?,
+                        target_identity: row.get(1)?,
+                        target_organization_id: row.get(2)?,
+                        id_med: row.get(3)?,
+                        id_med_pro: row.get(4)?,
+                        match_method: row.get(5)?,
+                        source_snapshot: serde_json::from_str(&source_snapshot)
+                            .unwrap_or(Value::Null),
+                        target_snapshot: serde_json::from_str(&target_snapshot)
+                            .unwrap_or(Value::Null),
+                        updated_at: row.get(8)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_inventory_medicine_mapping(
+        &self,
+        tenant_id: &str,
+        source_name: &str,
+        source_product_key: &str,
+        target_identity: &str,
+        target_organization_id: &str,
+        id_med: &str,
+        id_med_pro: &str,
+        match_method: &str,
+        source_snapshot: &Value,
+        target_snapshot: &Value,
+    ) -> Result<(), String> {
+        let now = Utc::now().to_rfc3339();
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        connection
+            .execute(
+                r#"INSERT INTO migration_inventory_medicine_mapping(
+                   tenant_id,source_name,source_product_key,target_identity,target_organization_id,
+                   id_med,id_med_pro,match_method,source_snapshot_json,target_snapshot_json,
+                   active,created_at,updated_at
+                ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,?11,?11)
+                ON CONFLICT(
+                    tenant_id,source_name,source_product_key,target_identity,target_organization_id
+                ) DO UPDATE SET
+                   id_med=excluded.id_med,id_med_pro=excluded.id_med_pro,
+                   match_method=excluded.match_method,
+                   source_snapshot_json=excluded.source_snapshot_json,
+                   target_snapshot_json=excluded.target_snapshot_json,
+                   active=1,updated_at=excluded.updated_at"#,
+                params![
+                    tenant_id,
+                    source_name,
+                    source_product_key,
+                    target_identity,
+                    target_organization_id,
+                    id_med,
+                    id_med_pro,
+                    match_method,
+                    source_snapshot.to_string(),
+                    target_snapshot.to_string(),
+                    now
+                ],
+            )
+            .map(|_| ())
             .map_err(|error| error.to_string())
     }
 
@@ -1132,6 +1268,21 @@ impl LocalStore {
         })
     }
 
+    pub fn load_batch_mapping(&self, batch_id: &str) -> Result<Value, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        let mapping = connection
+            .query_row(
+                "SELECT mapping_json FROM migration_batch WHERE batch_id=?1",
+                params![batch_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| error.to_string())?;
+        serde_json::from_str(&mapping).map_err(|error| error.to_string())
+    }
+
     pub fn recent_batches(&self, limit: usize) -> Result<Vec<MigrationBatch>, String> {
         let connection = self
             .connection
@@ -1535,6 +1686,57 @@ mod tests {
             .load_inventory_location_mappings("tenant", "legacy-instance", "target-b")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn inventory_medicine_mapping_is_scoped_by_target_database_and_organization() {
+        let store = LocalStore::open(Path::new(":memory:")).unwrap();
+        store
+            .save_inventory_medicine_mapping(
+                "tenant",
+                "legacy-instance",
+                "101:4003",
+                "target-a",
+                "org-a",
+                "med-a",
+                "product-a",
+                "MANUAL",
+                &json!({"drugName":"多巴胺注射液"}),
+                &json!({"idMedPro":"product-a"}),
+            )
+            .unwrap();
+        let saved = store
+            .find_inventory_medicine_mapping(
+                "tenant",
+                "legacy-instance",
+                "101:4003",
+                "target-a",
+                "org-a",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.id_med, "med-a");
+        assert_eq!(saved.id_med_pro, "product-a");
+        assert!(store
+            .find_inventory_medicine_mapping(
+                "tenant",
+                "legacy-instance",
+                "101:4003",
+                "target-b",
+                "org-a",
+            )
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find_inventory_medicine_mapping(
+                "tenant",
+                "legacy-instance",
+                "101:4003",
+                "target-a",
+                "org-b",
+            )
+            .unwrap()
+            .is_none());
     }
 
     #[test]

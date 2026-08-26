@@ -6147,6 +6147,100 @@ button:disabled {
 .inventory-review-summary .is-danger strong {
   color: #cf4d45;
 }
+.inventory-medicine-match-panel {
+  margin: 0 12px 10px;
+  overflow: hidden;
+  border: 1px solid #efc8c2;
+  border-radius: 9px;
+  background: #fff9f8;
+}
+.inventory-medicine-match-panel__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+}
+.inventory-medicine-match-panel__heading > div {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: #c5524a;
+}
+.inventory-medicine-match-panel__heading > div > div {
+  display: grid;
+  gap: 2px;
+}
+.inventory-medicine-match-panel__heading strong {
+  color: #7a3c38;
+  font-size: 12px;
+}
+.inventory-medicine-match-panel__heading span {
+  color: #8d6d69;
+  font-size: 10px;
+}
+.inventory-medicine-match-list {
+  max-height: min(410px, 48vh);
+  overflow: auto;
+  border-top: 1px solid #f0d9d5;
+  background: #fff;
+  scrollbar-gutter: stable;
+}
+.inventory-medicine-match-row {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.8fr) 18px minmax(360px, 1.4fr);
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e8eeee;
+}
+.inventory-medicine-match-row:last-child {
+  border-bottom: 0;
+}
+.inventory-medicine-match-row > svg {
+  color: #44a89d;
+}
+.inventory-medicine-match-source {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.inventory-medicine-match-source strong,
+.inventory-medicine-match-source span,
+.inventory-medicine-match-source small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inventory-medicine-match-source strong {
+  color: #263f52;
+  font-size: 12px;
+}
+.inventory-medicine-match-source span {
+  color: #536c79;
+  font-size: 11px;
+}
+.inventory-medicine-match-source small {
+  color: #87969e;
+  font-size: 10px;
+}
+.inventory-medicine-match-row .searchable-select__trigger {
+  min-height: 36px;
+  background: #fbfefd;
+}
+.inventory-medicine-match-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-top: 1px solid #dce9e8;
+  background: #f3faf8;
+}
+.inventory-medicine-match-actions span {
+  color: #5f777e;
+  font-size: 10px;
+}
 .inventory-financial-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

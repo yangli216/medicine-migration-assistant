@@ -57,27 +57,31 @@ async fn target_duplicate_flags_pg(
     profile: &ConnectionProfile,
     tenant_id: &str,
     groups: &[InventoryGroup],
+    medicines: &[ResolvedInventoryMedicine],
     mappings: &HashMap<String, &InventoryLocationMapping>,
 ) -> Result<Vec<bool>, String> {
     let pool = crate::pg_protocol::connect(profile).await?;
     let result = async {
         let mut flags = Vec::with_capacity(groups.len());
-        for group in groups {
+        for (group, medicine) in groups.iter().zip(medicines) {
             let Some(mapping) = mappings.get(&group.source_location_key) else {
                 flags.push(false);
                 continue;
             };
+            if !medicine.complete() {
+                flags.push(false);
+                continue;
+            }
             let existing = query_scalar::<Postgres, String>(
-                "SELECT i.id_sto_inv FROM hi_sto_inv i INNER JOIN hi_bd_med_pro p ON p.id_med_pro=i.id_med_pro \
-                 WHERE i.id_tet=$1 AND i.id_org=$2 AND i.id_sto=$3 AND p.cd_med_pro=$4 AND p.id_tet=$5 \
-                 AND p.fg_active='1' AND i.price_sale=$6 AND i.price_pur=$7 AND COALESCE(i.cd_batch,'')=$8 \
-                 AND COALESCE(CAST(i.dt_effect AS VARCHAR(10)),'')=$9 AND i.fg_active='1' LIMIT 1",
+                "SELECT i.id_sto_inv FROM hi_sto_inv i \
+                 WHERE i.id_tet=$1 AND i.id_org=$2 AND i.id_sto=$3 AND i.id_med_pro=$4 \
+                 AND i.price_sale=$5 AND i.price_pur=$6 AND COALESCE(i.cd_batch,'')=$7 \
+                 AND COALESCE(CAST(i.dt_effect AS VARCHAR(10)),'')=$8 AND i.fg_active='1' LIMIT 1",
             )
             .bind(tenant_id)
             .bind(&mapping.target_id_org)
             .bind(&mapping.target_id_sto)
-            .bind(&group.source_product_key)
-            .bind(tenant_id)
+            .bind(&medicine.id_med_pro)
             .bind(group.price_sale)
             .bind(group.price_pur)
             .bind(&group.batch_code)

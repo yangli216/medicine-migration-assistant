@@ -87,6 +87,10 @@ import {
   inventoryLocationNeedsSourceResolution,
 } from "./inventoryMapping";
 import {
+  inventoryUnmatchedMedicines,
+  recommendInventoryMedicineMatches,
+} from "./inventoryMedicineMatching";
+import {
   MedicineSourceScreen,
   SourceRecognitionScreen,
   SystemConnectionScreen,
@@ -195,6 +199,9 @@ export function App() {
   const [inventoryLocationMappings, setInventoryLocationMappings] = useState({});
   const [inventoryResolvedLocations, setInventoryResolvedLocations] = useState({});
   const [inventoryBatchDetail, setInventoryBatchDetail] = useState(null);
+  const [inventoryMedicineCatalog, setInventoryMedicineCatalog] = useState(null);
+  const [inventoryMedicineSuggestions, setInventoryMedicineSuggestions] = useState([]);
+  const [inventoryMedicineSelections, setInventoryMedicineSelections] = useState({});
   const [inventoryTrialRowId, setInventoryTrialRowId] = useState("");
   const [inventoryMappingExpanded, setInventoryMappingExpanded] = useState(true);
   const [inventoryReviewSearch, setInventoryReviewSearch] = useState("");
@@ -1382,6 +1389,9 @@ export function App() {
     });
     setBusy("inventory-prepare");
     setInventoryBatchDetail(null);
+    setInventoryMedicineCatalog(null);
+    setInventoryMedicineSuggestions([]);
+    setInventoryMedicineSelections({});
     setInventoryUndoPreview(null);
     setInventoryUndoConfirmed(false);
     setInventoryReviewConfirmed(false);
@@ -1405,6 +1415,80 @@ export function App() {
           ? `${selectedBatchOrganizationIds.length} 个机构、${selectedLocations.length} 个库房防重预检完成：${detail.batch.validCount} 组可写入，${detail.batch.failCount} 组需处理`
           : `${selectedBatchOrganizationIds.length} 个机构、${selectedLocations.length} 个库房防重预检通过：${detail.batch.validCount} 组可进入正式写入`,
       );
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function openInventoryMedicineMatching() {
+    if (!inventoryBatchDetail) return;
+    const unmatched = inventoryUnmatchedMedicines(inventoryBatchDetail.rows);
+    if (!unmatched.length) {
+      return notify("本批没有需要补充目录匹配的药品");
+    }
+    setBusy("inventory-medicine-catalog");
+    try {
+      const catalog = await command("load_inventory_target_medicines", {
+        target: targetProfile,
+      });
+      const suggestions = recommendInventoryMedicineMatches(
+        unmatched,
+        catalog.medicines,
+      );
+      const selections = Object.fromEntries(
+        suggestions
+          .filter((item) => item.autoCandidate)
+          .map((item) => [item.key, item.autoCandidate.idMedPro]),
+      );
+      setInventoryMedicineCatalog(catalog);
+      setInventoryMedicineSuggestions(suggestions);
+      setInventoryMedicineSelections(selections);
+      const exactCount = Object.keys(selections).length;
+      notify(
+        `${catalog.message}；已为 ${exactCount} 项唯一同名、同规格、同厂家药品预选，其余请按相似度确认`,
+      );
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function saveInventoryMedicineMatches() {
+    if (!inventoryBatchDetail) return;
+    const matches = inventoryMedicineSuggestions.flatMap((suggestion) => {
+      const idMedPro = inventoryMedicineSelections[suggestion.key];
+      if (!idMedPro) return [];
+      const target = inventoryMedicineCatalog?.medicines?.find(
+        (medicine) => medicine.idMedPro === idMedPro,
+      );
+      if (!target) return [];
+      return [{
+        sourceProductKey: suggestion.sourceProductKey,
+        targetOrganizationId: suggestion.targetOrganizationId,
+        idMed: target.idMed,
+        idMedPro: target.idMedPro,
+        matchMethod:
+          suggestion.autoCandidate?.idMedPro === target.idMedPro
+            ? "EXACT_AUTO"
+            : "MANUAL",
+      }];
+    });
+    if (!matches.length) {
+      return fail("请至少选择一个确认无误的新系统药品");
+    }
+    setBusy("inventory-medicine-save");
+    try {
+      await command("save_inventory_medicine_matches", {
+        request: {
+          batchId: inventoryBatchDetail.batch.batchId,
+          target: targetProfile,
+          matches,
+        },
+      });
+      await preparePhis27Inventory();
     } catch (error) {
       fail(error);
     } finally {
@@ -1652,6 +1736,9 @@ export function App() {
     inventoryBatchDetail,
     inventoryExecutionSeconds,
     inventoryLocationMappings,
+    inventoryMedicineCatalog,
+    inventoryMedicineSelections,
+    inventoryMedicineSuggestions,
     inventoryOrganizationMappings,
     inventoryReadiness,
     inventoryActiveOrganizationId,
@@ -1668,11 +1755,13 @@ export function App() {
     inventoryUndoPreview,
     legacyInventoryCatalog,
     preparePhis27Inventory,
+    openInventoryMedicineMatching,
     previewPhis27InventoryUndo,
     setInventoryBatchDetail,
     setInventoryActiveOrganizationId,
     setInventoryLocationSearch,
     setInventoryLocationMappings,
+    setInventoryMedicineSelections,
     setInventoryMappingExpanded,
     setInventoryOrganizationMappings,
     setInventoryResolvedLocations,
@@ -1684,6 +1773,7 @@ export function App() {
     setInventoryUndoConfirmed,
     targetOrganizationCatalog,
     targetStorageCatalog,
+    saveInventoryMedicineMatches,
     trialPhis27Inventory,
     undoPhis27Inventory,
   });

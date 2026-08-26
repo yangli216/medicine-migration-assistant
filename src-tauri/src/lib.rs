@@ -263,6 +263,25 @@ async fn load_inventory_target_storages(
 }
 
 #[tauri::command]
+async fn load_inventory_target_medicines(
+    client: State<'_, target_system::TargetSystemClient>,
+    target: ConnectionProfile,
+) -> Result<inventory::InventoryTargetMedicineCatalog, String> {
+    let (tenant_id, _) = client.execution_identity()?;
+    inventory::load_target_medicine_catalog(&target, &tenant_id).await
+}
+
+#[tauri::command]
+async fn save_inventory_medicine_matches(
+    store: State<'_, LocalStore>,
+    client: State<'_, target_system::TargetSystemClient>,
+    request: inventory::SaveInventoryMedicineMatchesRequest,
+) -> Result<inventory::SaveInventoryMedicineMatchesResponse, String> {
+    let (tenant_id, operator_id) = client.execution_identity()?;
+    inventory::save_inventory_medicine_matches(&store, &tenant_id, &operator_id, request).await
+}
+
+#[tauri::command]
 fn load_inventory_location_mappings(
     store: State<'_, LocalStore>,
     client: State<'_, target_system::TargetSystemClient>,
@@ -532,6 +551,8 @@ pub fn run() {
             inspect_phis27_inventory,
             load_inventory_target_organizations,
             load_inventory_target_storages,
+            load_inventory_target_medicines,
+            save_inventory_medicine_matches,
             load_inventory_location_mappings,
             load_inventory_organization_mappings,
             prepare_phis27_inventory,

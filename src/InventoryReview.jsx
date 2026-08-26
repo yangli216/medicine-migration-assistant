@@ -3,6 +3,7 @@ import {
   ArrowRight,
   CheckCircle,
   CircleNotch,
+  FloppyDisk,
   LinkSimple,
   ListMagnifyingGlass,
   MagnifyingGlass,
@@ -20,6 +21,7 @@ import {
   formatInventoryMoney,
   inventoryFinancialTotals,
 } from "./migrationPreview";
+import { inventoryUnmatchedMedicines } from "./inventoryMedicineMatching";
 
 export function createInventoryRenderers(context) {
   const {
@@ -30,6 +32,9 @@ export function createInventoryRenderers(context) {
     inventoryExecutionSeconds,
     inventoryLocationSearch,
     inventoryLocationMappings,
+    inventoryMedicineCatalog,
+    inventoryMedicineSelections,
+    inventoryMedicineSuggestions,
     inventoryOrganizationMappings,
     inventoryReadiness,
     inventoryResolvedLocations,
@@ -44,11 +49,13 @@ export function createInventoryRenderers(context) {
     inventoryUndoPreview,
     legacyInventoryCatalog,
     preparePhis27Inventory,
+    openInventoryMedicineMatching,
     previewPhis27InventoryUndo,
     setInventoryBatchDetail,
     setInventoryActiveOrganizationId,
     setInventoryLocationSearch,
     setInventoryLocationMappings,
+    setInventoryMedicineSelections,
     setInventoryMappingExpanded,
     setInventoryOrganizationMappings,
     setInventoryResolvedLocations,
@@ -60,6 +67,7 @@ export function createInventoryRenderers(context) {
     setInventoryUndoConfirmed,
     targetOrganizationCatalog,
     targetStorageCatalog,
+    saveInventoryMedicineMatches,
     trialPhis27Inventory,
     undoPhis27Inventory,
   } = context;
@@ -740,6 +748,13 @@ function renderInventoryBatchReview() {
   const failedCount = rows.filter((row) =>
     ["INVALID", "FAILED"].includes(row.status),
   ).length;
+  const unmatchedMedicines = inventoryUnmatchedMedicines(rows);
+  const suggestionByKey = new Map(
+    inventoryMedicineSuggestions.map((suggestion) => [suggestion.key, suggestion]),
+  );
+  const selectedMedicineCount = unmatchedMedicines.filter(
+    (medicine) => inventoryMedicineSelections[medicine.key],
+  ).length;
   const batchFinancials = inventoryFinancialTotals(rows);
   const filteredFinancials = inventoryFinancialTotals(filteredRows);
   const statusLabel = (status) => {
@@ -778,6 +793,116 @@ function renderInventoryBatchReview() {
           </div>
         ))}
       </div>
+      {unmatchedMedicines.length > 0 && (
+        <section className="inventory-medicine-match-panel">
+          <div className="inventory-medicine-match-panel__heading">
+            <div>
+              <Warning size={20} weight="fill" />
+              <div>
+                <strong>{unmatchedMedicines.length} 种老系统药品尚未匹配新系统目录</strong>
+                <span>
+                  先按药品名称、规格、厂家寻找唯一完全一致项；其余按综合相似度排序，需人工确认后才会保存。
+                </span>
+              </div>
+            </div>
+            {!inventoryMedicineCatalog && (
+              <button
+                className="button button--primary button--compact"
+                type="button"
+                disabled={busy === "inventory-medicine-catalog"}
+                onClick={openInventoryMedicineMatching}
+              >
+                {busy === "inventory-medicine-catalog" ? (
+                  <CircleNotch className="is-spinning" size={16} weight="bold" />
+                ) : (
+                  <ListMagnifyingGlass size={16} />
+                )}
+                {busy === "inventory-medicine-catalog" ? "正在分析…" : "智能匹配新系统药品"}
+              </button>
+            )}
+          </div>
+          {inventoryMedicineCatalog && (
+            <>
+              <div className="inventory-medicine-match-list">
+                {unmatchedMedicines.map((source) => {
+                  const suggestion = suggestionByKey.get(source.key);
+                  const ranked = suggestion?.candidates || [];
+                  const rankedById = new Map(
+                    ranked.map((candidate) => [candidate.target.idMedPro, candidate]),
+                  );
+                  const eligibleCatalog = inventoryMedicineCatalog.medicines.filter(
+                    (medicine) =>
+                      !medicine.private ||
+                      medicine.organizationId === source.targetOrganizationId,
+                  );
+                  const recommendedOptions = ranked.map((candidate) => ({
+                    value: candidate.target.idMedPro,
+                    label: candidate.target.drugName || candidate.target.productName,
+                    description: `${candidate.target.specification || candidate.target.saleSpecification || "规格未提供"} · ${candidate.target.factoryName || "厂家未提供"}`,
+                    meta: `${candidate.exact ? "完全一致" : `相似度 ${candidate.scorePercent}%`} · ${candidate.reason}`,
+                    keywords: `${candidate.target.productName || ""} ${candidate.target.externalCode || ""} ${candidate.target.approvalCode || ""}`,
+                    group: "智能推荐",
+                  }));
+                  const otherOptions = eligibleCatalog
+                    .filter((medicine) => !rankedById.has(medicine.idMedPro))
+                    .map((medicine) => ({
+                      value: medicine.idMedPro,
+                      label: medicine.drugName || medicine.productName,
+                      description: `${medicine.specification || medicine.saleSpecification || "规格未提供"} · ${medicine.factoryName || "厂家未提供"}`,
+                      meta: `${medicine.private ? "机构私有商品" : "租户通用商品"} · ${medicine.externalCode || medicine.approvalCode || medicine.idMedPro}`,
+                      keywords: `${medicine.productName || ""} ${medicine.externalCode || ""} ${medicine.approvalCode || ""}`,
+                      group: "搜索全部目录",
+                    }));
+                  return (
+                    <div className="inventory-medicine-match-row" key={source.key}>
+                      <div className="inventory-medicine-match-source">
+                        <strong title={source.drugName}>{source.drugName || "未读取药品名称"}</strong>
+                        <span>{source.specification || "规格未提供"}</span>
+                        <small>{source.factoryName || "厂家未提供"} · 来源 {source.sourceProductKey} · {source.rowCount} 组库存</small>
+                      </div>
+                      <ArrowRight size={16} />
+                      <SearchableSelect
+                        ariaLabel={`为${source.drugName || source.sourceProductKey}选择新系统药品`}
+                        value={inventoryMedicineSelections[source.key] || ""}
+                        onChange={(idMedPro) =>
+                          setInventoryMedicineSelections((current) => ({
+                            ...current,
+                            [source.key]: idMedPro,
+                          }))
+                        }
+                        options={[...recommendedOptions, ...otherOptions]}
+                        placeholder="选择新系统药品商品"
+                        searchPlaceholder="搜索名称、规格、厂家、批准文号或商品编码"
+                        maxVisibleOptions={120}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="inventory-medicine-match-actions">
+                <span>
+                  已选择 {selectedMedicineCount}/{unmatchedMedicines.length} 种；未选择项仍保留异常，不会进入库存写入。
+                </span>
+                <button
+                  className="button button--primary button--compact"
+                  type="button"
+                  disabled={!selectedMedicineCount || busy === "inventory-medicine-save"}
+                  onClick={saveInventoryMedicineMatches}
+                >
+                  {busy === "inventory-medicine-save" ? (
+                    <CircleNotch className="is-spinning" size={16} weight="bold" />
+                  ) : (
+                    <FloppyDisk size={16} />
+                  )}
+                  {busy === "inventory-medicine-save"
+                    ? "正在保存并复核…"
+                    : `保存 ${selectedMedicineCount} 项并重新核对`}
+                </button>
+              </div>
+            </>
+          )}
+        </section>
+      )}
       <div className="inventory-financial-summary" aria-label="本批库存金额合计">
         <div>
           <span>进货金额合计</span>
