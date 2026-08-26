@@ -62,6 +62,23 @@ const INVENTORY_TARGET_TABLE_PROJECTIONS: &[(&str, &str)] = &[
     ),
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InventoryTargetBackend {
+    PostgreSqlWire,
+    Odbc,
+    MySql,
+}
+
+fn inventory_target_backend(profile: &ConnectionProfile) -> InventoryTargetBackend {
+    if crate::pg_protocol::uses_native_connection(profile) {
+        InventoryTargetBackend::PostgreSqlWire
+    } else if crate::odbc::is_odbc_kind(&profile.kind) {
+        InventoryTargetBackend::Odbc
+    } else {
+        InventoryTargetBackend::MySql
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TargetStorage {

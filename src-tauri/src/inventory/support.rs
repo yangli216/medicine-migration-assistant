@@ -156,8 +156,11 @@ async fn target_duplicate_flags(
     groups: &[InventoryGroup],
     mappings: &HashMap<String, &InventoryLocationMapping>,
 ) -> Result<Vec<bool>, String> {
-    if crate::odbc::is_odbc_kind(&profile.kind) {
-        return with_connection(profile, |connection| {
+    match inventory_target_backend(profile) {
+        InventoryTargetBackend::PostgreSqlWire => {
+            return target_duplicate_flags_pg(profile, tenant_id, groups, mappings).await;
+        }
+        InventoryTargetBackend::Odbc => return with_connection(profile, |connection| {
             configure_target_session(connection, profile)?;
             let date_text_sql = inventory_date_text_sql(&profile.kind, "dt_effect");
             for (table, columns) in [
@@ -193,7 +196,8 @@ async fn target_duplicate_flags(
                     .map(|value| value.is_some())
                 })
                 .collect()
-        });
+        }),
+        InventoryTargetBackend::MySql => {}
     }
     let pool = connect_mysql(profile).await?;
     let mut flags = Vec::with_capacity(groups.len());
@@ -429,8 +433,8 @@ mod tests {
     use super::{
         group_inventory, has_successful_inventory_trials, inventory_date_parameter_sql,
         inventory_date_text_sql, inventory_storage_hash, inventory_undo_preview,
-        is_single_minimum_unit_package, next_check_number, select_inventory_items,
-        storage_type_name,
+        inventory_target_backend, is_single_minimum_unit_package, next_check_number,
+        select_inventory_items, storage_type_name, InventoryTargetBackend,
         InventoryUndoRow, InventoryUndoStorage, Phis27InventoryStockItem,
     };
     use crate::model::{BatchDetail, ConnectionProfile};
@@ -512,6 +516,26 @@ mod tests {
         assert_eq!(storage_type_name("3"), "库房");
         assert_eq!(storage_type_name("4"), "科室库房");
         assert_eq!(storage_type_name(" 2 "), "药房");
+    }
+
+    #[test]
+    fn vastbase_inventory_prefers_the_bundled_postgresql_wire_protocol() {
+        let mut profile: ConnectionProfile = serde_json::from_value(json!({
+            "kind":"vastbase","host":"db.example","port":5432,"database":"medicine",
+            "username":"writer","password":"secret","schema":"public","serviceName":"",
+            "driver":"","connectionString":""
+        }))
+        .unwrap();
+        assert_eq!(
+            inventory_target_backend(&profile),
+            InventoryTargetBackend::PostgreSqlWire
+        );
+
+        profile.driver = "Vastbase ODBC Driver".into();
+        assert_eq!(
+            inventory_target_backend(&profile),
+            InventoryTargetBackend::Odbc
+        );
     }
 
     #[test]
