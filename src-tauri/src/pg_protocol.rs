@@ -15,6 +15,8 @@ use sqlx_core::value::ValueRef;
 use sqlx_postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode, Postgres};
 use std::time::{Duration, Instant};
 
+const PHIS_BUSINESS_TIME_ZONE: &str = "Asia/Shanghai";
+
 pub fn is_pg_protocol_kind(kind: &str) -> bool {
     matches!(
         normalize_kind(kind).as_str(),
@@ -39,6 +41,10 @@ pub async fn connect(profile: &ConnectionProfile) -> Result<PgPool, String> {
         .password(&profile.password)
         .database(profile.database.trim())
         .application_name("medicine-migration-assistant")
+        // PHIS stores business timestamps in TIMESTAMP columns without a time-zone
+        // component. Fix the session to the PHIS business time zone so CURRENT_TIMESTAMP
+        // is persisted on the same wall clock used by its date-range queries.
+        .options([("timezone", PHIS_BUSINESS_TIME_ZONE)])
         .ssl_mode(PgSslMode::Prefer);
     let pool = PgPoolOptions::new()
         // A single connection keeps the optional search_path deterministic for
@@ -302,7 +308,9 @@ fn format_database_error(code: Option<&str>, message: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_database_error, is_pg_protocol_kind, uses_native_connection};
+    use super::{
+        format_database_error, is_pg_protocol_kind, uses_native_connection, PHIS_BUSINESS_TIME_ZONE,
+    };
     use crate::model::ConnectionProfile;
 
     #[test]
@@ -350,5 +358,10 @@ mod tests {
             format_database_error(Some("XX999"), "兼容数据库自定义错误"),
             "数据库返回 SQLSTATE XX999：兼容数据库自定义错误"
         );
+    }
+
+    #[test]
+    fn pg_compatible_connections_use_the_phis_business_time_zone() {
+        assert_eq!(PHIS_BUSINESS_TIME_ZONE, "Asia/Shanghai");
     }
 }

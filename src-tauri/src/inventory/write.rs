@@ -16,6 +16,7 @@ fn execute_odbc_groups(
         for ((id_org, id_sto), rows) in groups {
             let trace_id = new_object_id();
             let date_parameter_sql = inventory_date_parameter_sql(&request.target.kind);
+            let current_timestamp_sql = inventory_current_timestamp_sql(&request.target.kind);
             match write_storage_odbc(
                 connection,
                 tenant_id,
@@ -25,6 +26,7 @@ fn execute_odbc_groups(
                 &id_sto,
                 &rows,
                 date_parameter_sql,
+                current_timestamp_sql,
             ) {
                 Ok(outcome) => {
                     if let Err(error) = connection.commit() {
@@ -79,6 +81,19 @@ fn inventory_date_parameter_sql(kind: &str) -> &'static str {
         "oracle" | "dameng" => "TO_DATE(NULLIF(?,''),'YYYY-MM-DD')",
         "gbase8s" => "TO_DATE(NULLIF(?,''),'%Y-%m-%d')",
         _ => "CAST(NULLIF(?,'') AS DATE)",
+    }
+}
+
+fn inventory_current_timestamp_sql(kind: &str) -> &'static str {
+    match crate::odbc::normalize_kind(kind).as_str() {
+        "oracle" => "CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3))",
+        "opengauss" | "kingbase" | "postgresql" | "vastbase" | "gbase8c" => {
+            "CURRENT_TIMESTAMP(3)"
+        }
+        "gbase8a" => "CURRENT_TIMESTAMP(3)",
+        // Keep the proven vendor expression for database families whose precision
+        // modifier is not portable through their ODBC dialect.
+        _ => "CURRENT_TIMESTAMP",
     }
 }
 
@@ -178,6 +193,7 @@ fn write_storage_odbc(
     id_sto: &str,
     rows: &[MigrationRow],
     date_parameter_sql: &str,
+    current_timestamp_sql: &str,
 ) -> Result<StorageWriteResult, String> {
     assert_storage_is_empty_odbc(connection, tenant_id, id_org, id_sto)?;
     let prefix = Local::now().format("%Y%m%d").to_string();
@@ -190,7 +206,7 @@ fn write_storage_odbc(
     let id_sto_check = new_object_id();
     execute_strings(
         connection,
-        "INSERT INTO hi_sto_check(id_sto_check,id_sto,cd_sto_check,dt_check_begin,dt_check_end,fg_sto_check,sd_pol,sd_check,des_sto_check,id_org,id_tet,revision,insert_user,insert_time) VALUES(?,?,?,CURRENT_TIMESTAMP,NULL,'0','1','1',?,?,?,?,?,CURRENT_TIMESTAMP)",
+        &format!("INSERT INTO hi_sto_check(id_sto_check,id_sto,cd_sto_check,dt_check_begin,dt_check_end,fg_sto_check,sd_pol,sd_check,des_sto_check,id_org,id_tet,revision,insert_user,insert_time) VALUES(?,?,?,{current_timestamp_sql},NULL,'0','1','1',?,?,?,?,?,{current_timestamp_sql})"),
         vec![
             id_sto_check.clone(), id_sto.into(), cd_sto_check.clone(),
             format!("数据迁移助手首次盘点，来源二系列phis，批次{batch_id}"),
@@ -264,7 +280,7 @@ fn write_storage_odbc(
         } else {
             execute_strings(
                 connection,
-                "INSERT INTO hi_sto_med(id_sto_med,id_med,id_med_pro,unit_sale,spec_sale,price_sale,price_pur,unit_sale_factor,fg_active,id_sto,id_org,id_tet,revision,insert_user,insert_time,id_med_unit) VALUES(?,?,?,?,?,?,?,?,'1',?,?,?,'0',?,CURRENT_TIMESTAMP,?)",
+                &format!("INSERT INTO hi_sto_med(id_sto_med,id_med,id_med_pro,unit_sale,spec_sale,price_sale,price_pur,unit_sale_factor,fg_active,id_sto,id_org,id_tet,revision,insert_user,insert_time,id_med_unit) VALUES(?,?,?,?,?,?,?,?,'1',?,?,?,'0',?,{current_timestamp_sql},?)"),
                 vec![id_sto_med.clone(),id_med.clone(),id_med_pro.clone(),unit_sale.clone(),spec_sale.clone(),price_sale.clone(),price_pur.clone(),unit_sale_factor.clone(),id_sto.into(),id_org.into(),tenant_id.into(),operator_id.into(),id_med_unit.clone()],
             ).map_err(|error| inventory_write_error("hi_sto_med", "建立库房药品属性", error))?;
         }
@@ -274,17 +290,17 @@ fn write_storage_odbc(
         let id_inv_log = new_object_id();
         execute_strings(
             connection,
-            &format!("INSERT INTO hi_sto_check_sub(id,id_sto_check,id_med_pro,id_sto_inv,cd_batch,dt_effect,amt_check_bgn,amt_check_end,amt_change,id_org,id_tet,revision,insert_user,insert_time,price_sale,price_pur,unit_sale,unit_sale_factor) VALUES(?,?,?,?,?,{date_parameter_sql},0,?,?,?,?,'0',?,CURRENT_TIMESTAMP,?,?,?,?)"),
+            &format!("INSERT INTO hi_sto_check_sub(id,id_sto_check,id_med_pro,id_sto_inv,cd_batch,dt_effect,amt_check_bgn,amt_check_end,amt_change,id_org,id_tet,revision,insert_user,insert_time,price_sale,price_pur,unit_sale,unit_sale_factor) VALUES(?,?,?,?,?,{date_parameter_sql},0,?,?,?,?,'0',?,{current_timestamp_sql},?,?,?,?)"),
             vec![id_check_sub.clone(),id_sto_check.clone(),id_med_pro.clone(),id_sto_inv.clone(),batch_code.clone(),effective_date.clone(),amount.clone(),amount.clone(),id_org.into(),tenant_id.into(),operator_id.into(),price_sale.clone(),price_pur.clone(),unit_sale.clone(),unit_sale_factor.clone()],
         ).map_err(|error| inventory_write_error("hi_sto_check_sub", "写入首次盘点明细", error))?;
         execute_strings(
             connection,
-            &format!("INSERT INTO hi_sto_inv(id_sto_inv,id_med_pro,amount,price_sale,price_pur,cd_batch,dt_effect,fg_active,id_sto,id_org,id_tet,revision,insert_user,insert_time) VALUES(?,?,?,?,?,?,{date_parameter_sql},'1',?,?,?,'0',?,CURRENT_TIMESTAMP)"),
+            &format!("INSERT INTO hi_sto_inv(id_sto_inv,id_med_pro,amount,price_sale,price_pur,cd_batch,dt_effect,fg_active,id_sto,id_org,id_tet,revision,insert_user,insert_time) VALUES(?,?,?,?,?,?,{date_parameter_sql},'1',?,?,?,'0',?,{current_timestamp_sql})"),
             vec![id_sto_inv.clone(),id_med_pro.clone(),amount.clone(),price_sale.clone(),price_pur.clone(),batch_code,effective_date,id_sto.into(),id_org.into(),tenant_id.into(),operator_id.into()],
         ).map_err(|error| inventory_write_error("hi_sto_inv", "建立初始库存", error))?;
         execute_strings(
             connection,
-            "INSERT INTO hi_sto_inv_log(id_inv_log,id_sto_inv,id_med_pro,sd_amt_change,des_reason,id_biz_ori,amt_change,amt_before,amt_after,unit_sale,unit_sale_factor,id_sto,id_org,id_tet,revision,insert_user,insert_time,price_sale,price_pur) VALUES(?,?,?,'100',?,?,?,0,?,?,?,?,?,?,'0',?,CURRENT_TIMESTAMP,?,?)",
+            &format!("INSERT INTO hi_sto_inv_log(id_inv_log,id_sto_inv,id_med_pro,sd_amt_change,des_reason,id_biz_ori,amt_change,amt_before,amt_after,unit_sale,unit_sale_factor,id_sto,id_org,id_tet,revision,insert_user,insert_time,price_sale,price_pur) VALUES(?,?,?,'100',?,?,?,0,?,?,?,?,?,?,'0',?,{current_timestamp_sql},?,?)"),
             vec![id_inv_log.clone(),id_sto_inv.clone(),id_med_pro,"首次盘点建立初始账簿".into(),id_check_sub.clone(),amount.clone(),amount,unit_sale,unit_sale_factor,id_sto.into(),id_org.into(),tenant_id.into(),operator_id.into(),price_sale,price_pur],
         ).map_err(|error| inventory_write_error("hi_sto_inv_log", "记录初始账簿变动", error))?;
         outcomes.push(InventoryWriteResult {
@@ -298,7 +314,7 @@ fn write_storage_odbc(
     }
     execute_strings(
         connection,
-        "UPDATE hi_sto_check SET fg_sto_check='1',sd_pol='1',dt_check_end=CURRENT_TIMESTAMP WHERE id_sto_check=? AND fg_sto_check='0'",
+        &format!("UPDATE hi_sto_check SET fg_sto_check='1',sd_pol='1',dt_check_end={current_timestamp_sql} WHERE id_sto_check=? AND fg_sto_check='0'"),
         vec![id_sto_check.clone()],
     ).map_err(|error| inventory_write_error("hi_sto_check", "完成首次盘点", error))?;
     Ok(StorageWriteResult {
@@ -482,7 +498,7 @@ async fn write_storage_mysql(
     let cd_sto_check = next_check_number(&prefix, latest.as_deref())?;
     let id_sto_check = new_object_id();
     query::<MySql>(
-        "INSERT INTO hi_sto_check(id_sto_check,id_sto,cd_sto_check,dt_check_begin,dt_check_end,fg_sto_check,sd_pol,sd_check,des_sto_check,id_org,id_tet,revision,insert_user,insert_time) VALUES(?,?,?,CURRENT_TIMESTAMP,NULL,'0','1','1',?,?,?,?,?,CURRENT_TIMESTAMP)",
+        "INSERT INTO hi_sto_check(id_sto_check,id_sto,cd_sto_check,dt_check_begin,dt_check_end,fg_sto_check,sd_pol,sd_check,des_sto_check,id_org,id_tet,revision,insert_user,insert_time) VALUES(?,?,?,CURRENT_TIMESTAMP(3),NULL,'0','1','1',?,?,?,?,?,CURRENT_TIMESTAMP(3))",
     )
     .bind(&id_sto_check)
     .bind(id_sto)
@@ -556,7 +572,7 @@ async fn write_storage_mysql(
                 .execute(&mut **tx).await
                 .map_err(|error| inventory_write_error("hi_sto_med", "更新库房药品属性", error.to_string()))?;
         } else {
-            query::<MySql>("INSERT INTO hi_sto_med(id_sto_med,id_med,id_med_pro,unit_sale,spec_sale,price_sale,price_pur,unit_sale_factor,fg_active,id_sto,id_org,id_tet,revision,insert_user,insert_time,id_med_unit) VALUES(?,?,?,?,?,?,?,?,'1',?,?,?,'0',?,CURRENT_TIMESTAMP,?)")
+            query::<MySql>("INSERT INTO hi_sto_med(id_sto_med,id_med,id_med_pro,unit_sale,spec_sale,price_sale,price_pur,unit_sale_factor,fg_active,id_sto,id_org,id_tet,revision,insert_user,insert_time,id_med_unit) VALUES(?,?,?,?,?,?,?,?,'1',?,?,?,'0',?,CURRENT_TIMESTAMP(3),?)")
                 .bind(&id_sto_med).bind(&id_med).bind(&id_med_pro).bind(&unit_sale).bind(&spec_sale)
                 .bind(price_sale).bind(price_pur).bind(unit_sale_factor).bind(id_sto).bind(id_org)
                 .bind(tenant_id).bind(operator_id).bind(&id_med_unit)
@@ -566,18 +582,18 @@ async fn write_storage_mysql(
         let id_sto_inv = new_object_id();
         let id_check_sub = new_object_id();
         let id_inv_log = new_object_id();
-        query::<MySql>("INSERT INTO hi_sto_check_sub(id,id_sto_check,id_med_pro,id_sto_inv,cd_batch,dt_effect,amt_check_bgn,amt_check_end,amt_change,id_org,id_tet,revision,insert_user,insert_time,price_sale,price_pur,unit_sale,unit_sale_factor) VALUES(?,?,?,?,?,?,0,?,?,?,?,'0',?,CURRENT_TIMESTAMP,?,?,?,?)")
+        query::<MySql>("INSERT INTO hi_sto_check_sub(id,id_sto_check,id_med_pro,id_sto_inv,cd_batch,dt_effect,amt_check_bgn,amt_check_end,amt_change,id_org,id_tet,revision,insert_user,insert_time,price_sale,price_pur,unit_sale,unit_sale_factor) VALUES(?,?,?,?,?,?,0,?,?,?,?,'0',?,CURRENT_TIMESTAMP(3),?,?,?,?)")
             .bind(&id_check_sub).bind(&id_sto_check).bind(&id_med_pro).bind(&id_sto_inv).bind(&batch_code)
             .bind(effective_date).bind(amount).bind(amount).bind(id_org).bind(tenant_id).bind(operator_id)
             .bind(price_sale).bind(price_pur).bind(&unit_sale).bind(unit_sale_factor)
             .execute(&mut **tx).await
             .map_err(|error| inventory_write_error("hi_sto_check_sub", "写入首次盘点明细", error.to_string()))?;
-        query::<MySql>("INSERT INTO hi_sto_inv(id_sto_inv,id_med_pro,amount,price_sale,price_pur,cd_batch,dt_effect,fg_active,id_sto,id_org,id_tet,revision,insert_user,insert_time) VALUES(?,?,?,?,?,?,?,'1',?,?,?,'0',?,CURRENT_TIMESTAMP)")
+        query::<MySql>("INSERT INTO hi_sto_inv(id_sto_inv,id_med_pro,amount,price_sale,price_pur,cd_batch,dt_effect,fg_active,id_sto,id_org,id_tet,revision,insert_user,insert_time) VALUES(?,?,?,?,?,?,?,'1',?,?,?,'0',?,CURRENT_TIMESTAMP(3))")
             .bind(&id_sto_inv).bind(&id_med_pro).bind(amount).bind(price_sale).bind(price_pur).bind(&batch_code)
             .bind(effective_date).bind(id_sto).bind(id_org).bind(tenant_id).bind(operator_id)
             .execute(&mut **tx).await
             .map_err(|error| inventory_write_error("hi_sto_inv", "建立初始库存", error.to_string()))?;
-        query::<MySql>("INSERT INTO hi_sto_inv_log(id_inv_log,id_sto_inv,id_med_pro,sd_amt_change,des_reason,id_biz_ori,amt_change,amt_before,amt_after,unit_sale,unit_sale_factor,id_sto,id_org,id_tet,revision,insert_user,insert_time,price_sale,price_pur) VALUES(?,?,?,'100',?,?,?,0,?,?,?,?,?,?,'0',?,CURRENT_TIMESTAMP,?,?)")
+        query::<MySql>("INSERT INTO hi_sto_inv_log(id_inv_log,id_sto_inv,id_med_pro,sd_amt_change,des_reason,id_biz_ori,amt_change,amt_before,amt_after,unit_sale,unit_sale_factor,id_sto,id_org,id_tet,revision,insert_user,insert_time,price_sale,price_pur) VALUES(?,?,?,'100',?,?,?,0,?,?,?,?,?,?,'0',?,CURRENT_TIMESTAMP(3),?,?)")
             .bind(&id_inv_log).bind(&id_sto_inv).bind(&id_med_pro).bind("首次盘点建立初始账簿")
             .bind(&id_check_sub).bind(amount).bind(amount).bind(&unit_sale).bind(unit_sale_factor)
             .bind(id_sto).bind(id_org).bind(tenant_id).bind(operator_id).bind(price_sale).bind(price_pur)
@@ -592,7 +608,7 @@ async fn write_storage_mysql(
             id_check_sub,
         });
     }
-    query::<MySql>("UPDATE hi_sto_check SET fg_sto_check='1',sd_pol='1',dt_check_end=CURRENT_TIMESTAMP WHERE id_sto_check=? AND fg_sto_check='0'")
+    query::<MySql>("UPDATE hi_sto_check SET fg_sto_check='1',sd_pol='1',dt_check_end=CURRENT_TIMESTAMP(3) WHERE id_sto_check=? AND fg_sto_check='0'")
         .bind(&id_sto_check).execute(&mut **tx).await
         .map_err(|error| inventory_write_error("hi_sto_check", "完成首次盘点", error.to_string()))?;
     Ok(StorageWriteResult {

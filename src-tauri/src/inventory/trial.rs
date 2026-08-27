@@ -327,6 +327,7 @@ fn trial_inventory_odbc(
             id_sto,
             rows,
             inventory_date_parameter_sql(&request.target.kind),
+            inventory_current_timestamp_sql(&request.target.kind),
         );
         let rollback_result = connection.rollback();
         let restore_result = connection.set_autocommit(true);

@@ -264,7 +264,7 @@ async fn write_storage_pg(
     let cd_sto_check = next_check_number(&prefix, latest.as_deref())?;
     let id_sto_check = new_object_id();
     query::<Postgres>(
-        "INSERT INTO hi_sto_check(id_sto_check,id_sto,cd_sto_check,dt_check_begin,dt_check_end,fg_sto_check,sd_pol,sd_check,des_sto_check,id_org,id_tet,revision,insert_user,insert_time) VALUES($1,$2,$3,CURRENT_TIMESTAMP,NULL,'0','1','1',$4,$5,$6,$7,$8,CURRENT_TIMESTAMP)",
+        "INSERT INTO hi_sto_check(id_sto_check,id_sto,cd_sto_check,dt_check_begin,dt_check_end,fg_sto_check,sd_pol,sd_check,des_sto_check,id_org,id_tet,revision,insert_user,insert_time) VALUES($1,$2,$3,CURRENT_TIMESTAMP(3),NULL,'0','1','1',$4,$5,$6,$7,$8,CURRENT_TIMESTAMP(3))",
     )
     .bind(&id_sto_check)
     .bind(id_sto)
@@ -339,7 +339,7 @@ async fn write_storage_pg(
                 .execute(&mut **tx).await
                 .map_err(|error| inventory_write_error("hi_sto_med", "更新库房药品属性", error.to_string()))?;
         } else {
-            query::<Postgres>("INSERT INTO hi_sto_med(id_sto_med,id_med,id_med_pro,unit_sale,spec_sale,price_sale,price_pur,unit_sale_factor,fg_active,id_sto,id_org,id_tet,revision,insert_user,insert_time,id_med_unit) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'1',$9,$10,$11,'0',$12,CURRENT_TIMESTAMP,$13)")
+            query::<Postgres>("INSERT INTO hi_sto_med(id_sto_med,id_med,id_med_pro,unit_sale,spec_sale,price_sale,price_pur,unit_sale_factor,fg_active,id_sto,id_org,id_tet,revision,insert_user,insert_time,id_med_unit) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'1',$9,$10,$11,'0',$12,CURRENT_TIMESTAMP(3),$13)")
                 .bind(&id_sto_med).bind(&id_med).bind(&id_med_pro).bind(&unit_sale).bind(&spec_sale)
                 .bind(price_sale).bind(price_pur).bind(unit_sale_factor).bind(id_sto).bind(id_org)
                 .bind(tenant_id).bind(operator_id).bind(&id_med_unit)
@@ -350,18 +350,18 @@ async fn write_storage_pg(
         let id_sto_inv = new_object_id();
         let id_check_sub = new_object_id();
         let id_inv_log = new_object_id();
-        query::<Postgres>("INSERT INTO hi_sto_check_sub(id,id_sto_check,id_med_pro,id_sto_inv,cd_batch,dt_effect,amt_check_bgn,amt_check_end,amt_change,id_org,id_tet,revision,insert_user,insert_time,price_sale,price_pur,unit_sale,unit_sale_factor) VALUES($1,$2,$3,$4,$5,$6,0,$7,$8,$9,$10,'0',$11,CURRENT_TIMESTAMP,$12,$13,$14,$15)")
+        query::<Postgres>("INSERT INTO hi_sto_check_sub(id,id_sto_check,id_med_pro,id_sto_inv,cd_batch,dt_effect,amt_check_bgn,amt_check_end,amt_change,id_org,id_tet,revision,insert_user,insert_time,price_sale,price_pur,unit_sale,unit_sale_factor) VALUES($1,$2,$3,$4,$5,$6,0,$7,$8,$9,$10,'0',$11,CURRENT_TIMESTAMP(3),$12,$13,$14,$15)")
             .bind(&id_check_sub).bind(&id_sto_check).bind(&id_med_pro).bind(&id_sto_inv).bind(&batch_code)
             .bind(effective_date).bind(amount).bind(amount).bind(id_org).bind(tenant_id).bind(operator_id)
             .bind(price_sale).bind(price_pur).bind(&unit_sale).bind(unit_sale_factor)
             .execute(&mut **tx).await
             .map_err(|error| inventory_write_error("hi_sto_check_sub", "写入首次盘点明细", error.to_string()))?;
-        query::<Postgres>("INSERT INTO hi_sto_inv(id_sto_inv,id_med_pro,amount,price_sale,price_pur,cd_batch,dt_effect,fg_active,id_sto,id_org,id_tet,revision,insert_user,insert_time) VALUES($1,$2,$3,$4,$5,$6,$7,'1',$8,$9,$10,'0',$11,CURRENT_TIMESTAMP)")
+        query::<Postgres>("INSERT INTO hi_sto_inv(id_sto_inv,id_med_pro,amount,price_sale,price_pur,cd_batch,dt_effect,fg_active,id_sto,id_org,id_tet,revision,insert_user,insert_time) VALUES($1,$2,$3,$4,$5,$6,$7,'1',$8,$9,$10,'0',$11,CURRENT_TIMESTAMP(3))")
             .bind(&id_sto_inv).bind(&id_med_pro).bind(amount).bind(price_sale).bind(price_pur).bind(&batch_code)
             .bind(effective_date).bind(id_sto).bind(id_org).bind(tenant_id).bind(operator_id)
             .execute(&mut **tx).await
             .map_err(|error| inventory_write_error("hi_sto_inv", "建立初始库存", error.to_string()))?;
-        query::<Postgres>("INSERT INTO hi_sto_inv_log(id_inv_log,id_sto_inv,id_med_pro,sd_amt_change,des_reason,id_biz_ori,amt_change,amt_before,amt_after,unit_sale,unit_sale_factor,id_sto,id_org,id_tet,revision,insert_user,insert_time,price_sale,price_pur) VALUES($1,$2,$3,'100',$4,$5,$6,0,$7,$8,$9,$10,$11,$12,'0',$13,CURRENT_TIMESTAMP,$14,$15)")
+        query::<Postgres>("INSERT INTO hi_sto_inv_log(id_inv_log,id_sto_inv,id_med_pro,sd_amt_change,des_reason,id_biz_ori,amt_change,amt_before,amt_after,unit_sale,unit_sale_factor,id_sto,id_org,id_tet,revision,insert_user,insert_time,price_sale,price_pur) VALUES($1,$2,$3,'100',$4,$5,$6,0,$7,$8,$9,$10,$11,$12,'0',$13,CURRENT_TIMESTAMP(3),$14,$15)")
             .bind(&id_inv_log).bind(&id_sto_inv).bind(&id_med_pro).bind("首次盘点建立初始账簿")
             .bind(&id_check_sub).bind(amount).bind(amount).bind(&unit_sale).bind(unit_sale_factor)
             .bind(id_sto).bind(id_org).bind(tenant_id).bind(operator_id).bind(price_sale).bind(price_pur)
@@ -376,7 +376,7 @@ async fn write_storage_pg(
             id_check_sub,
         });
     }
-    query::<Postgres>("UPDATE hi_sto_check SET fg_sto_check='1',sd_pol='1',dt_check_end=CURRENT_TIMESTAMP WHERE id_sto_check=$1 AND fg_sto_check='0'")
+    query::<Postgres>("UPDATE hi_sto_check SET fg_sto_check='1',sd_pol='1',dt_check_end=CURRENT_TIMESTAMP(3) WHERE id_sto_check=$1 AND fg_sto_check='0'")
         .bind(&id_sto_check).execute(&mut **tx).await
         .map_err(|error| inventory_write_error("hi_sto_check", "完成首次盘点", error.to_string()))?;
     Ok(StorageWriteResult {

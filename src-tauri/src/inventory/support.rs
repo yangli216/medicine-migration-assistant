@@ -414,8 +414,9 @@ fn storage_type_name(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        group_inventory, has_successful_inventory_trials, inventory_date_parameter_sql,
-        inventory_date_text_sql, inventory_storage_hash, inventory_undo_preview,
+        group_inventory, has_successful_inventory_trials, inventory_current_timestamp_sql,
+        inventory_date_parameter_sql, inventory_date_text_sql, inventory_storage_hash,
+        inventory_undo_preview,
         inventory_target_backend, next_check_number,
         select_inventory_items, storage_type_name, InventoryTargetBackend,
         typk_confirms_single_minimum_unit_package, InventoryUndoRow, InventoryUndoStorage,
@@ -587,6 +588,26 @@ mod tests {
         assert!(inventory_date_parameter_sql("postgresql").starts_with("CAST"));
         assert!(inventory_date_parameter_sql("GBase-8a").starts_with("CAST"));
         assert!(inventory_date_parameter_sql("GBase-8s").contains("%Y-%m-%d"));
+    }
+
+    #[test]
+    fn first_stocktake_timestamps_match_phis_millisecond_precision() {
+        assert_eq!(
+            inventory_current_timestamp_sql("oracle"),
+            "CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3))"
+        );
+        assert_eq!(
+            inventory_current_timestamp_sql("Vastbase"),
+            "CURRENT_TIMESTAMP(3)"
+        );
+        assert_eq!(
+            inventory_current_timestamp_sql("PostgreSQL"),
+            "CURRENT_TIMESTAMP(3)"
+        );
+        assert_eq!(
+            inventory_current_timestamp_sql("GBase-8s"),
+            "CURRENT_TIMESTAMP"
+        );
     }
 
     #[test]

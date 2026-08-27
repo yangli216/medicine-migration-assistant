@@ -249,11 +249,18 @@ pub fn configure_target_session(
     connection: &Connection<'_>,
     profile: &ConnectionProfile,
 ) -> Result<(), String> {
+    let kind = normalize_kind(&profile.kind);
+    if let Some(statement) = target_session_time_zone_statement(&kind) {
+        connection
+            .execute(statement, (), Some(QUERY_TIMEOUT_SECONDS))
+            .map_err(odbc_error)?;
+    }
+
     let schema = validate_schema_identifier(&profile.schema)?;
     if schema.is_empty() {
         return Ok(());
     }
-    let statement = match normalize_kind(&profile.kind).as_str() {
+    let statement = match kind.as_str() {
         "oracle" => format!("ALTER SESSION SET CURRENT_SCHEMA = {schema}"),
         "dameng" => format!("SET SCHEMA {schema}"),
         "opengauss" | "kingbase" | "postgresql" | "vastbase" | "gbase8c" => {
@@ -265,6 +272,19 @@ pub fn configure_target_session(
         .execute(&statement, (), Some(QUERY_TIMEOUT_SECONDS))
         .map_err(odbc_error)?;
     Ok(())
+}
+
+fn target_session_time_zone_statement(kind: &str) -> Option<&'static str> {
+    // PHIS business columns are TIMESTAMP values without a time-zone component.
+    // Do not inherit an UTC driver/session default, otherwise date-range queries in
+    // the PHIS UI miss records written eight hours earlier than local business time.
+    match kind {
+        "oracle" => Some("ALTER SESSION SET TIME_ZONE = '+08:00'"),
+        "opengauss" | "kingbase" | "postgresql" | "vastbase" | "gbase8c" => {
+            Some("SET TIME ZONE 'Asia/Shanghai'")
+        }
+        _ => None,
+    }
 }
 
 pub fn inspect_target_schema(profile: &ConnectionProfile) -> Result<TargetReadiness, String> {
@@ -855,8 +875,9 @@ fn odbc_error(error: impl std::fmt::Display) -> String {
 mod tests {
     use super::{
         build_connection_string, decode_wide_cell, inspect_target_schema, is_odbc_kind, odbc_error,
-        preview_source, query_optional_row_strings, stable_string_parameter, test_connection,
-        validate_driver_registration, with_connection,
+        preview_source, query_optional_row_strings, stable_string_parameter,
+        target_session_time_zone_statement, test_connection, validate_driver_registration,
+        with_connection,
     };
     use crate::model::ConnectionProfile;
     use odbc_api::{handles::HasDataType, DataType};
@@ -901,6 +922,21 @@ mod tests {
         let value = build_connection_string(&profile("gbase-8a")).unwrap();
         assert!(value.contains("Server=10.0.0.5"));
         assert!(value.contains("Port=5236"));
+    }
+
+    #[test]
+    fn target_sessions_use_the_phis_business_time_zone_where_supported() {
+        assert_eq!(
+            target_session_time_zone_statement("oracle"),
+            Some("ALTER SESSION SET TIME_ZONE = '+08:00'")
+        );
+        for kind in ["postgresql", "opengauss", "vastbase", "gbase8c", "kingbase"] {
+            assert_eq!(
+                target_session_time_zone_statement(kind),
+                Some("SET TIME ZONE 'Asia/Shanghai'")
+            );
+        }
+        assert_eq!(target_session_time_zone_statement("gbase8a"), None);
     }
 
     #[test]
