@@ -1,5 +1,40 @@
-const TRUE_VALUES = new Set(["1", "true", "yes", "是", "y", "on", "启用", "有"]);
-const FALSE_VALUES = new Set(["0", "false", "no", "否", "n", "off", "停用", "无"]);
+const TRUE_VALUES = new Set([
+  "1",
+  "true",
+  "yes",
+  "是",
+  "y",
+  "on",
+  "启用",
+  "有",
+  "需要",
+  "需",
+  "有效",
+  "正常",
+  "rx",
+  "处方药",
+  "处方药品",
+]);
+const FALSE_VALUES = new Set([
+  "0",
+  "2",
+  "false",
+  "no",
+  "否",
+  "n",
+  "off",
+  "停用",
+  "无",
+  "不需要",
+  "无需",
+  "无效",
+  "otc",
+  "非处方药",
+  "非处方药品",
+]);
+
+export const EMPTY_VALUE_MAPPING_SOURCE = "<空值>";
+export const IGNORE_VALUE_MAPPING_TARGET = "<忽略>";
 
 export function parseValueMappings(text = "") {
   const mappings = {};
@@ -27,21 +62,32 @@ export function parseValueMappings(text = "") {
       invalidLines.push(index + 1);
       return;
     }
-    mappings[source] = target;
+    mappings[source] = target === IGNORE_VALUE_MAPPING_TARGET ? null : target;
   });
   return { mappings, invalidLines };
 }
 
 export function applyFieldRule(value, rule = {}) {
   let next = value;
-  if (isBlank(next) && `${rule.defaultValue ?? ""}`.trim()) {
-    next = rule.defaultValue;
+  let usedEmptyMapping = false;
+  const mappings = rule.valueMappings || {};
+  if (isBlank(next)) {
+    if (
+      Object.prototype.hasOwnProperty.call(
+        mappings,
+        EMPTY_VALUE_MAPPING_SOURCE,
+      )
+    ) {
+      next = mappings[EMPTY_VALUE_MAPPING_SOURCE];
+      usedEmptyMapping = true;
+    } else if (`${rule.defaultValue ?? ""}`.trim()) {
+      next = rule.defaultValue;
+    }
   }
   if (isBlank(next)) return null;
 
   const text = valueText(next);
-  const mappings = rule.valueMappings || {};
-  if (Object.prototype.hasOwnProperty.call(mappings, text)) {
+  if (!usedEmptyMapping && Object.prototype.hasOwnProperty.call(mappings, text)) {
     next = mappings[text];
   } else if (rule.valueMappingCaseInsensitive) {
     const normalized = text.toLocaleLowerCase();
@@ -51,7 +97,39 @@ export function applyFieldRule(value, rule = {}) {
     if (matchedKey !== undefined) next = mappings[matchedKey];
   }
 
-  return transformValue(next, rule.transform || "TRIM");
+  return truncateValue(
+    transformValue(next, rule.transform || "TRIM"),
+    rule.maxLength,
+    rule.truncateMode,
+  );
+}
+
+export function applyFieldMapping(source = {}, rule = {}) {
+  const sourceFields = [
+    rule.sourceField,
+    ...(Array.isArray(rule.additionalSourceFields)
+      ? rule.additionalSourceFields
+      : []),
+  ].filter(Boolean);
+  const values = sourceFields.map((field) => source?.[field]);
+  const baseValue = values.length > 1
+    ? values
+        .filter((value) => !isBlank(value))
+        .map(valueText)
+        .join(`${rule.joinSeparator ?? ""}`)
+    : values[0];
+
+  if (!fieldConditionMatches(source, rule)) {
+    switch (`${rule.conditionElse || "KEEP"}`.toUpperCase()) {
+      case "EMPTY":
+        return null;
+      case "DEFAULT":
+        return applyFieldRule(null, rule);
+      default:
+        return isBlank(baseValue) ? null : valueText(baseValue);
+    }
+  }
+  return applyFieldRule(baseValue, rule);
 }
 
 export function transformValue(value, operation = "TRIM") {
@@ -76,8 +154,17 @@ export function transformValue(value, operation = "TRIM") {
     }
     case "BOOLEAN_01": {
       const normalized = text.toLocaleLowerCase();
-      if (TRUE_VALUES.has(normalized)) return "1";
-      if (FALSE_VALUES.has(normalized)) return "0";
+      if (
+        FALSE_VALUES.has(normalized) ||
+        normalized.includes("非处方") ||
+        normalized.includes("otc")
+      )
+        return "0";
+      if (
+        TRUE_VALUES.has(normalized) ||
+        (normalized.includes("处方") && !normalized.includes("非处方"))
+      )
+        return "1";
       return text;
     }
     case "DATE_YYYY_MM_DD":
@@ -85,6 +172,38 @@ export function transformValue(value, operation = "TRIM") {
     default:
       return text;
   }
+}
+
+export function fieldConditionMatches(source = {}, rule = {}) {
+  const operator = `${rule.conditionOperator || "ALWAYS"}`.toUpperCase();
+  if (operator === "ALWAYS" || !rule.conditionField) return true;
+  const actual = source?.[rule.conditionField];
+  const expected = `${rule.conditionValue ?? ""}`.trim();
+  const text = valueText(actual);
+  switch (operator) {
+    case "EMPTY":
+      return isBlank(actual);
+    case "NOT_EMPTY":
+      return !isBlank(actual);
+    case "EQUALS":
+      return text === expected;
+    case "NOT_EQUALS":
+      return text !== expected;
+    case "CONTAINS":
+      return text.includes(expected);
+    default:
+      return true;
+  }
+}
+
+export function truncateValue(value, maxLength = 0, mode = "KEEP_START") {
+  const length = Math.max(0, Math.trunc(Number(maxLength) || 0));
+  if (!length || typeof value !== "string") return value;
+  const characters = Array.from(value);
+  if (characters.length <= length) return value;
+  return `${mode}`.toUpperCase() === "KEEP_END"
+    ? characters.slice(-length).join("")
+    : characters.slice(0, length).join("");
 }
 
 function valueText(value) {

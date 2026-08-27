@@ -43,10 +43,63 @@ fn default_preview_limit() -> u32 {
     200
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceDictionaryItem {
+    pub key: String,
+    pub text: String,
+    #[serde(default)]
+    pub properties: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceDictionaryMetadata {
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    #[serde(default)]
+    pub entry: String,
+    #[serde(default)]
+    pub key_field: String,
+    #[serde(default)]
+    pub text_field: String,
+    #[serde(default)]
+    pub property_fields: Vec<String>,
+    #[serde(default)]
+    pub load_status: String,
+    #[serde(default)]
+    pub load_message: String,
+    #[serde(default)]
+    pub items: Vec<SourceDictionaryItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceColumnMetadata {
+    pub name: String,
+    #[serde(default)]
+    pub comment: String,
+    #[serde(default)]
+    pub source_table: String,
+    #[serde(default)]
+    pub source_column: String,
+    #[serde(default = "default_true")]
+    pub mapping_eligible: bool,
+    #[serde(default)]
+    pub source_dictionary: Option<SourceDictionaryMetadata>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourcePreview {
     pub columns: Vec<String>,
+    #[serde(default)]
+    pub column_metadata: Vec<SourceColumnMetadata>,
     pub rows: Vec<Map<String, Value>>,
     pub truncated: bool,
     pub elapsed_ms: u128,
@@ -56,9 +109,25 @@ pub struct SourcePreview {
 #[serde(rename_all = "camelCase")]
 pub struct FieldMapping {
     pub source_field: String,
+    #[serde(default)]
+    pub additional_source_fields: Vec<String>,
+    #[serde(default)]
+    pub join_separator: String,
     pub target_field: String,
     #[serde(default)]
     pub transform: String,
+    #[serde(default)]
+    pub max_length: usize,
+    #[serde(default)]
+    pub truncate_mode: String,
+    #[serde(default)]
+    pub condition_field: String,
+    #[serde(default)]
+    pub condition_operator: String,
+    #[serde(default)]
+    pub condition_value: String,
+    #[serde(default)]
+    pub condition_else: String,
     #[serde(default)]
     pub default_value: String,
     #[serde(default)]
@@ -83,11 +152,13 @@ pub struct PrepareBatchRequest {
     pub idempotency_key: String,
     #[serde(default)]
     pub mappings: Vec<FieldMapping>,
+    #[serde(default)]
+    pub cost_merge_mappings: Map<String, Value>,
     pub rows: Vec<Map<String, Value>>,
 }
 
 fn default_conflict_strategy() -> String {
-    "REUSE".to_string()
+    "INCREMENTAL".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +172,89 @@ pub struct ExecuteBatchRequest {
     pub operator_id: String,
     #[serde(default)]
     pub organization_id: String,
+    #[serde(default)]
+    pub selected_row_ids: Vec<String>,
+    #[serde(default)]
+    pub overwrite_preview_confirmed: bool,
+    #[serde(default)]
+    pub skip_invalid_rows: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrialMigrationRequest {
+    pub batch_id: String,
+    pub row_id: String,
+    pub target: ConnectionProfile,
+    pub tenant_id: String,
+    pub operator_id: String,
+    #[serde(default)]
+    pub organization_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrialMigrationResult {
+    pub ok: bool,
+    pub row_id: String,
+    pub row_no: usize,
+    pub source_key: String,
+    pub message: String,
+    pub checked_tables: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrialMigrationResponse {
+    pub result: TrialMigrationResult,
+    pub detail: BatchDetail,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoBatchRequest {
+    pub batch_id: String,
+    pub target: ConnectionProfile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewOverwriteRequest {
+    pub batch_id: String,
+    pub target: ConnectionProfile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverwriteFieldDiff {
+    pub table: String,
+    pub column: String,
+    pub label: String,
+    pub before: Value,
+    pub after: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverwriteRowPreview {
+    pub row_id: String,
+    pub row_no: usize,
+    pub source_key: String,
+    pub action: String,
+    pub changes: Vec<OverwriteFieldDiff>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverwritePreview {
+    pub batch_id: String,
+    pub rows: Vec<OverwriteRowPreview>,
+    pub insert_count: usize,
+    pub update_count: usize,
+    pub unchanged_count: usize,
+    pub changed_field_count: usize,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +335,8 @@ pub struct TargetField {
     pub group: String,
     pub value_type: String,
     pub description: String,
+    #[serde(default)]
+    pub dictionary_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

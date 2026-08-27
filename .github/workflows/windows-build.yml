@@ -35,14 +35,37 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Cache Oracle Instant Client packages
+        uses: actions/cache@v4
+        with:
+          path: .cache/oracle-instant-client
+          key: oracle-instant-client-windows-x64-19.31-full-9e990e02-cdda3ba6
+
+      - name: Prepare bundled Oracle driver
+        run: npm run prepare:oracle-driver
+
+      - name: Verify bundled Oracle driver
+        run: npm run verify:oracle-driver
+
+      - name: Smoke-test Oracle registration tools
+        shell: pwsh
+        run: scripts/verify-oracle-windows-driver-tools.ps1
+
       - name: Run frontend tests
         run: npm test
+
+      - name: Verify Windows x64 driver delivery
+        run: npm run test:drivers
 
       - name: Run Rust tests
         run: cargo test --release --manifest-path src-tauri/Cargo.toml
 
       - name: Build Windows installer
         run: npm run desktop:build
+
+      - name: Install and launch acceptance test
+        shell: pwsh
+        run: scripts/verify-windows-installer.ps1
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
@@ -51,3 +74,11 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           path: src-tauri/target/release/bundle/nsis/*.exe
+
+      - name: Upload Windows acceptance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: medicine-migration-assistant-windows-x64-acceptance
+          if-no-files-found: error
+          retention-days: 30
+          path: artifacts/windows-install-acceptance.json

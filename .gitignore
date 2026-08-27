@@ -3,3 +3,9 @@ dist/
 src-tauri/target/
 .DS_Store
 *.log
+artifacts/
+.cache/oracle-instant-client/
+src-tauri/resources/oracle/instantclient_19_31_bsoft_migration/
+.codex-audit/
+history-layout-after.png
+yarn.lock
