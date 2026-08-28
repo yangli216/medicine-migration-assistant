@@ -1,0 +1,46 @@
+{
+  "packageSchemaVersion": 1,
+  "id": "PHIS27",
+  "name": "二系列phis",
+  "version": 1,
+  "templateCompatibleFromVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "支持药品主数据、机构药库药房库存识别及首次盘点迁移。"
+    }
+  ],
+  "summary": "自动识别标准表结构，支持药品主数据与机构首次盘点库存迁移。",
+  "sourceModes": ["database"],
+  "databaseFamilies": ["oracle"],
+  "migrationTasks": ["MEDICINE_BASE", "INVENTORY"],
+  "automaticDetection": true,
+  "reusableMappingProfiles": true,
+  "builtIn": true,
+  "implementation": "PHIS27_BUILTIN",
+  "sourceCompatibility": {
+    "product": "二系列phis",
+    "mode": "STRUCTURE_CONTRACT",
+    "declaredVersions": [],
+    "gate": "版本号仅作项目记录，不按版本号直接放行；连接后必须通过当前任务的来源表字段契约和项目变体回归。"
+  },
+  "medicineWorkflow": {
+    "sourceKeyMode": "ADAPTER_PROVIDED",
+    "sourceKeyField": "SOURCE_KEY",
+    "sourceKeyLabel": "YPXH:YPCD",
+    "mappingPreset": "PHIS27",
+    "batchSourceType": "PHIS27",
+    "factoryPolicy": "ADAPTER_MANAGED",
+    "legacyProfileKind": "PHIS27_V2"
+  },
+  "inventoryWorkflow": {
+    "normalizedLocationKinds": ["WAREHOUSE", "PHARMACY"],
+    "sourceProductKeyLabel": "YPXH:YPCD",
+    "sourceStockKeyMode": "PHIS27_LEGACY",
+    "writeMode": "FIRST_STOCKTAKE",
+    "organizationMapping": "REQUIRED",
+    "medicineLedger": "REQUIRED",
+    "trialPolicy": "PER_TARGET_STORAGE",
+    "undoPolicy": "VERIFIED_BATCH_ONLY"
+  }
+}

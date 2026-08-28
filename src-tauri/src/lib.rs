@@ -13,6 +13,7 @@ mod normalize;
 mod odbc;
 mod overwrite;
 mod pg_protocol;
+mod source_adapter;
 mod target;
 mod target_contract;
 mod target_dictionary;
@@ -24,9 +25,10 @@ mod target_system;
 use local_store::LocalStore;
 use model::{
     BatchDetail, ConnectionCheck, ConnectionProfile, ExecuteBatchRequest, MigrationBatch,
-    OverwritePreview, PrepareBatchRequest, PreviewOverwriteRequest, SourcePreview,
-    SourcePreviewRequest, TargetField, TargetReadiness, TrialMigrationRequest,
-    TrialMigrationResponse, UndoBatchRequest,
+    OverwritePreview, PrepareBatchRequest, PreviewOverwriteRequest, SourceObjectCount,
+    SourceObjectCountRequest, SourceObjectPreview, SourceObjectPreviewRequest,
+    SourceObjectSurveyItem, SourceObjectSurveyRequest, SourcePreview, SourcePreviewRequest,
+    TargetField, TargetReadiness, TrialMigrationRequest, TrialMigrationResponse, UndoBatchRequest,
 };
 use tauri::{Manager, State};
 
@@ -85,6 +87,11 @@ fn generate_object_id() -> String {
 #[tauri::command]
 fn get_target_fields() -> Vec<TargetField> {
     normalize::target_fields()
+}
+
+#[tauri::command]
+fn list_source_adapters() -> Result<Vec<source_adapter::SourceAdapterDescriptor>, String> {
+    source_adapter::list()
 }
 
 #[tauri::command]
@@ -189,6 +196,77 @@ fn save_phis27_mapping_profile(
 }
 
 #[tauri::command]
+fn load_source_mapping_profile(
+    store: State<'_, LocalStore>,
+    request: adapter_settings::LoadSourceMappingProfileRequest,
+) -> Result<Option<adapter_settings::SourceMappingProfile>, String> {
+    adapter_settings::load_source_mapping_profile(&store, request)
+}
+
+#[tauri::command]
+fn save_source_mapping_profile(
+    store: State<'_, LocalStore>,
+    request: adapter_settings::SaveSourceMappingProfileRequest,
+) -> Result<adapter_settings::SourceMappingProfile, String> {
+    adapter_settings::save_source_mapping_profile(&store, request)
+}
+
+#[tauri::command]
+fn recommend_source_mapping_profile(
+    store: State<'_, LocalStore>,
+    request: adapter_settings::RecommendSourceMappingProfileRequest,
+) -> Result<Option<adapter_settings::SourceMappingProfileCandidate>, String> {
+    adapter_settings::recommend_source_mapping_profile(&store, request)
+}
+
+#[tauri::command]
+fn export_source_mapping_template(
+    store: State<'_, LocalStore>,
+    request: adapter_settings::ExportSourceMappingTemplateRequest,
+) -> Result<adapter_settings::ExportedSourceMappingTemplate, String> {
+    adapter_settings::export_source_mapping_template(&store, request)
+}
+
+#[tauri::command]
+fn preview_source_mapping_template(
+    request: adapter_settings::ImportSourceMappingTemplateRequest,
+) -> Result<adapter_settings::SourceMappingTemplatePreview, String> {
+    adapter_settings::preview_source_mapping_template(request)
+}
+
+#[tauri::command]
+fn import_source_mapping_template(
+    store: State<'_, LocalStore>,
+    request: adapter_settings::ImportSourceMappingTemplateRequest,
+) -> Result<adapter_settings::SourceMappingProfile, String> {
+    adapter_settings::import_source_mapping_template(&store, request)
+}
+
+#[tauri::command]
+fn save_source_adapter_diagnostic(
+    store: State<'_, LocalStore>,
+    request: adapter_settings::SaveSourceAdapterDiagnosticRequest,
+) -> Result<Vec<adapter_settings::SourceAdapterDiagnosticRecord>, String> {
+    adapter_settings::save_source_adapter_diagnostic(&store, request)
+}
+
+#[tauri::command]
+fn load_source_adapter_diagnostics(
+    store: State<'_, LocalStore>,
+    request: adapter_settings::LoadSourceAdapterDiagnosticsRequest,
+) -> Result<Vec<adapter_settings::SourceAdapterDiagnosticRecord>, String> {
+    adapter_settings::load_source_adapter_diagnostics(&store, request)
+}
+
+#[tauri::command]
+fn export_source_adapter_support_package(
+    store: State<'_, LocalStore>,
+    request: adapter_settings::ExportSourceAdapterSupportPackageRequest,
+) -> Result<adapter_settings::ExportedSourceAdapterSupportPackage, String> {
+    adapter_settings::export_source_adapter_support_package(&store, request)
+}
+
+#[tauri::command]
 fn load_cost_merge_mapping_profile(
     store: State<'_, LocalStore>,
     request: cost_merge_settings::CostMergeMappingProfileScope,
@@ -225,6 +303,45 @@ async fn preview_source(request: SourcePreviewRequest) -> Result<SourcePreview, 
 }
 
 #[tauri::command]
+async fn preview_source_object(
+    request: SourceObjectPreviewRequest,
+) -> Result<SourceObjectPreview, String> {
+    datasource::preview_source_object(&request).await
+}
+
+#[tauri::command]
+async fn survey_source_objects(
+    request: SourceObjectSurveyRequest,
+) -> Result<Vec<SourceObjectSurveyItem>, String> {
+    datasource::survey_source_objects(&request).await
+}
+
+#[tauri::command]
+async fn count_source_object_rows(
+    request: SourceObjectCountRequest,
+) -> Result<SourceObjectCount, String> {
+    datasource::count_source_object_rows(&request).await
+}
+
+#[tauri::command]
+async fn inspect_medicine_source_adapter(
+    request: source_adapter::InspectMedicineSourceAdapterRequest,
+) -> Result<source_adapter::MedicineSourceInspection, String> {
+    tauri::async_runtime::spawn_blocking(move || source_adapter::inspect_medicine(request))
+        .await
+        .map_err(|error| format!("来源适配器识别任务异常：{error}"))?
+}
+
+#[tauri::command]
+async fn load_medicine_source_adapter(
+    request: source_adapter::LoadMedicineSourceAdapterRequest,
+) -> Result<SourcePreview, String> {
+    tauri::async_runtime::spawn_blocking(move || source_adapter::load_medicine(request))
+        .await
+        .map_err(|error| format!("来源适配器数据读取任务异常：{error}"))?
+}
+
+#[tauri::command]
 async fn inspect_phis27_source(
     profile: ConnectionProfile,
 ) -> Result<legacy_phis27::Phis27Inspection, String> {
@@ -251,6 +368,15 @@ async fn load_phis27_inventory_catalog(
     })
     .await
     .map_err(|error| format!("二系列phis机构和库房读取任务异常：{error}"))?
+}
+
+#[tauri::command]
+async fn load_inventory_source_catalog(
+    request: source_adapter::LoadInventorySourceCatalogRequest,
+) -> Result<source_adapter::InventorySourceCatalog, String> {
+    tauri::async_runtime::spawn_blocking(move || source_adapter::load_inventory_catalog(request))
+        .await
+        .map_err(|error| format!("来源适配器机构和库房读取任务异常：{error}"))?
 }
 
 #[tauri::command]
@@ -325,6 +451,66 @@ fn load_inventory_organization_mappings(
 }
 
 #[tauri::command]
+async fn prepare_inventory_batch(
+    store: State<'_, LocalStore>,
+    client: State<'_, target_system::TargetSystemClient>,
+    request: inventory::PrepareInventoryRequest,
+) -> Result<BatchDetail, String> {
+    let (tenant_id, _) = client.execution_identity()?;
+    inventory::prepare(&store, &tenant_id, request).await
+}
+
+#[tauri::command]
+async fn execute_inventory_batch(
+    store: State<'_, LocalStore>,
+    client: State<'_, target_system::TargetSystemClient>,
+    request: inventory::ExecuteInventoryRequest,
+) -> Result<BatchDetail, String> {
+    let (tenant_id, operator_id) = client.execution_identity()?;
+    inventory::execute(&store, &tenant_id, &operator_id, request).await
+}
+
+#[tauri::command]
+async fn trial_inventory_row(
+    store: State<'_, LocalStore>,
+    client: State<'_, target_system::TargetSystemClient>,
+    request: inventory::TrialInventoryRequest,
+) -> Result<inventory::TrialInventoryResponse, String> {
+    let (tenant_id, operator_id) = client.execution_identity()?;
+    inventory::trial(&store, &tenant_id, &operator_id, request).await
+}
+
+#[tauri::command]
+fn confirm_inventory_exception(
+    store: State<'_, LocalStore>,
+    client: State<'_, target_system::TargetSystemClient>,
+    request: inventory::ConfirmInventoryExceptionRequest,
+) -> Result<BatchDetail, String> {
+    let (_, operator_id) = client.execution_identity()?;
+    inventory::confirm_validation_exception(&store, &operator_id, request)
+}
+
+#[tauri::command]
+async fn preview_inventory_undo(
+    store: State<'_, LocalStore>,
+    client: State<'_, target_system::TargetSystemClient>,
+    request: inventory::UndoInventoryRequest,
+) -> Result<inventory::InventoryUndoPreview, String> {
+    let (tenant_id, _) = client.execution_identity()?;
+    inventory::preview_undo(&store, &tenant_id, request).await
+}
+
+#[tauri::command]
+async fn undo_inventory_batch(
+    store: State<'_, LocalStore>,
+    client: State<'_, target_system::TargetSystemClient>,
+    request: inventory::UndoInventoryRequest,
+) -> Result<BatchDetail, String> {
+    let (tenant_id, operator_id) = client.execution_identity()?;
+    inventory::undo(&store, &tenant_id, &operator_id, request).await
+}
+
+#[tauri::command]
 async fn prepare_phis27_inventory(
     store: State<'_, LocalStore>,
     client: State<'_, target_system::TargetSystemClient>,
@@ -395,6 +581,16 @@ fn inspect_phis27_inventory(
 }
 
 #[tauri::command]
+fn inspect_inventory_source_adapter(
+    store: State<'_, LocalStore>,
+    client: State<'_, target_system::TargetSystemClient>,
+    request: source_adapter::InspectInventorySourceAdapterRequest,
+) -> Result<source_adapter::InventorySourceReadiness, String> {
+    let (tenant_id, _) = client.execution_identity()?;
+    source_adapter::inspect_inventory(&store, &tenant_id, request)
+}
+
+#[tauri::command]
 async fn prepare_migration_batch(
     store: State<'_, LocalStore>,
     client: State<'_, target_system::TargetSystemClient>,
@@ -413,7 +609,7 @@ async fn execute_migration_batch(
     mut request: ExecuteBatchRequest,
 ) -> Result<BatchDetail, String> {
     let detail = store.load_batch(&request.batch_id)?;
-    if detail.batch.source_type == "PHIS27_INVENTORY" {
+    if inventory::is_inventory_batch_source_type(&detail.batch.source_type) {
         return Err("库存批次必须使用“首次盘点”专用执行入口，已阻止误写药品基础表".into());
     }
     if !request.failed_only
@@ -454,7 +650,7 @@ async fn trial_migration_row(
     mut request: TrialMigrationRequest,
 ) -> Result<TrialMigrationResponse, String> {
     let detail = store.load_batch(&request.batch_id)?;
-    if detail.batch.source_type == "PHIS27_INVENTORY" {
+    if inventory::is_inventory_batch_source_type(&detail.batch.source_type) {
         return Err("机构库存必须按首次盘点整体核对，不支持单条试迁移".into());
     }
     let (tenant_id, operator_id) = client.execution_identity()?;
@@ -558,6 +754,7 @@ pub fn run() {
             app_health,
             generate_object_id,
             get_target_fields,
+            list_source_adapters,
             list_database_drivers,
             list_driver_packs,
             load_saved_connections,
@@ -572,16 +769,32 @@ pub fn run() {
             forget_target_database_connection,
             load_phis27_mapping_profile,
             save_phis27_mapping_profile,
+            load_source_mapping_profile,
+            save_source_mapping_profile,
+            recommend_source_mapping_profile,
+            export_source_mapping_template,
+            preview_source_mapping_template,
+            import_source_mapping_template,
+            save_source_adapter_diagnostic,
+            load_source_adapter_diagnostics,
+            export_source_adapter_support_package,
             load_cost_merge_mapping_profile,
             save_cost_merge_mapping_profile,
             test_database_connection,
             inspect_target_schema,
             list_source_tables,
             preview_source,
+            preview_source_object,
+            survey_source_objects,
+            count_source_object_rows,
+            inspect_medicine_source_adapter,
+            load_medicine_source_adapter,
             inspect_phis27_source,
             load_phis27_medicine,
             load_phis27_inventory_catalog,
+            load_inventory_source_catalog,
             inspect_phis27_inventory,
+            inspect_inventory_source_adapter,
             load_inventory_target_organizations,
             load_inventory_target_storages,
             load_inventory_target_medicines,
@@ -590,6 +803,12 @@ pub fn run() {
             save_inventory_medicine_matches,
             load_inventory_location_mappings,
             load_inventory_organization_mappings,
+            prepare_inventory_batch,
+            execute_inventory_batch,
+            trial_inventory_row,
+            confirm_inventory_exception,
+            preview_inventory_undo,
+            undo_inventory_batch,
             prepare_phis27_inventory,
             execute_phis27_inventory,
             trial_phis27_inventory,

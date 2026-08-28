@@ -1,8 +1,5 @@
 export function inventoryLocationNeedsSourceResolution(location) {
-  return (
-    location?.sourceKind === "WAREHOUSE" &&
-    `${location?.sourceLocationKey || ""}`.startsWith("YKORG:")
-  );
+  return location?.requiresSourceLocationResolution === true;
 }
 
 export function completeInventoryOrganizationIds(

@@ -1,0 +1,584 @@
+{
+  "acceptanceSchemaVersion": 2,
+  "adapterId": "PHIS27",
+  "medicine": {
+    "requiredObjects": ["YK_TYPK", "YK_YPCD", "YK_CDDZ", "YK_CDXX"],
+    "sourceIdentityFields": ["YK_TYPK.YPXH", "YK_YPCD.YPCD"],
+    "scopes": ["USED_ACTIVE", "USED_ALL", "ALL_MEDICINES"],
+    "testCases": [
+      "机构在用药品仅接受非作废 YK_CDXX",
+      "机构全部配置药品包含停用配置",
+      "全部通用药品不依赖机构配置",
+      "VARCHAR2 与 NVARCHAR2 混合列兼容",
+      "同名规格最小单位药品自动归并"
+    ]
+  },
+  "inventory": {
+    "organizationObjects": ["SYS_ORGANIZATION"],
+    "locationObjects": ["YK_YKLB", "YF_YFLB"],
+    "stockObjects": ["YK_KCMX", "YF_KCMX"],
+    "stableKeys": [
+      "sourceOrganizationId",
+      "sourceLocationKey",
+      "sourceRecordId",
+      "sourceProductKey"
+    ],
+    "packagingEvidence": [
+      "YK_TYPK.ZXBZ/YPDW",
+      "YF_YPXX.YFBZ/YFDW"
+    ],
+    "amountEvidence": [
+      "KCSL/YPSL",
+      "JHJG/LSJG",
+      "JHJE/LSJE"
+    ],
+    "testCases": [
+      "一个药品唯一归属一个药库",
+      "药库归属缺失或歧义时阻止猜测",
+      "药品台账缺少 id_med 或 id_med_pro 时阻止写入",
+      "包装关系异常只允许受控人工确认",
+      "首次盘点试迁移始终回滚",
+      "目标库房非空时阻止迁移"
+    ]
+  },
+  "sourceStructure": {
+    "objects": [
+      {
+        "name": "YK_TYPK",
+        "requirement": "REQUIRED",
+        "usedBy": ["药品基础身份", "药品名称", "库存包装"],
+        "columns": [
+          {
+            "name": "YPXH",
+            "requirement": "REQUIRED",
+            "usedBy": ["药品来源身份", "厂家商品关联", "库存关联"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "YPMC",
+            "requirement": "REQUIRED",
+            "usedBy": ["药品名称", "智能匹配"],
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "ZXDW",
+            "requirement": "CONDITIONAL",
+            "requiredForTasks": ["INVENTORY"],
+            "usedBy": ["最小单位", "库存包装校验"],
+            "fallback": "仅迁移药品主档时可留待人工映射；库存迁移必须补齐",
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "YPGG",
+            "requirement": "OPTIONAL",
+            "usedBy": ["药品规格", "智能匹配"],
+            "fallback": "优先尝试 YFGG，仍缺失时以空值进入人工核对",
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "YFGG",
+            "requirement": "OPTIONAL",
+            "usedBy": ["药品规格备选"],
+            "fallback": "优先使用 YPGG，仍缺失时以空值进入人工核对",
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "YPSX",
+            "requirement": "OPTIONAL",
+            "usedBy": ["剂型显示与映射"],
+            "fallback": "以空值进入剂型人工映射",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "TYPE",
+            "requirement": "OPTIONAL",
+            "usedBy": ["药品类型映射"],
+            "fallback": "药品类型留空并在校验时人工补充",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "YPJL",
+            "requirement": "OPTIONAL",
+            "usedBy": ["制剂剂量"],
+            "fallback": "制剂剂量留空并在校验时人工补充",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "JLDW",
+            "requirement": "OPTIONAL",
+            "usedBy": ["剂量单位"],
+            "fallback": "剂量单位留空并在校验时人工补充",
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "GYFF",
+            "requirement": "OPTIONAL",
+            "usedBy": ["默认给药方法字典"],
+            "fallback": "默认给药方法留空并人工映射",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "MRYF",
+            "requirement": "OPTIONAL",
+            "usedBy": ["默认频次字典"],
+            "fallback": "默认频次允许留空；有值时人工映射",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "YCJL",
+            "requirement": "OPTIONAL",
+            "usedBy": ["默认一次剂量"],
+            "fallback": "默认一次剂量留空并在校验时人工补充",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "QZCL",
+            "requirement": "OPTIONAL",
+            "usedBy": ["取整策略字典"],
+            "fallback": "取整策略留空并人工映射",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "FYFS",
+            "requirement": "OPTIONAL",
+            "usedBy": ["发药方式字典"],
+            "fallback": "发药方式留空并人工映射",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "YFDW",
+            "requirement": "OPTIONAL",
+            "usedBy": ["商品包装单位对照"],
+            "fallback": "商品包装单位留空，不覆盖库房实际包装",
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "YFBZ",
+            "requirement": "OPTIONAL",
+            "usedBy": ["商品包装系数对照"],
+            "fallback": "商品包装系数留空，不覆盖库房实际包装",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "CFYP",
+            "requirement": "OPTIONAL",
+            "usedBy": ["处方药标志字典"],
+            "fallback": "按目标非处方药默认值处理并要求核对",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER", "BOOLEAN"]
+          },
+          {
+            "name": "JYLX",
+            "requirement": "OPTIONAL",
+            "usedBy": ["基药类型字典"],
+            "fallback": "基药类型留空并人工映射",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "YBFL",
+            "requirement": "OPTIONAL",
+            "usedBy": ["医保分类字典"],
+            "fallback": "医保分类留空并人工映射",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "YPDC",
+            "requirement": "OPTIONAL",
+            "usedBy": ["产地档次字典"],
+            "fallback": "产地档次留空并人工映射",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "YPZC",
+            "requirement": "OPTIONAL",
+            "usedBy": ["药品贮藏字典"],
+            "fallback": "药品贮藏留空并人工映射",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "TSYP",
+            "requirement": "OPTIONAL",
+            "usedBy": ["特殊药品类型字典"],
+            "fallback": "特殊药品类型留空并人工映射",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "GMYWLB",
+            "requirement": "OPTIONAL",
+            "usedBy": ["过敏药物类别字典"],
+            "fallback": "过敏药物类别留空并人工映射",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "SFSP",
+            "requirement": "OPTIONAL",
+            "usedBy": ["抗菌药物审批标志"],
+            "fallback": "审批标志留空并人工映射",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER", "BOOLEAN"]
+          },
+          {
+            "name": "KSBZ",
+            "requirement": "OPTIONAL",
+            "usedBy": ["抗生素标志"],
+            "fallback": "抗生素标志留空并人工映射",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER", "BOOLEAN"]
+          },
+          {
+            "name": "YCYL",
+            "requirement": "OPTIONAL",
+            "usedBy": ["一日限量"],
+            "fallback": "一日限量留空并在校验时人工补充",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "ZFPB",
+            "requirement": "OPTIONAL",
+            "usedBy": ["来源停用标志"],
+            "fallback": "不使用来源停用状态限制全部通用药品范围",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER", "BOOLEAN"]
+          },
+          {
+            "name": "YPDW",
+            "requirement": "CONDITIONAL",
+            "appliesToTasks": ["INVENTORY"],
+            "requiredWhenObjectsPresent": ["YK_KCMX"],
+            "usedBy": ["药库管理单位"],
+            "fallback": "没有药库库存任务时不影响药品主档；药库库存迁移必须补齐",
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "ZXBZ",
+            "requirement": "CONDITIONAL",
+            "appliesToTasks": ["INVENTORY"],
+            "requiredForTasks": ["INVENTORY"],
+            "usedBy": ["药库包装系数", "单最小单位包装证据"],
+            "fallback": "没有库存任务时不影响药品主档；库存迁移必须补齐且禁止从规格猜测",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          }
+        ]
+      },
+      {
+        "name": "YK_YPCD",
+        "requirement": "REQUIRED",
+        "usedBy": ["厂家商品身份", "批准文号与商品信息"],
+        "columns": [
+          {
+            "name": "YPXH",
+            "requirement": "REQUIRED",
+            "usedBy": ["厂家商品来源身份"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "YPCD",
+            "requirement": "REQUIRED",
+            "usedBy": ["厂家商品来源身份", "生产厂家关联"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "PZWH",
+            "requirement": "OPTIONAL",
+            "usedBy": ["批准文号"],
+            "fallback": "批准文号留空并在校验时人工补充",
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "YBSPMC",
+            "requirement": "OPTIONAL",
+            "usedBy": ["商品名"],
+            "fallback": "回退使用通用药品名称",
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "YPLSH",
+            "requirement": "OPTIONAL",
+            "usedBy": ["商品流水号审计"],
+            "fallback": "审计引用留空，商品唯一关系仍使用 YPXH:YPCD",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "JHJG",
+            "requirement": "OPTIONAL",
+            "usedBy": ["药品商品参考进价"],
+            "fallback": "参考进价留空，不影响库存按实际库房价格迁移",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "LSJG",
+            "requirement": "OPTIONAL",
+            "usedBy": ["药品商品参考零售价"],
+            "fallback": "参考零售价留空，不影响库存按实际库房价格迁移",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "YPTM",
+            "requirement": "OPTIONAL",
+            "usedBy": ["商品条形码"],
+            "fallback": "条形码留空并在新系统维护",
+            "acceptedTypeFamilies": ["CHARACTER", "NUMERIC"]
+          }
+        ]
+      },
+      {
+        "name": "YK_CDDZ",
+        "requirement": "REQUIRED",
+        "usedBy": ["生产厂家关系"],
+        "columns": [
+          {
+            "name": "YPCD",
+            "requirement": "REQUIRED",
+            "usedBy": ["厂家来源身份与商品关联"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "CDQC",
+            "requirement": "OPTIONAL",
+            "usedBy": ["厂家全称"],
+            "fallback": "尝试使用 CDMC"
+          },
+          {
+            "name": "CDMC",
+            "requirement": "OPTIONAL",
+            "usedBy": ["厂家简称"],
+            "fallback": "尝试使用 CDQC"
+          },
+          {
+            "name": "PYDM",
+            "requirement": "OPTIONAL",
+            "usedBy": ["厂家拼音检索"],
+            "fallback": "厂家拼音留空，不影响厂家身份关系",
+            "acceptedTypeFamilies": ["CHARACTER"]
+          }
+        ],
+        "columnGroups": [
+          {
+            "name": "可识别厂家名称",
+            "columns": ["CDQC", "CDMC"],
+            "requirement": "CONDITIONAL",
+            "usedBy": ["厂家建档与智能匹配"],
+            "fallback": "两者都缺失时厂家商品无法可靠建档，需要确认项目替代字段"
+          }
+        ]
+      },
+      {
+        "name": "YK_CDXX",
+        "requirement": "REQUIRED",
+        "appliesToTasks": ["MEDICINE_BASE"],
+        "usedBy": ["机构配置药品范围"],
+        "columns": [
+          {
+            "name": "YPXH",
+            "requirement": "REQUIRED",
+            "usedBy": ["机构配置范围关联"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "ZFPB",
+            "requirement": "OPTIONAL",
+            "usedBy": ["机构在用药品过滤"],
+            "fallback": "缺失时机构在用范围降级为机构全部配置药品并要求人工复核",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER", "BOOLEAN"]
+          }
+        ]
+      },
+      {
+        "name": "SYS_ORGANIZATION",
+        "requirement": "CONDITIONAL",
+        "appliesToTasks": ["INVENTORY"],
+        "requiredForTasks": ["INVENTORY"],
+        "usedBy": ["库存机构目录"],
+        "fallback": "不迁移机构库存时不需要；库存任务必须提供可识别机构目录",
+        "columns": [
+          {
+            "name": "ORGANIZCODE",
+            "requirement": "REQUIRED",
+            "usedBy": ["机构稳定身份"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "ORGANIZNAME",
+            "requirement": "REQUIRED",
+            "usedBy": ["机构名称映射"],
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "PARENTID",
+            "requirement": "OPTIONAL",
+            "usedBy": ["机构层级显示"],
+            "fallback": "按平级机构展示，不影响人工机构映射",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "ORGANIZTYPE",
+            "requirement": "OPTIONAL",
+            "usedBy": ["机构类型显示"],
+            "fallback": "机构类型留空，不自动过滤机构",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "LOGOFF",
+            "requirement": "OPTIONAL",
+            "usedBy": ["机构启停状态"],
+            "fallback": "默认按可用机构展示并要求人工核对",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER", "BOOLEAN"]
+          }
+        ]
+      },
+      {
+        "name": "YK_KCMX",
+        "requirement": "OPTIONAL",
+        "appliesToTasks": ["INVENTORY"],
+        "usedBy": ["药库库存"],
+        "fallback": "没有药库库存时可不提供；存在药库库存时必须完整满足",
+        "columns": [
+          { "name": "SBXH", "requirement": "REQUIRED", "usedBy": ["库存记录身份"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "JGID", "requirement": "REQUIRED", "usedBy": ["库存机构"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YPXH", "requirement": "REQUIRED", "usedBy": ["库存药品关联"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YPCD", "requirement": "REQUIRED", "usedBy": ["库存商品关联"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "KCSL", "requirement": "REQUIRED", "usedBy": ["库存数量"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "JHJG", "requirement": "REQUIRED", "usedBy": ["进货单价"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "LSJG", "requirement": "REQUIRED", "usedBy": ["零售单价"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "JHJE", "requirement": "OPTIONAL", "usedBy": ["来源进货金额核对"], "fallback": "按 KCSL×JHJG 计算并执行金额差异校验", "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "LSJE", "requirement": "OPTIONAL", "usedBy": ["来源零售金额核对"], "fallback": "按 KCSL×LSJG 计算并执行金额差异校验", "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YPPH", "requirement": "OPTIONAL", "usedBy": ["库存批号"], "fallback": "批号留空并在校验结果中明确显示", "acceptedTypeFamilies": ["CHARACTER", "NUMERIC"] },
+          { "name": "YPXQ", "requirement": "OPTIONAL", "usedBy": ["库存有效期"], "fallback": "有效期留空并在校验结果中明确显示", "acceptedTypeFamilies": ["TEMPORAL", "CHARACTER", "NUMERIC"] }
+        ]
+      },
+      {
+        "name": "YF_KCMX",
+        "requirement": "OPTIONAL",
+        "appliesToTasks": ["INVENTORY"],
+        "usedBy": ["药房库存"],
+        "fallback": "没有药房库存时可不提供；存在药房库存时必须完整满足",
+        "columns": [
+          { "name": "SBXH", "requirement": "REQUIRED", "usedBy": ["库存记录身份"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YFSB", "requirement": "REQUIRED", "usedBy": ["药房身份"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "JGID", "requirement": "REQUIRED", "usedBy": ["库存机构"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YPXH", "requirement": "REQUIRED", "usedBy": ["库存药品关联"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YPCD", "requirement": "REQUIRED", "usedBy": ["库存商品关联"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YPSL", "requirement": "REQUIRED", "usedBy": ["库存数量"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "JHJG", "requirement": "REQUIRED", "usedBy": ["进货单价"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "LSJG", "requirement": "REQUIRED", "usedBy": ["零售单价"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "JHJE", "requirement": "OPTIONAL", "usedBy": ["来源进货金额核对"], "fallback": "按 YPSL×JHJG 计算并执行金额差异校验", "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "LSJE", "requirement": "OPTIONAL", "usedBy": ["来源零售金额核对"], "fallback": "按 YPSL×LSJG 计算并执行金额差异校验", "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YPPH", "requirement": "OPTIONAL", "usedBy": ["库存批号"], "fallback": "批号留空并在校验结果中明确显示", "acceptedTypeFamilies": ["CHARACTER", "NUMERIC"] },
+          { "name": "YPXQ", "requirement": "OPTIONAL", "usedBy": ["库存有效期"], "fallback": "有效期留空并在校验结果中明确显示", "acceptedTypeFamilies": ["TEMPORAL", "CHARACTER", "NUMERIC"] }
+        ]
+      },
+      {
+        "name": "YF_YPXX",
+        "requirement": "CONDITIONAL",
+        "appliesToTasks": ["INVENTORY"],
+        "requiredWhenObjectsPresent": ["YF_KCMX"],
+        "usedBy": ["药房实际包装"],
+        "fallback": "没有药房库存时可不提供；药房库存必须使用本机构药房包装",
+        "columns": [
+          { "name": "JGID", "requirement": "REQUIRED", "usedBy": ["包装所属机构"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YFSB", "requirement": "REQUIRED", "usedBy": ["包装所属药房"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YPXH", "requirement": "REQUIRED", "usedBy": ["包装药品关联"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YFBZ", "requirement": "REQUIRED", "usedBy": ["药房包装系数"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YFDW", "requirement": "REQUIRED", "usedBy": ["药房管理单位"], "acceptedTypeFamilies": ["CHARACTER"] },
+          { "name": "YFGG", "requirement": "OPTIONAL", "usedBy": ["药房包装规格显示"], "fallback": "回退使用 YK_TYPK.YPGG", "acceptedTypeFamilies": ["CHARACTER"] }
+        ]
+      },
+      {
+        "name": "YK_YKLB",
+        "requirement": "OPTIONAL",
+        "appliesToTasks": ["INVENTORY"],
+        "usedBy": ["药库目录与名称"],
+        "fallback": "缺失时按机构级药库范围展示，并要求人工确认实际药库",
+        "columns": [
+          { "name": "YKSB", "requirement": "REQUIRED", "usedBy": ["药库稳定身份"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "JGID", "requirement": "REQUIRED", "usedBy": ["药库所属机构"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YKMC", "requirement": "OPTIONAL", "usedBy": ["药库名称"], "fallback": "使用通用药库名称并要求人工确认", "acceptedTypeFamilies": ["CHARACTER"] },
+          { "name": "YKLB", "requirement": "OPTIONAL", "usedBy": ["药库类别显示"], "fallback": "类别留空，不自动猜测目标库房类型", "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] }
+        ]
+      },
+      {
+        "name": "YF_YFLB",
+        "requirement": "CONDITIONAL",
+        "appliesToTasks": ["INVENTORY"],
+        "requiredWhenObjectsPresent": ["YF_KCMX"],
+        "usedBy": ["药房目录"],
+        "fallback": "没有药房库存时可不提供；药房库存迁移需要可识别药房",
+        "columns": [
+          { "name": "YFSB", "requirement": "REQUIRED", "usedBy": ["药房稳定身份"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "JGID", "requirement": "REQUIRED", "usedBy": ["药房所属机构"], "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YFMC", "requirement": "OPTIONAL", "usedBy": ["药房名称"], "fallback": "使用药房编号作为显示名并要求人工确认", "acceptedTypeFamilies": ["CHARACTER"] },
+          { "name": "ZXBZ", "requirement": "OPTIONAL", "usedBy": ["药房启停状态"], "fallback": "默认按可用药房展示并要求人工核对", "acceptedTypeFamilies": ["NUMERIC", "CHARACTER", "BOOLEAN"] }
+        ]
+      },
+      {
+        "name": "YK_YPXX",
+        "requirement": "OPTIONAL",
+        "appliesToTasks": ["INVENTORY"],
+        "usedBy": ["药库归属消歧"],
+        "fallback": "缺失或一对多时保留药品级待确认，不猜测药库",
+        "columns": [
+          { "name": "YKSB", "requirement": "OPTIONAL", "usedBy": ["药库关系"], "fallback": "改为人工选择药库", "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "YPXH", "requirement": "OPTIONAL", "usedBy": ["药品关系"], "fallback": "改为人工选择药库", "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] },
+          { "name": "JGID", "requirement": "OPTIONAL", "usedBy": ["药库关系机构消歧"], "fallback": "仅按药库编号关联并要求人工确认机构", "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"] }
+        ]
+      }
+    ],
+    "objectGroups": [
+      {
+        "name": "非零库存明细来源",
+        "objects": ["YK_KCMX", "YF_KCMX"],
+        "requirement": "CONDITIONAL",
+        "appliesToTasks": ["INVENTORY"],
+        "requiredForTasks": ["INVENTORY"],
+        "usedBy": ["机构库存范围", "库存明细读取"],
+        "fallback": "库存迁移至少需要一个可读取的药库或药房库存明细表"
+      }
+    ]
+  },
+  "evidence": [
+    {
+      "requirement": "药品范围仅使用权威配置关系",
+      "tasks": ["MEDICINE_BASE"],
+      "file": "src-tauri/src/legacy_phis27.rs",
+      "contains": "configured_scope_uses_only_cdxx_as_the_membership_filter",
+      "rustTest": "legacy_phis27::tests::configured_scope_uses_only_cdxx_as_the_membership_filter",
+      "execution": "REQUIRED"
+    },
+    {
+      "requirement": "商品来源身份固定为 YPXH 与 YPCD",
+      "tasks": ["MEDICINE_BASE"],
+      "file": "src-tauri/src/legacy_phis27.rs",
+      "contains": "product_identity_is_always_ypxh_plus_ypcd",
+      "rustTest": "legacy_phis27::tests::product_identity_is_always_ypxh_plus_ypcd",
+      "execution": "REQUIRED"
+    },
+    {
+      "requirement": "库存只读取本批选择的库房",
+      "tasks": ["INVENTORY"],
+      "file": "src-tauri/src/legacy_phis27.rs",
+      "contains": "inventory_detail_query_reads_only_selected_locations",
+      "rustTest": "legacy_phis27::tests::inventory_detail_query_reads_only_selected_locations",
+      "execution": "REQUIRED"
+    },
+    {
+      "requirement": "包装系数一必须有结构化证据",
+      "tasks": ["INVENTORY"],
+      "file": "src-tauri/src/inventory/support.rs",
+      "contains": "typk_zxbz_one_is_the_only_single_unit_package_evidence",
+      "rustTest": "inventory::tests::typk_zxbz_one_is_the_only_single_unit_package_evidence",
+      "execution": "REQUIRED"
+    },
+    {
+      "requirement": "每个目标库房必须完成回滚试迁移",
+      "tasks": ["INVENTORY"],
+      "file": "src-tauri/src/inventory/support.rs",
+      "contains": "every_target_storage_needs_a_current_successful_rolled_back_trial",
+      "rustTest": "inventory::tests::every_target_storage_needs_a_current_successful_rolled_back_trial",
+      "execution": "REQUIRED"
+    },
+    {
+      "requirement": "真实二系列结构保留可选集成验收",
+      "tasks": ["MEDICINE_BASE", "INVENTORY"],
+      "file": "src-tauri/src/legacy_phis27.rs",
+      "contains": "live_phis27_adapter_reads_expected_structure",
+      "rustTest": "legacy_phis27::tests::live_phis27_adapter_reads_expected_structure",
+      "execution": "OPTIONAL_LIVE"
+    }
+  ]
+}

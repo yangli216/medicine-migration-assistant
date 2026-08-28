@@ -34,17 +34,11 @@ fn validate_mappings(
         })
         .collect::<HashMap<_, _>>();
     for mapping in mappings {
-        let valid_source_location = match mapping.source_kind.as_str() {
-            "WAREHOUSE" => {
-                mapping.source_location_key.starts_with("YK:")
-                    || mapping.source_location_key.starts_with("YKORG:")
-            }
-            "PHARMACY" => mapping.source_location_key.starts_with("YF:"),
-            _ => false,
-        };
-        if !valid_source_location {
+        if !matches!(mapping.source_kind.as_str(), "WAREHOUSE" | "PHARMACY")
+            || mapping.source_location_key.trim().is_empty()
+        {
             return Err(format!(
-                "老系统库房识别码“{}”与库房类型不匹配，请重新读取库存范围",
+                "老系统库存位置“{}”缺少标准类型或稳定识别码，请重新读取库存范围",
                 mapping.source_location_key
             ));
         }
@@ -67,12 +61,11 @@ fn validate_mappings(
                 mapping.source_location_name
             ));
         }
-        if mapping.source_kind == "WAREHOUSE"
-            && mapping.source_location_key.starts_with("YKORG:")
+        if mapping.source_resolution_required
             && mapping.resolved_source_location_key.trim().is_empty()
         {
             return Err(format!(
-                "药库库存“{}”无法通过 YK_YPXX 唯一确定归属，请先指定实际老系统药库",
+                "库存位置“{}”尚未确定实际老系统库房，请先完成来源位置确认",
                 mapping.source_location_name
             ));
         }
@@ -250,7 +243,11 @@ fn inventory_date_text_sql(kind: &str, column: &str) -> String {
     }
 }
 
-fn group_inventory(items: Vec<Phis27InventoryStockItem>) -> Result<Vec<InventoryGroup>, String> {
+fn group_inventory(
+    items: Vec<InventorySourceStockItem>,
+    adapter_id: &str,
+    source_stock_key_mode: &str,
+) -> Result<Vec<InventoryGroup>, String> {
     let mut groups = BTreeMap::<String, InventoryGroup>::new();
     for item in items {
         let amount = parse_decimal(&item.amount, "库存数量")?;
@@ -266,7 +263,7 @@ fn group_inventory(items: Vec<Phis27InventoryStockItem>) -> Result<Vec<Inventory
             item.sale_unit,
             item.sale_specification,
             item.unit_sale_factor,
-            item.typk_unit_sale_factor,
+            item.single_minimum_package_factor,
             price_pur,
             price_sale,
             item.batch_code,
@@ -294,7 +291,9 @@ fn group_inventory(items: Vec<Phis27InventoryStockItem>) -> Result<Vec<Inventory
                     sale_unit: item.sale_unit,
                     sale_specification: item.sale_specification,
                     unit_sale_factor: item.unit_sale_factor,
-                    typk_unit_sale_factor: item.typk_unit_sale_factor,
+                    single_minimum_package_factor: item.single_minimum_package_factor,
+                    single_minimum_package_factor_source: item
+                        .single_minimum_package_factor_source,
                     product_sale_unit: item.product_sale_unit,
                     product_unit_sale_factor: item.product_unit_sale_factor,
                     factory_name: item.factory_name,
@@ -313,24 +312,22 @@ fn group_inventory(items: Vec<Phis27InventoryStockItem>) -> Result<Vec<Inventory
     let mut result = groups.into_values().collect::<Vec<_>>();
     for group in &mut result {
         group.source_record_ids.sort();
-        group.source_stock_key = format!(
-            "{}:{}",
-            if group.source_kind == "WAREHOUSE" {
-                "YK"
-            } else {
-                "YF"
-            },
-            group.source_record_ids.first().cloned().unwrap_or_default()
-        );
+        let source_record_id = group.source_record_ids.first().cloned().unwrap_or_default();
+        group.source_stock_key = inventory_source_stock_key(
+            adapter_id,
+            source_stock_key_mode,
+            &group.source_kind,
+            &source_record_id,
+        )?;
     }
     Ok(result)
 }
 
 fn select_inventory_items(
-    items: Vec<Phis27InventoryStockItem>,
+    items: Vec<InventorySourceStockItem>,
     selected_organization_ids: &HashSet<String>,
     selected_location_keys: &HashSet<String>,
-) -> Vec<Phis27InventoryStockItem> {
+) -> Vec<InventorySourceStockItem> {
     items
         .into_iter()
         .filter(|item| {
@@ -370,8 +367,31 @@ fn decimal_distance(left: Decimal, right: Decimal) -> Decimal {
     }
 }
 
-fn typk_confirms_single_minimum_unit_package(value: &str) -> bool {
+fn structured_evidence_confirms_single_minimum_unit_package(value: &str) -> bool {
     Decimal::from_str(value.trim()).is_ok_and(|factor| factor == Decimal::ONE)
+}
+
+fn inventory_source_stock_key(
+    adapter_id: &str,
+    mode: &str,
+    source_kind: &str,
+    source_record_id: &str,
+) -> Result<String, String> {
+    match mode {
+        "PHIS27_LEGACY" => Ok(format!(
+            "{}:{}",
+            if source_kind == "WAREHOUSE" { "YK" } else { "YF" },
+            source_record_id
+        )),
+        "ADAPTER_SCOPED_V1" => serde_json::to_string(&[
+            "INVENTORY_V1",
+            adapter_id,
+            source_kind,
+            source_record_id,
+        ])
+        .map_err(|error| format!("生成库存来源稳定键失败：{error}")),
+        other => Err(format!("库存来源稳定键模式 {other} 未注册")),
+    }
 }
 
 fn inventory_source_hash(group: &InventoryGroup) -> String {
@@ -388,7 +408,8 @@ fn inventory_source_hash(group: &InventoryGroup) -> String {
                 "unitSale":group.sale_unit,
                 "specSale":group.sale_specification,
                 "unitSaleFactor":group.unit_sale_factor,
-                "typkUnitSaleFactor":group.typk_unit_sale_factor,
+                // Keep the historical hash property name so existing PHIS batches remain retry-safe.
+                "typkUnitSaleFactor":group.single_minimum_package_factor,
                 "purchaseTotal":group.purchase_total.map(|value| value.to_string()),
                 "retailTotal":group.retail_total.map(|value| value.to_string()),
                 "batch":group.batch_code,
@@ -416,19 +437,19 @@ mod tests {
     use super::{
         group_inventory, has_successful_inventory_trials, inventory_current_timestamp_sql,
         inventory_date_parameter_sql, inventory_date_text_sql, inventory_storage_hash,
-        inventory_undo_preview,
-        inventory_target_backend, next_check_number,
+        inventory_source_stock_key, inventory_target_backend, inventory_undo_preview,
+        next_check_number,
         select_inventory_items, storage_type_name, InventoryTargetBackend,
-        typk_confirms_single_minimum_unit_package, InventoryUndoRow, InventoryUndoStorage,
-        Phis27InventoryStockItem,
+        structured_evidence_confirms_single_minimum_unit_package, InventorySourceStockItem,
+        InventoryUndoRow, InventoryUndoStorage,
     };
     use crate::model::{BatchDetail, ConnectionProfile};
     use rust_decimal::Decimal;
     use serde_json::json;
     use std::collections::HashSet;
 
-    fn item(record: &str, amount: &str) -> Phis27InventoryStockItem {
-        Phis27InventoryStockItem {
+    fn item(record: &str, amount: &str) -> InventorySourceStockItem {
+        InventorySourceStockItem {
             source_kind: "WAREHOUSE".into(),
             source_record_id: record.into(),
             source_location_key: "YK:ORG".into(),
@@ -442,7 +463,8 @@ mod tests {
             sale_unit: "盒".into(),
             sale_specification: "10mg*12片/盒".into(),
             unit_sale_factor: "12".into(),
-            typk_unit_sale_factor: "12".into(),
+            single_minimum_package_factor: "12".into(),
+            single_minimum_package_factor_source: "DRUG_MASTER.MIN_PACKAGE_FACTOR".into(),
             product_sale_unit: "盒".into(),
             product_unit_sale_factor: "12".into(),
             factory_name: "测试药厂".into(),
@@ -459,7 +481,12 @@ mod tests {
 
     #[test]
     fn identical_inventory_identity_is_combined_before_duplicate_check() {
-        let groups = group_inventory(vec![item("2", "3"), item("1", "4.5")]).unwrap();
+        let groups = group_inventory(
+            vec![item("2", "3"), item("1", "4.5")],
+            "PHIS27",
+            "PHIS27_LEGACY",
+        )
+        .unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].amount.to_string(), "7.5");
         assert_eq!(groups[0].source_stock_key, "YK:1");
@@ -475,7 +502,8 @@ mod tests {
         split.purchase_total = "57.60".into();
         split.retail_total = "110.40".into();
 
-        let groups = group_inventory(vec![boxed, split]).unwrap();
+        let groups = group_inventory(vec![boxed, split], "TEST_HIS", "ADAPTER_SCOPED_V1")
+            .unwrap();
 
         assert_eq!(groups.len(), 2);
         assert!(groups.iter().any(|group| group.unit_sale_factor == "12"));
@@ -484,10 +512,43 @@ mod tests {
 
     #[test]
     fn typk_zxbz_one_is_the_only_single_unit_package_evidence() {
-        assert!(typk_confirms_single_minimum_unit_package("1"));
-        assert!(typk_confirms_single_minimum_unit_package("1.0"));
-        assert!(!typk_confirms_single_minimum_unit_package("12"));
-        assert!(!typk_confirms_single_minimum_unit_package(""));
+        assert!(structured_evidence_confirms_single_minimum_unit_package("1"));
+        assert!(structured_evidence_confirms_single_minimum_unit_package("1.0"));
+        assert!(!structured_evidence_confirms_single_minimum_unit_package("12"));
+        assert!(!structured_evidence_confirms_single_minimum_unit_package(""));
+    }
+
+    #[test]
+    fn new_adapter_stock_keys_are_scoped_and_collision_free() {
+        let first = inventory_source_stock_key(
+            "VENDOR_HIS",
+            "ADAPTER_SCOPED_V1",
+            "WAREHOUSE",
+            "A:B",
+        )
+        .unwrap();
+        let second = inventory_source_stock_key(
+            "OTHER_HIS",
+            "ADAPTER_SCOPED_V1",
+            "WAREHOUSE",
+            "A:B",
+        )
+        .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            first,
+            r#"["INVENTORY_V1","VENDOR_HIS","WAREHOUSE","A:B"]"#
+        );
+        assert_eq!(
+            inventory_source_stock_key(
+                "PHIS27",
+                "PHIS27_LEGACY",
+                "PHARMACY",
+                "1001"
+            )
+            .unwrap(),
+            "YF:1001"
+        );
     }
 
     #[test]

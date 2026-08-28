@@ -297,8 +297,8 @@ pub async fn save_inventory_medicine_matches(
         return Err("请至少确认一个药品目录匹配结果".into());
     }
     let detail = store.load_batch(&request.batch_id)?;
-    if detail.batch.source_type != "PHIS27_INVENTORY" {
-        return Err("只能为二系列phis机构库存批次维护药品目录匹配".into());
+    if !is_inventory_batch_source_type(&detail.batch.source_type) {
+        return Err("只能为机构库存首次盘点批次维护药品目录匹配".into());
     }
     let target_identity_value = target_identity(&request.target);
     let target_identity_text = target_identity_value.to_string();

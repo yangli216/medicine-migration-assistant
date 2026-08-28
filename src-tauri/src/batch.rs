@@ -9,6 +9,36 @@ use std::collections::{HashMap, HashSet};
 
 const MAX_BATCH_ROWS: usize = 10_000;
 
+fn validate_batch_source_keys(rows: &[serde_json::Map<String, Value>]) -> Result<(), String> {
+    let mut seen = HashMap::<String, usize>::new();
+    for (index, row) in rows.iter().enumerate() {
+        let source_value = row.get("_sourceKey");
+        if matches!(source_value, Some(Value::Array(_) | Value::Object(_))) {
+            return Err(format!(
+                "第 {} 行的来源唯一标识不是可用的文本或数字字段",
+                index + 1
+            ));
+        }
+        let source_key = source_value
+            .map(crate::normalize::value_text)
+            .unwrap_or_default();
+        if source_key.is_empty() {
+            return Err(format!(
+                "第 {} 行缺少来源唯一标识；禁止使用行号代替，请重新选择稳定业务主键",
+                index + 1
+            ));
+        }
+        if let Some(previous_index) = seen.insert(source_key, index) {
+            return Err(format!(
+                "第 {} 行与第 {} 行的来源唯一标识重复；请重新选择真正唯一的业务主键",
+                index + 1,
+                previous_index + 1
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn prepare_batch(
     store: &LocalStore,
     request: PrepareBatchRequest,
@@ -22,6 +52,7 @@ pub fn prepare_batch(
     if request.rows.len() > MAX_BATCH_ROWS {
         return Err(format!("单批最多迁移 {} 行，请拆分批次", MAX_BATCH_ROWS));
     }
+    validate_batch_source_keys(&request.rows)?;
     let strategy = request.conflict_strategy.trim().to_ascii_uppercase();
     if !["INCREMENTAL", "OVERWRITE", "REUSE", "FAIL"].contains(&strategy.as_str()) {
         return Err("迁移模式无效".into());
@@ -73,8 +104,7 @@ pub fn prepare_batch(
         let source_key = source
             .get("_sourceKey")
             .map(crate::normalize::value_text)
-            .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| (index + 1).to_string());
+            .unwrap_or_default();
         let prior_link = if strategy == "INCREMENTAL" || strategy == "OVERWRITE" {
             store.find_source_link(
                 tenant_id,
@@ -414,7 +444,7 @@ fn phis27_identity_errors(
 mod tests {
     use super::{
         phis27_base_merge_key, phis27_identity_errors, prepare_batch, skip_invalid_rows,
-        source_duplicate_count,
+        source_duplicate_count, validate_batch_source_keys,
     };
     use crate::local_store::LocalStore;
     use crate::model::{MigrationBatch, MigrationRow, PrepareBatchRequest};
@@ -422,6 +452,26 @@ mod tests {
     use serde_json::Map;
     use std::collections::HashMap;
     use std::path::Path;
+
+    #[test]
+    fn batch_source_keys_must_be_present_and_unique_without_row_number_fallback() {
+        let missing = vec![json!({"_sourceKey":""}).as_object().unwrap().clone()];
+        assert!(validate_batch_source_keys(&missing)
+            .unwrap_err()
+            .contains("禁止使用行号代替"));
+        let duplicate = vec![
+            json!({"_sourceKey":"A"}).as_object().unwrap().clone(),
+            json!({"_sourceKey":" A "}).as_object().unwrap().clone(),
+        ];
+        assert!(validate_batch_source_keys(&duplicate)
+            .unwrap_err()
+            .contains("来源唯一标识重复"));
+        let valid = vec![
+            json!({"_sourceKey":"A"}).as_object().unwrap().clone(),
+            json!({"_sourceKey":"B"}).as_object().unwrap().clone(),
+        ];
+        assert!(validate_batch_source_keys(&valid).is_ok());
+    }
 
     #[test]
     fn phis27_duplicate_marker_is_read_safely() {

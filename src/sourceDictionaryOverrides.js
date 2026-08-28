@@ -1,4 +1,4 @@
-export function phis27DictionaryScopeKey(profile = {}, schema = "") {
+export function sourceDictionaryScopeKey(profile = {}, schema = "") {
   const kind = `${profile.kind || "oracle"}`.trim().toLowerCase();
   const host = `${profile.host || ""}`.trim().toLowerCase();
   const port = `${profile.port || ""}`.trim();
@@ -7,6 +7,8 @@ export function phis27DictionaryScopeKey(profile = {}, schema = "") {
     .toLowerCase();
   return `${kind}:${host}:${port}/${service}:${`${schema}`.trim().toUpperCase()}`;
 }
+
+export const phis27DictionaryScopeKey = sourceDictionaryScopeKey;
 
 export function normalizeSourceDictionaryItems(items = []) {
   const seen = new Set();

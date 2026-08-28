@@ -42,6 +42,8 @@ pub struct InventoryLocationMapping {
     pub source_organization_id: String,
     #[serde(default)]
     pub resolved_source_location_key: String,
+    #[serde(default)]
+    pub source_resolution_required: bool,
     pub target_id_sto: String,
     pub target_name: String,
     pub target_id_org: String,
@@ -338,6 +340,29 @@ impl LocalStore {
             .map_err(|error| error.to_string())
     }
 
+    pub fn list_settings_by_prefix(&self, prefix: &str) -> Result<Vec<Value>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "本地迁移库已锁定".to_string())?;
+        let mut statement = connection
+            .prepare(
+                "SELECT value_json FROM app_setting \
+                 WHERE substr(setting_key,1,length(?1))=?1 \
+                 ORDER BY updated_at DESC",
+            )
+            .map_err(|error| error.to_string())?;
+        let values = statement
+            .query_map(params![prefix], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        values
+            .into_iter()
+            .map(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
+            .collect()
+    }
+
     pub fn delete_setting(&self, key: &str) -> Result<(), String> {
         let connection = self
             .connection
@@ -497,6 +522,7 @@ impl LocalStore {
                     source_location_name: row.get(2)?,
                     source_organization_id: row.get(3)?,
                     resolved_source_location_key: row.get(4)?,
+                    source_resolution_required: false,
                     target_id_sto: row.get(5)?,
                     target_name: row.get(6)?,
                     target_id_org: row.get(7)?,
@@ -1707,6 +1733,7 @@ mod tests {
             source_location_name: "中心药库".into(),
             source_organization_id: "420100001".into(),
             resolved_source_location_key: "YK:1".into(),
+            source_resolution_required: true,
             target_id_sto: "target-storage".into(),
             target_name: "新系统中心药库".into(),
             target_id_org: "target-org".into(),

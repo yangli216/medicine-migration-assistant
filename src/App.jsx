@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -71,24 +79,13 @@ import {
   targetLocations,
   targetPhysicalLocationText,
 } from "./migrationFields";
-import {
-  MigrationHistory,
-  SummaryCards,
-  statusMeta,
-} from "./MigrationHistory";
-import {
-  DataTable,
-  ValidationResults,
-} from "./MigrationResults";
-import { createInventoryRenderers } from "./InventoryReview";
-import { InventoryMigrationScreen } from "./InventoryMigrationScreen";
+import { SummaryCards, statusMeta } from "./MigrationStatus";
+import { DataTable, ValidationResults } from "./MigrationResults";
 import {
   completeInventoryOrganizationIds,
   inventoryLocationNeedsSourceResolution,
 } from "./inventoryMapping";
-import {
-  inventoryUnmatchedMedicines,
-} from "./inventoryMedicineMatching";
+import { inventoryUnmatchedMedicines } from "./inventoryMedicineMatching";
 import {
   MedicineSourceScreen,
   SourceRecognitionScreen,
@@ -121,28 +118,80 @@ import {
 } from "./fieldMappingStatus";
 import {
   applySourceDictionaryOverrides,
-  phis27DictionaryScopeKey,
+  sourceDictionaryScopeKey,
   updateScopedDictionaryOverride,
 } from "./sourceDictionaryOverrides";
+import {
+  databaseSourceIdentity,
+  legacySourceMappingPromotionRequest,
+  sourceAdapterId,
+  sourceMappingProfileForSelection,
+  sourceMappingProfileScope,
+} from "./sourceMappingProfiles";
+import { sourceObjectFromSafeQuery } from "./sourceDatabaseObjects";
+import { buildSourceObjectDiagnostic } from "./sourceObjectDiagnostics";
+import { sourceFieldMatchScore } from "./sourceFieldMatching";
+import {
+  assessSourceKeyColumns,
+  assessSourceKeyFields,
+  chooseInitialSourceKeyFields,
+  encodeSourceKey,
+} from "./sourceKeyAssessment";
+import {
+  adapterProvidesSourceKey,
+  medicineWorkflowFor,
+  sourceKeyDisplayLabel,
+  usesMappingPreset,
+} from "./sourceAdapterWorkflow";
+import {
+  failedSourceObjectSurveyResult,
+  rankSourceObjectSurveyResults,
+  sourceObjectSurveyCandidates,
+  sourceObjectSurveyResult,
+} from "./sourceObjectSurvey";
 import {
   hasSuccessfulTargetTrial,
   latestTargetTrialByRow,
 } from "./trialMigration";
 import { inventoryTrialCoverage } from "./inventoryTrialMigration";
 
-function isPhis27Source(description) {
-  return description.startsWith("二系列phis内置模板:");
+const LazyInventoryMigrationScreen = lazy(() =>
+  import("./InventoryMigrationScreen").then((module) => ({
+    default: module.InventoryMigrationScreen,
+  })),
+);
+const LazyMigrationHistory = lazy(() =>
+  import("./MigrationHistory").then((module) => ({
+    default: module.MigrationHistory,
+  })),
+);
+
+function DeferredModuleLoading({ label, dialog = false }) {
+  const content = (
+    <div className="deferred-module-loading" role="status" aria-live="polite">
+      <CircleNotch className="is-spinning" size={20} weight="bold" />
+      <span>{label}</span>
+    </div>
+  );
+  return dialog ? (
+    <div className="connection-manager-backdrop deferred-module-backdrop">
+      {content}
+    </div>
+  ) : (
+    <section className="screen deferred-module-screen">{content}</section>
+  );
 }
 
-function phis27SourceIdentity(profile, schema) {
-  const service = profile.serviceName || profile.database || "Oracle";
-  return `二系列phis · ${profile.host}:${profile.port}/${service} · ${schema}`;
+function sourceAdapterIdentity(adapterName, profile, schema) {
+  const service = profile.serviceName || profile.database || "Database";
+  return `${adapterName || "三方 HIS"} · ${profile.host}:${profile.port}/${service} · ${schema}`;
 }
 
 const initialTargetSystemUrl = "http://10.17.18.88:8000/rbmh-phis/";
 
 export function App() {
   const fileInput = useRef(null);
+  const workspaceRef = useRef(null);
   const prepareBatchLock = useRef(false);
   const migrationExecutionLock = useRef(false);
   const trialMigrationLock = useRef(false);
@@ -176,44 +225,73 @@ export function App() {
   const [rememberSourcePassword, setRememberSourcePassword] = useState(true);
   const [hasSavedSourceConnection, setHasSavedSourceConnection] =
     useState(false);
-  const [legacyInspection, setLegacyInspection] = useState(null);
+  const [sourceAdapterInspection, setSourceAdapterInspection] = useState(null);
+  const [sourceAdapterDiagnostics, setSourceAdapterDiagnostics] = useState([]);
+  const [selectedMedicineAdapterId, setSelectedMedicineAdapterId] =
+    useState("PHIS27");
+  const [activeSourceAdapterId, setActiveSourceAdapterId] =
+    useState("GENERIC_FILE");
+  const [activeSourceSelection, setActiveSourceSelection] = useState(null);
   const [legacyScope, setLegacyScope] = useState("USED_ACTIVE");
   const [inventoryReadiness, setInventoryReadiness] = useState(null);
+  const [inventorySourceDiagnostics, setInventorySourceDiagnostics] =
+    useState([]);
   const [inventorySourceExpanded, setInventorySourceExpanded] = useState(true);
   const [inventoryTargetExpanded, setInventoryTargetExpanded] = useState(true);
   const [inventoryPreflightExpanded, setInventoryPreflightExpanded] =
     useState(false);
-  const [legacyInventoryCatalog, setLegacyInventoryCatalog] = useState(null);
-  const [targetOrganizationCatalog, setTargetOrganizationCatalog] = useState(null);
+  const [inventorySourceCatalog, setInventorySourceCatalog] = useState(null);
+  const [selectedInventoryAdapterId, setSelectedInventoryAdapterId] =
+    useState("PHIS27");
+  const [targetOrganizationCatalog, setTargetOrganizationCatalog] =
+    useState(null);
   const [inventoryOrganizationMappings, setInventoryOrganizationMappings] =
     useState({});
-  const [inventorySelectedOrganizationIds, setInventorySelectedOrganizationIds] =
-    useState([]);
+  const [
+    inventorySelectedOrganizationIds,
+    setInventorySelectedOrganizationIds,
+  ] = useState([]);
   const [inventorySelectedLocationKeys, setInventorySelectedLocationKeys] =
     useState([]);
   const [inventoryActiveOrganizationId, setInventoryActiveOrganizationId] =
     useState("");
   const [inventoryLocationSearch, setInventoryLocationSearch] = useState("");
   const [targetStorageCatalog, setTargetStorageCatalog] = useState(null);
-  const [inventoryLocationMappings, setInventoryLocationMappings] = useState({});
-  const [inventoryResolvedLocations, setInventoryResolvedLocations] = useState({});
+  const [inventoryLocationMappings, setInventoryLocationMappings] = useState(
+    {},
+  );
+  const [inventoryResolvedLocations, setInventoryResolvedLocations] = useState(
+    {},
+  );
   const [inventoryBatchDetail, setInventoryBatchDetail] = useState(null);
-  const [inventoryMedicineCatalog, setInventoryMedicineCatalog] = useState(null);
-  const [inventoryMedicineSuggestions, setInventoryMedicineSuggestions] = useState([]);
-  const [inventoryMedicineSelections, setInventoryMedicineSelections] = useState({});
-  const [inventoryMedicineSelectedTargets, setInventoryMedicineSelectedTargets] =
+  const [inventoryMedicineCatalog, setInventoryMedicineCatalog] =
+    useState(null);
+  const [inventoryMedicineSuggestions, setInventoryMedicineSuggestions] =
+    useState([]);
+  const [inventoryMedicineSelections, setInventoryMedicineSelections] =
     useState({});
-  const [inventoryMedicineConfirmations, setInventoryMedicineConfirmations] = useState({});
-  const [inventoryMedicineMatchOpen, setInventoryMedicineMatchOpen] = useState(false);
-  const [inventoryMedicineMatchSearch, setInventoryMedicineMatchSearch] = useState("");
-  const [inventoryMedicineMatchFilter, setInventoryMedicineMatchFilter] = useState("ALL");
-  const [inventoryMedicineMatchPage, setInventoryMedicineMatchPage] = useState(1);
+  const [
+    inventoryMedicineSelectedTargets,
+    setInventoryMedicineSelectedTargets,
+  ] = useState({});
+  const [inventoryMedicineConfirmations, setInventoryMedicineConfirmations] =
+    useState({});
+  const [inventoryMedicineMatchOpen, setInventoryMedicineMatchOpen] =
+    useState(false);
+  const [inventoryMedicineMatchSearch, setInventoryMedicineMatchSearch] =
+    useState("");
+  const [inventoryMedicineMatchFilter, setInventoryMedicineMatchFilter] =
+    useState("ALL");
+  const [inventoryMedicineMatchPage, setInventoryMedicineMatchPage] =
+    useState(1);
   const [inventoryTrialRowId, setInventoryTrialRowId] = useState("");
-  const [inventoryMappingExpanded, setInventoryMappingExpanded] = useState(true);
+  const [inventoryMappingExpanded, setInventoryMappingExpanded] =
+    useState(true);
   const [inventoryReviewSearch, setInventoryReviewSearch] = useState("");
   const [inventoryReviewStorage, setInventoryReviewStorage] = useState("");
   const [inventoryReviewStatus, setInventoryReviewStatus] = useState("ALL");
-  const [inventoryReviewConfirmed, setInventoryReviewConfirmed] = useState(false);
+  const [inventoryReviewConfirmed, setInventoryReviewConfirmed] =
+    useState(false);
   const [inventoryExceptionRow, setInventoryExceptionRow] = useState(null);
   const [inventoryExceptionReason, setInventoryExceptionReason] = useState("");
   const [inventoryExecutionSeconds, setInventoryExecutionSeconds] = useState(0);
@@ -228,19 +306,32 @@ export function App() {
   const [migrationHistoryOpen, setMigrationHistoryOpen] = useState(false);
   const [historyBatches, setHistoryBatches] = useState([]);
   const [historyBatchDetail, setHistoryBatchDetail] = useState(null);
-  const [selectedSourceConnectionId, setSelectedSourceConnectionId] = useState("");
-  const [selectedTargetConnectionId, setSelectedTargetConnectionId] = useState("");
+  const [selectedSourceConnectionId, setSelectedSourceConnectionId] =
+    useState("");
+  const [selectedTargetConnectionId, setSelectedTargetConnectionId] =
+    useState("");
   const [sourceConnectionEditing, setSourceConnectionEditing] = useState(true);
   const [targetConnectionEditing, setTargetConnectionEditing] = useState(true);
   const [query, setQuery] = useState("");
   const [showCustomQuery, setShowCustomQuery] = useState(false);
+  const [sourceObjects, setSourceObjects] = useState([]);
+  const [selectedSourceObject, setSelectedSourceObject] = useState("");
+  const [sourceObjectPreview, setSourceObjectPreview] = useState(null);
+  const [sourceObjectCount, setSourceObjectCount] = useState(null);
+  const [sourceObjectCountBusy, setSourceObjectCountBusy] = useState(false);
+  const sourceObjectPreviewRequestRef = useRef(0);
+  const [sourceObjectSurvey, setSourceObjectSurvey] = useState(null);
+  const sourceObjectSurveyRequestRef = useRef(0);
   const [sourceName, setSourceName] = useState("尚未选择数据源");
   const [sourceDescription, setSourceDescription] = useState("");
   const [rows, setRows] = useState([]);
   const [columns, setColumns] = useState([]);
   const [columnMetadata, setColumnMetadata] = useState({});
-  const [sourceDictionaryOverrides, setSourceDictionaryOverrides] = useState({});
-  const [sourceKey, setSourceKey] = useState("");
+  const [sourceDictionaryOverrides, setSourceDictionaryOverrides] = useState(
+    {},
+  );
+  const [sourceKeyFields, setSourceKeyFields] = useState([]);
+  const [sourceKeyConfirmed, setSourceKeyConfirmed] = useState(false);
   const [mapping, setMapping] = useState({});
   const [rules, setRules] = useState({});
   const [fieldIndex, setFieldIndex] = useState(0);
@@ -266,7 +357,25 @@ export function App() {
   const [notice, setNotice] = useState(null);
   const [databaseDrivers, setDatabaseDrivers] = useState([]);
   const [driverPacks, setDriverPacks] = useState([]);
-  const [phis27MappingStatus, setPhis27MappingStatus] = useState(null);
+  const [sourceAdapters, setSourceAdapters] = useState([]);
+  const activeSourceAdapter = sourceAdapters.find(
+    (adapter) => adapter.id === activeSourceAdapterId,
+  );
+  const activeMedicineWorkflow = medicineWorkflowFor(activeSourceAdapter);
+  const activeAdapterProvidesSourceKey =
+    adapterProvidesSourceKey(activeSourceAdapter);
+  const activeUsesPhis27Preset = usesMappingPreset(
+    activeSourceAdapter,
+    "PHIS27",
+  );
+  const sourceKey = sourceKeyDisplayLabel(activeSourceAdapter, sourceKeyFields);
+  const [mappingProfileStatus, setMappingProfileStatus] = useState(null);
+  const [sourceTemplateImport, setSourceTemplateImport] = useState(null);
+
+  useLayoutEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    workspaceRef.current?.scrollTo?.({ top: 0, left: 0, behavior: "auto" });
+  }, [step]);
 
   useEffect(
     () => () => {
@@ -291,6 +400,19 @@ export function App() {
   }, [busy]);
 
   useEffect(() => {
+    const compatible = sourceAdapters.filter(
+      (adapter) =>
+        adapter.automaticDetection &&
+        adapter.migrationTasks.includes("MEDICINE_BASE") &&
+        adapter.databaseFamilies.includes(sourceProfile.kind),
+    );
+    if (compatible.some((adapter) => adapter.id === selectedMedicineAdapterId))
+      return;
+    setSelectedMedicineAdapterId(compatible[0]?.id || "");
+    setSourceAdapterInspection(null);
+  }, [selectedMedicineAdapterId, sourceAdapters, sourceProfile.kind]);
+
+  useEffect(() => {
     command("app_health")
       .then((health) => setRuntime(health.runtime))
       .catch(() => {});
@@ -300,6 +422,9 @@ export function App() {
     command("list_driver_packs")
       .then(setDriverPacks)
       .catch(() => setDriverPacks([]));
+    command("list_source_adapters")
+      .then(setSourceAdapters)
+      .catch(() => setSourceAdapters([]));
     Promise.all([
       command("load_saved_connections"),
       command("list_database_connections"),
@@ -343,9 +468,7 @@ export function App() {
           );
           setLoginTenantId(saved.targetSystem.tenantId || "");
           setLoginPassword(saved.targetSystem.password || "");
-          setRememberTargetSystemPassword(
-            saved.targetSystem.rememberPassword,
-          );
+          setRememberTargetSystemPassword(saved.targetSystem.rememberPassword);
           setHasSavedTargetSystem(true);
         }
       })
@@ -385,15 +508,17 @@ export function App() {
     : null;
   const currentDictionaryScopeKey = useMemo(
     () =>
-      phis27DictionaryScopeKey(
+      sourceDictionaryScopeKey(
         sourceProfile,
-        legacyInspection?.schema || sourceProfile.schema,
+        sourceAdapterInspection?.schema || sourceProfile.schema,
       ),
-    [legacyInspection?.schema, sourceProfile],
+    [sourceAdapterInspection?.schema, sourceProfile],
   );
-  const currentDictionaryScopeLabel = phis27SourceIdentity(
+  const currentDictionaryScopeLabel = sourceAdapterIdentity(
+    sourceAdapters.find((adapter) => adapter.id === activeSourceAdapterId)
+      ?.name,
     sourceProfile,
-    legacyInspection?.schema || sourceProfile.schema || "当前 Schema",
+    sourceAdapterInspection?.schema || sourceProfile.schema || "当前 Schema",
   );
   const articleTypeDictionary =
     dictionariesById["rbmh.base.med.articleType"] || null;
@@ -527,14 +652,7 @@ export function App() {
       sourceDictionaryItem,
       sourceDictionaryPropertySummary,
     });
-  }, [
-    columnMetadata,
-    currentDictionary,
-    currentField,
-    mapping,
-    rows,
-    rules,
-  ]);
+  }, [columnMetadata, currentDictionary, currentField, mapping, rows, rules]);
   const mappingStatuses = useMemo(
     () =>
       buildFieldMappingStatuses({
@@ -601,6 +719,18 @@ export function App() {
       "danger",
     );
 
+  function invalidateSourceObjectPreview() {
+    sourceObjectPreviewRequestRef.current += 1;
+    setSourceObjectPreview(null);
+    setSourceObjectCount(null);
+    setSourceObjectCountBusy(false);
+  }
+
+  function invalidateSourceObjectSurvey() {
+    sourceObjectSurveyRequestRef.current += 1;
+    setSourceObjectSurvey(null);
+  }
+
   function updateDatabaseConnectionList(saved) {
     setDatabaseConnections((current) => [
       saved,
@@ -624,6 +754,12 @@ export function App() {
       if (selectedSourceConnectionId === saved.connectionId) {
         setSourceProfile({ ...saved.profile });
         setRememberSourcePassword(saved.rememberPassword);
+        setSourceObjects([]);
+        setSelectedSourceObject("");
+        invalidateSourceObjectPreview();
+        invalidateSourceObjectSurvey();
+        setQuery("");
+        restoreGenericDatabaseQuery(saved.profile).catch(() => {});
       }
       if (selectedTargetConnectionId === saved.connectionId) {
         setTargetProfile({ ...saved.profile });
@@ -687,7 +823,12 @@ export function App() {
       setSelectedSourceConnectionId(entry.connectionId);
       setSourceConnectionEditing(false);
       setSourceMode("database");
-      setLegacyInspection(null);
+      setSourceAdapterInspection(null);
+      setSourceObjects([]);
+      setSelectedSourceObject("");
+      invalidateSourceObjectPreview();
+      invalidateSourceObjectSurvey();
+      setQuery("");
       command("save_source_connection", {
         request: {
           profile: entry.profile,
@@ -695,6 +836,7 @@ export function App() {
         },
       }).catch(fail);
       notify(`老库读取已切换为“${entry.name}”`);
+      restoreGenericDatabaseQuery(entry.profile).catch(() => {});
     } else {
       setTargetProfile({ ...entry.profile });
       setRememberTargetDatabasePassword(entry.rememberPassword);
@@ -712,6 +854,33 @@ export function App() {
       notify(`目标库写入已切换为“${entry.name}”`);
     }
     if (closeManager) setConnectionManagerOpen(false);
+  }
+
+  async function restoreGenericDatabaseQuery(
+    profile,
+    targetTenantId = targetAuth?.tenantId || tenantId || loginTenantId,
+  ) {
+    const scope = sourceMappingProfileScope({
+      adapterId: sourceAdapterId({ sourceMode: "database" }),
+      profile,
+      sourceMode: "database",
+      targetTenantId,
+    });
+    if (!scope) return null;
+    const saved = await command("load_source_mapping_profile", {
+      request: {
+        scope,
+        adapterVersion: sourceAdapterVersionFor(scope.adapterId),
+        templateCompatibleFromVersion: sourceAdapterCompatibleFromFor(
+          scope.adapterId,
+        ),
+      },
+    });
+    if (saved?.sourceQuery) {
+      setQuery(saved.sourceQuery);
+      setSelectedSourceObject(sourceObjectFromSafeQuery(saved.sourceQuery));
+    }
+    return saved;
   }
 
   function selectDatabaseConnection(connectionId, purpose) {
@@ -788,7 +957,12 @@ export function App() {
     setSourceProfile({ ...initialProfile });
     setRememberSourcePassword(true);
     setHasSavedSourceConnection(false);
-    setLegacyInspection(null);
+    setSourceAdapterInspection(null);
+    setSourceObjects([]);
+    setSelectedSourceObject("");
+    invalidateSourceObjectPreview();
+    invalidateSourceObjectSurvey();
+    setQuery("");
     notify("已删除保存的老库连接和本地加密密码");
   }
 
@@ -874,6 +1048,11 @@ export function App() {
       setTargetSystemUrl(result.baseUrl);
       setTenantId(result.tenantId);
       setOperatorId(result.userId);
+      if (sourceMode === "database") {
+        await restoreGenericDatabaseQuery(sourceProfile, result.tenantId).catch(
+          () => null,
+        );
+      }
       const saved = await command("save_target_system_connection", {
         request: {
           baseUrl: result.baseUrl,
@@ -940,6 +1119,23 @@ export function App() {
 
   function acceptData(data, name, options = {}) {
     if (!data.length) return fail("文件中没有可识别的数据行");
+    const acceptedAdapterId =
+      options.adapterId ||
+      sourceAdapterId({
+        phis27: Boolean(options.phis27Preset),
+        sourceMode,
+      });
+    const acceptedAdapter = sourceAdapters.find(
+      (adapter) => adapter.id === acceptedAdapterId,
+    );
+    const acceptedWorkflow = medicineWorkflowFor(acceptedAdapter);
+    const acceptedMappingPreset = `${
+      options.mappingPreset ||
+      (options.phis27Preset ? "PHIS27" : acceptedWorkflow.mappingPreset)
+    }`.toUpperCase();
+    const acceptedAdapterProvidesSourceKey =
+      adapterProvidesSourceKey(acceptedAdapter);
+    setSourceTemplateImport(null);
     const detectedColumns = Object.keys(data[0]);
     const metadataByName = Object.fromEntries(
       (options.columnMetadata || []).map((item) => [item.name, item]),
@@ -950,11 +1146,28 @@ export function App() {
     setMappingSampleIndex(randomRowIndex(data.length));
     setSourceName(name);
     setSourceDescription(options.description || name);
-    setSourceKey(
-      options.sourceKey && detectedColumns.includes(options.sourceKey)
-        ? options.sourceKey
-        : detectedColumns[0] || "",
+    setActiveSourceAdapterId(acceptedAdapterId);
+    setActiveSourceSelection(options.sourceSelection || null);
+    const sourceKeyReview = assessSourceKeyColumns({
+      rows: data,
+      columns: detectedColumns,
+      columnMetadata: metadataByName,
+    });
+    setSourceKeyFields(
+      chooseInitialSourceKeyFields({
+        rows: data,
+        review: sourceKeyReview,
+        preferredFields:
+          options.sourceKeyFields ||
+          options.mappingProfile?.sourceKeyFields ||
+          (acceptedAdapterProvidesSourceKey
+            ? [acceptedWorkflow.sourceKeyField]
+            : []),
+        legacySourceKey:
+          options.sourceKey || options.mappingProfile?.sourceKey || "",
+      }),
     );
+    setSourceKeyConfirmed(acceptedAdapterProvidesSourceKey);
     const mappingColumns = detectedColumns.filter(
       (column) => metadataByName[column]?.mappingEligible !== false,
     );
@@ -978,17 +1191,13 @@ export function App() {
       const best = mappingColumns
         .map((column) => ({
           column,
-          score: sourceFieldMatchScore(
-            column,
-            field,
-            metadataByName[column],
-          ),
+          score: sourceFieldMatchScore(column, field, metadataByName[column]),
         }))
         .sort((a, b) => b.score - a.score)[0];
       if (best?.score >= 55) auto[field.key] = best.column;
     });
     if (
-      options.phis27Preset &&
+      acceptedMappingPreset === "PHIS27" &&
       mappingColumns.includes("PRE_UNIT") &&
       metadataByName.PRE_UNIT?.sourceColumn === "ZXDW"
     ) {
@@ -1009,9 +1218,9 @@ export function App() {
             target,
             {
               ...rule,
-              additionalSourceFields: (rule.additionalSourceFields || []).filter(
-                (field) => mappingColumns.includes(field),
-              ),
+              additionalSourceFields: (
+                rule.additionalSourceFields || []
+              ).filter((field) => mappingColumns.includes(field)),
               conditionField,
               conditionOperator: conditionField
                 ? rule.conditionOperator || "ALWAYS"
@@ -1020,25 +1229,31 @@ export function App() {
           ];
         }),
     );
-    const effectiveRules = options.phis27Preset
-      ? buildPhis27PresetRules({
-          rows: data,
-          mapping: auto,
-          columnMetadata: metadataByName,
-          targetFields,
-          dictionariesById,
-          rules: restoredRules,
-        })
-      : restoredRules;
+    const effectiveRules =
+      acceptedMappingPreset === "PHIS27"
+        ? buildPhis27PresetRules({
+            rows: data,
+            mapping: auto,
+            columnMetadata: metadataByName,
+            targetFields,
+            dictionariesById,
+            rules: restoredRules,
+          })
+        : restoredRules;
     setMapping(auto);
     setRules(effectiveRules);
-    setPhis27MappingStatus(
+    setMappingProfileStatus(
       options.mappingProfile
         ? {
             restored: true,
             restoredCount,
             missingCount,
             savedAt: options.mappingProfile.savedAt,
+            compatibility: options.mappingProfile.compatibility || "CURRENT",
+            compatibilityMessage:
+              options.mappingProfile.compatibilityMessage || "",
+            requiresReview: Boolean(options.mappingProfile.requiresReview),
+            storageWarning: options.mappingProfile.storageWarning || "",
           }
         : null,
     );
@@ -1054,39 +1269,373 @@ export function App() {
       const data = file.name.toLowerCase().endsWith(".json")
         ? JSON.parse(text)
         : parseCsv(text);
-      acceptData(Array.isArray(data) ? data : data.rows || [], file.name);
+      const scope = sourceMappingProfileScope({
+        adapterId: sourceAdapterId({ sourceMode: "file" }),
+        fileName: file.name,
+        sourceMode: "file",
+        targetTenantId: targetAuth?.tenantId || tenantId || loginTenantId,
+      });
+      const savedMappingProfile = scope
+        ? await command("load_source_mapping_profile", {
+            request: {
+              scope,
+              adapterVersion: sourceAdapterVersionFor(scope.adapterId),
+              templateCompatibleFromVersion: sourceAdapterCompatibleFromFor(
+                scope.adapterId,
+              ),
+            },
+          })
+        : null;
+      const accepted = acceptData(
+        Array.isArray(data) ? data : data.rows || [],
+        file.name,
+        { mappingProfile: savedMappingProfile },
+      );
+      if (savedMappingProfile) {
+        notify(
+          `已读取文件并恢复 ${accepted.restoredCount} 项来源模板配置${accepted.missingCount ? `；${accepted.missingCount} 项旧字段已失效并重新建议` : ""}`,
+        );
+      }
     } catch (error) {
       fail(`文件解析失败：${error.message}`);
     }
   }
 
-  async function loadDatabase() {
-    if (!query.trim()) return fail("请先填写要执行的自定义只读 SQL");
+  async function loadSourceObjects() {
+    invalidateSourceObjectPreview();
+    invalidateSourceObjectSurvey();
+    setBusy("source-objects");
+    try {
+      const [checked, objects] = await Promise.all([
+        command("test_database_connection", { profile: sourceProfile }),
+        command("list_source_tables", { profile: sourceProfile }),
+      ]);
+      const available = [...new Set(objects || [])];
+      setSourceObjects(available);
+      setSelectedSourceObject((current) =>
+        available.includes(current)
+          ? current
+          : available.length === 1
+            ? available[0]
+            : "",
+      );
+      await rememberSourceConnection();
+      if (!available.length)
+        return fail("当前账号没有可见的业务表或视图，请检查 Schema 和只读权限");
+      notify(`${checked.message}；已读取 ${available.length} 个可见表/视图`);
+      return available;
+    } catch (error) {
+      setSourceObjects([]);
+      setSelectedSourceObject("");
+      invalidateSourceObjectPreview();
+      invalidateSourceObjectSurvey();
+      fail(error);
+      return [];
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function loadGenericDatabase({ objectName = "", customQuery = "" }) {
+    const usesObject = Boolean(objectName);
+    if (!usesObject && !customQuery.trim())
+      return fail("请先填写要执行的自定义只读 SQL");
     setBusy("source");
     try {
       const checked = await command("test_database_connection", {
         profile: sourceProfile,
       });
-      const preview = await command("preview_source", {
-        request: { connection: sourceProfile, query, limit: 500 },
+      const baseScope = sourceMappingProfileScope({
+        adapterId: sourceAdapterId({ sourceMode: "database" }),
+        profile: sourceProfile,
+        sourceMode: "database",
+        targetTenantId: targetAuth?.tenantId || tenantId || loginTenantId,
+      });
+      const scopedScope = sourceMappingProfileScope({
+        adapterId: sourceAdapterId({ sourceMode: "database" }),
+        profile: sourceProfile,
+        sourceObject: usesObject ? objectName : "",
+        sourceQuery: usesObject ? "" : customQuery,
+        sourceMode: "database",
+        targetTenantId: targetAuth?.tenantId || tenantId || loginTenantId,
+      });
+      const loadMappingProfile = (scope) =>
+        scope
+          ? command("load_source_mapping_profile", {
+              request: {
+                scope,
+                adapterVersion: sourceAdapterVersionFor(scope.adapterId),
+                templateCompatibleFromVersion: sourceAdapterCompatibleFromFor(
+                  scope.adapterId,
+                ),
+              },
+            })
+          : Promise.resolve(null);
+      const [sourceResult, scopedMappingProfile, legacyMappingProfile] =
+        await Promise.all([
+          usesObject
+            ? command("preview_source_object", {
+                request: {
+                  connection: sourceProfile,
+                  objectName,
+                  limit: 10000,
+                },
+              })
+            : command("preview_source", {
+                request: {
+                  connection: sourceProfile,
+                  query: customQuery,
+                  limit: 10000,
+                },
+              }),
+          loadMappingProfile(scopedScope),
+          scopedScope?.sourceIdentity !== baseScope?.sourceIdentity
+            ? loadMappingProfile(baseScope)
+            : Promise.resolve(null),
+        ]);
+      const preview = usesObject ? sourceResult.preview : sourceResult;
+      const resolvedQuery = usesObject
+        ? sourceResult.query
+        : customQuery.trim();
+      const savedMappingProfile = sourceMappingProfileForSelection({
+        scopedProfile: scopedMappingProfile,
+        legacyProfile: legacyMappingProfile,
+        resolvedQuery,
       });
       if (preview.truncated)
-        return fail("自定义查询结果超过500行，请收窄范围或使用二系列phis自动模板");
-      acceptData(
+        return fail(
+          usesObject
+            ? `表/视图 ${objectName} 超过单批10,000行，请改用高级 SQL 添加稳定筛选条件`
+            : "自定义查询结果超过单批10,000行，请按稳定条件拆分批次后读取",
+        );
+      let similarMappingCandidate = null;
+      if (!savedMappingProfile && scopedScope) {
+        try {
+          similarMappingCandidate = await command(
+            "recommend_source_mapping_profile",
+            {
+              request: {
+                scope: scopedScope,
+                columns: preview.columns?.length
+                  ? preview.columns
+                  : Object.keys(preview.rows?.[0] || {}),
+                adapterVersion: sourceAdapterVersionFor(scopedScope.adapterId),
+                templateCompatibleFromVersion: sourceAdapterCompatibleFromFor(
+                  scopedScope.adapterId,
+                ),
+              },
+            },
+          );
+        } catch {
+          // Similar-source reuse is an optional convenience. Never block a fresh mapping flow
+          // because local recommendation history is missing or unreadable.
+        }
+      }
+      let mappingProfileForCurrentRead =
+        savedMappingProfile || similarMappingCandidate?.profile || null;
+      const promotionRequest = legacySourceMappingPromotionRequest({
+        scopedScope,
+        scopedProfile: scopedMappingProfile,
+        legacyProfile: legacyMappingProfile,
+        resolvedQuery,
+      });
+      if (promotionRequest) {
+        try {
+          await command("save_source_mapping_profile", {
+            request: promotionRequest,
+          });
+        } catch {
+          mappingProfileForCurrentRead = {
+            ...savedMappingProfile,
+            storageWarning: "旧模板已恢复，但未能按当前表/视图或查询单独固化",
+          };
+        }
+      }
+      setQuery(resolvedQuery);
+      const sourceEndpointName =
+        sourceProfile.database ||
+        sourceProfile.serviceName ||
+        sourceProfile.host ||
+        "当前数据库";
+      const accepted = acceptData(
         preview.rows,
-        `${databaseKinds[sourceProfile.kind]?.label || sourceProfile.kind} · ${sourceProfile.database} · 自定义只读查询`,
+        `${databaseKinds[sourceProfile.kind]?.label || sourceProfile.kind} · ${sourceEndpointName} · ${usesObject ? objectName : "自定义只读查询"}`,
         {
-          description: query,
+          description: usesObject
+            ? `安全读取表/视图：${objectName}`
+            : resolvedQuery,
           columnMetadata: preview.columnMetadata,
+          mappingProfile: mappingProfileForCurrentRead,
+          sourceSelection: usesObject
+            ? { objectName }
+            : { sourceQuery: resolvedQuery },
         },
       );
       await rememberSourceConnection();
-      notify(`${checked.message}，已预览 ${preview.rows.length} 行`);
+      notify(
+        mappingProfileForCurrentRead
+          ? similarMappingCandidate
+            ? `${checked.message}，已读取 ${preview.rows.length} 行；发现同结构本地模板并复用 ${accepted.restoredCount} 项字段建议，请在进入校验前核对`
+            : `${checked.message}，已读取 ${preview.rows.length} 行并恢复 ${accepted.restoredCount} 项来源模板配置${accepted.missingCount ? `；${accepted.missingCount} 项旧字段已失效并重新建议` : ""}${promotionRequest && !mappingProfileForCurrentRead.storageWarning ? "；旧模板已自动按当前来源对象固化" : ""}${mappingProfileForCurrentRead.storageWarning ? `；${mappingProfileForCurrentRead.storageWarning}` : ""}`
+          : `${checked.message}，已读取 ${preview.rows.length} 行`,
+        mappingProfileForCurrentRead?.storageWarning ? "danger" : "success",
+      );
+      return preview;
     } catch (error) {
       fail(error);
+      return null;
     } finally {
       setBusy("");
     }
+  }
+
+  async function loadDatabase() {
+    return loadGenericDatabase({ customQuery: query });
+  }
+
+  async function previewDatabaseObject(requestedObjectName = "") {
+    const objectName =
+      typeof requestedObjectName === "string" && requestedObjectName
+        ? requestedObjectName
+        : selectedSourceObject;
+    if (!objectName) return fail("请先选择一个来源表或视图");
+    if (!sourceObjects.includes(objectName))
+      return fail("来源表或视图已不在当前清单中，请刷新后重试");
+    const requestId = sourceObjectPreviewRequestRef.current + 1;
+    sourceObjectPreviewRequestRef.current = requestId;
+    if (objectName !== selectedSourceObject)
+      setSelectedSourceObject(objectName);
+    setSourceObjectPreview(null);
+    setSourceObjectCount(null);
+    setSourceObjectCountBusy(false);
+    setBusy("source-object-preview");
+    try {
+      const sourceResult = await command("preview_source_object", {
+        request: {
+          connection: sourceProfile,
+          objectName,
+          limit: 6,
+        },
+      });
+      if (sourceObjectPreviewRequestRef.current !== requestId) return null;
+      const preview = sourceResult.preview;
+      setSourceObjectPreview(sourceResult);
+      await rememberSourceConnection();
+      void countDatabaseObjectRows(sourceResult.objectName, requestId);
+      notify(
+        preview.rows.length
+          ? `已读取 ${preview.columns.length} 个字段和 ${preview.rows.length} 行样例，请核对后再读取本批`
+          : `表/视图 ${objectName} 当前没有可读取的数据`,
+        preview.rows.length ? "success" : "danger",
+      );
+      return sourceResult;
+    } catch (error) {
+      fail(error);
+      return null;
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function surveyLikelySourceObjects() {
+    const candidates = sourceObjectSurveyCandidates(sourceObjects, 5);
+    if (!candidates.length)
+      return fail(
+        "当前清单没有明确的药品名称线索，请直接搜索并预览已知业务表或视图",
+      );
+    const requestId = sourceObjectSurveyRequestRef.current + 1;
+    sourceObjectSurveyRequestRef.current = requestId;
+    let completed = [];
+    setSourceObjectSurvey({
+      status: "RUNNING",
+      completedCount: 0,
+      totalCount: candidates.length,
+      results: [],
+    });
+    setBusy("source-object-survey");
+    try {
+      const surveyed = await command("survey_source_objects", {
+        request: {
+          connection: sourceProfile,
+          objectNames: candidates.map((option) => option.value),
+        },
+      });
+      if (sourceObjectSurveyRequestRef.current !== requestId) return null;
+      const surveyedByName = Object.fromEntries(
+        (surveyed || []).map((item) => [item.objectName, item]),
+      );
+      completed = rankSourceObjectSurveyResults(
+        candidates.map((option) => {
+          const item = surveyedByName[option.value];
+          return item?.status === "READY" && item.sourceResult
+            ? sourceObjectSurveyResult({
+                option,
+                sourceResult: item.sourceResult,
+                targetFields,
+              })
+            : failedSourceObjectSurveyResult(option);
+        }),
+      );
+      const successful = completed.filter(
+        (result) => result.status === "READY",
+      );
+      setSourceObjectSurvey({
+        status: "COMPLETE",
+        completedCount: completed.length,
+        totalCount: candidates.length,
+        results: completed,
+      });
+      await rememberSourceConnection();
+      notify(
+        `已轻量核对 ${candidates.length} 个候选，其中 ${successful.length} 个返回有效字段；请人工选择后完成正式预览`,
+        successful.length ? "success" : "danger",
+      );
+      return completed;
+    } catch (error) {
+      if (sourceObjectSurveyRequestRef.current === requestId) fail(error);
+      return null;
+    } finally {
+      setBusy((current) => (current === "source-object-survey" ? "" : current));
+    }
+  }
+
+  async function countDatabaseObjectRows(objectName, requestId) {
+    setSourceObjectCountBusy(true);
+    try {
+      const result = await command("count_source_object_rows", {
+        request: {
+          connection: sourceProfile,
+          objectName,
+        },
+      });
+      if (sourceObjectPreviewRequestRef.current !== requestId) return;
+      setSourceObjectCount(result);
+    } catch {
+      if (sourceObjectPreviewRequestRef.current !== requestId) return;
+      setSourceObjectCount({
+        objectName,
+        error: "短时行数探测未完成；正式读取时仍会执行单批上限检查",
+      });
+    } finally {
+      if (sourceObjectPreviewRequestRef.current === requestId)
+        setSourceObjectCountBusy(false);
+    }
+  }
+
+  async function loadDatabaseObject() {
+    if (!selectedSourceObject) return fail("请先选择一个来源表或视图");
+    if (sourceObjectPreview?.objectName !== selectedSourceObject)
+      return fail("请先预览所选表或视图的字段和样例，再确认读取本批");
+    if (!sourceObjectPreview.preview?.rows?.length)
+      return fail("所选表或视图当前没有可迁移数据，请选择其他对象");
+    if (
+      sourceObjectCount?.objectName === selectedSourceObject &&
+      Number(sourceObjectCount.rowCount || 0) > 10_000
+    )
+      return fail(
+        `表/视图 ${selectedSourceObject} ${sourceObjectCount.isExact === false ? "至少" : "共"} ${Number(sourceObjectCount.rowCount).toLocaleString()} 行，超过单批10,000行；请使用高级 SQL 按稳定条件拆分，或让数据库人员提供已筛选业务视图`,
+      );
+    return loadGenericDatabase({ objectName: selectedSourceObject });
   }
 
   async function testSourceConnection() {
@@ -1104,18 +1653,37 @@ export function App() {
     }
   }
 
-  async function inspectPhis27Source() {
-    setBusy("phis27-inspect");
-    setLegacyInspection(null);
+  async function inspectMedicineSourceAdapter() {
+    const adapter = sourceAdapters.find(
+      (item) =>
+        item.id === selectedMedicineAdapterId &&
+        item.automaticDetection &&
+        item.migrationTasks.includes("MEDICINE_BASE") &&
+        item.databaseFamilies.includes(sourceProfile.kind),
+    );
+    if (!adapter) return fail("请选择支持当前数据库的自动药品来源适配器");
+    setBusy("medicine-adapter-inspect");
+    setSourceAdapterInspection(null);
+    setSourceAdapterDiagnostics([]);
     try {
       const checked = await command("test_database_connection", {
         profile: sourceProfile,
       });
-      const inspection = await command("inspect_phis27_source", {
-        profile: sourceProfile,
+      const inspection = await command("inspect_medicine_source_adapter", {
+        request: {
+          adapterId: adapter.id,
+          connection: sourceProfile,
+        },
       });
       await rememberSourceConnection();
-      setLegacyInspection(inspection);
+      setSourceAdapterInspection(inspection);
+      await archiveSourceAdapterDiagnostic(inspection, {
+        migrationTask: "MEDICINE_BASE",
+        profile: sourceProfile,
+        setDiagnostics: setSourceAdapterDiagnostics,
+      }).catch(() => {
+        setSourceAdapterDiagnostics([]);
+      });
       const recommended = inspection.scopes?.find((scope) => scope.recommended);
       if (recommended) setLegacyScope(recommended.id);
       if (!inspection.detected) return fail(inspection.message);
@@ -1127,31 +1695,93 @@ export function App() {
     }
   }
 
-  async function loadPhis27Medicine() {
-    if (!legacyInspection?.detected) return fail("请先识别二系列phis数据结构");
-    const selected = legacyInspection.scopes.find(
+  async function archiveSourceAdapterDiagnostic(
+    inspection,
+    {
+      migrationTask = "MEDICINE_BASE",
+      profile = sourceProfile,
+      setDiagnostics = setSourceAdapterDiagnostics,
+    } = {},
+  ) {
+    const scope = sourceMappingProfileScope({
+      adapterId: inspection.adapterId,
+      profile,
+      sourceMode: "database",
+      targetTenantId: targetAuth?.tenantId || tenantId || loginTenantId,
+    });
+    if (!scope) return [];
+    const history = await command("save_source_adapter_diagnostic", {
+      request: {
+        scope,
+        migrationTask,
+        adapterVersion: inspection.adapterVersion,
+        databaseFamily: profile.kind,
+        schema: inspection.schema,
+        detected: inspection.detected,
+        checkedObjects: inspection.checkedObjects || [],
+        missingObjects: inspection.missingObjects || [],
+        objectStructures: inspection.objectStructures || [],
+        metrics: inspection.metrics || [],
+        warnings: inspection.warnings || [],
+        message: inspection.message,
+      },
+    });
+    setDiagnostics(history || []);
+    return history;
+  }
+
+  async function loadMedicineSourceAdapter() {
+    if (!sourceAdapterInspection?.detected)
+      return fail("请先识别当前来源适配器的数据结构");
+    const adapter = sourceAdapters.find(
+      (item) => item.id === sourceAdapterInspection.adapterId,
+    );
+    const workflow = medicineWorkflowFor(adapter);
+    const selected = sourceAdapterInspection.scopes.find(
       (scope) => scope.id === legacyScope,
     );
-    setBusy("phis27-load");
+    setBusy("medicine-adapter-load");
     try {
-      const [preview, savedMappingProfile] = await Promise.all([
-        command("load_phis27_medicine", {
-          request: {
-            connection: sourceProfile,
-            scope: legacyScope,
-            limit: 10000,
-          },
-        }),
-        command("load_phis27_mapping_profile"),
-      ]);
+      const mappingScope = sourceMappingProfileScope({
+        adapterId: sourceAdapterInspection.adapterId,
+        profile: sourceProfile,
+        sourceMode: "database",
+        targetTenantId: targetAuth?.tenantId || tenantId || loginTenantId,
+      });
+      const [preview, scopedMappingProfile, legacyMappingProfile] =
+        await Promise.all([
+          command("load_medicine_source_adapter", {
+            request: {
+              adapterId: sourceAdapterInspection.adapterId,
+              connection: sourceProfile,
+              scope: legacyScope,
+              limit: 10000,
+            },
+          }),
+          mappingScope
+            ? command("load_source_mapping_profile", {
+                request: {
+                  scope: mappingScope,
+                  adapterVersion: sourceAdapterInspection.adapterVersion,
+                  templateCompatibleFromVersion: sourceAdapterCompatibleFromFor(
+                    sourceAdapterInspection.adapterId,
+                  ),
+                },
+              })
+            : Promise.resolve(null),
+          workflow.legacyProfileKind === "PHIS27_V2"
+            ? command("load_phis27_mapping_profile")
+            : Promise.resolve(null),
+        ]);
+      const savedMappingProfile = scopedMappingProfile || legacyMappingProfile;
       if (preview.truncated)
         return fail("当前范围超过单批10,000行，请缩小范围后再读取");
       setAllowCreateFactory(true);
       const savedDictionaryOverrides =
         savedMappingProfile?.dictionaryOverrides || {};
-      const dictionaryScopeKey = phis27DictionaryScopeKey(
+      const dictionaryScopeKey = sourceDictionaryScopeKey(
         sourceProfile,
-        legacyInspection.schema,
+        sourceAdapterInspection.schema,
       );
       const customizedMetadata = applySourceDictionaryOverrides(
         preview.columnMetadata,
@@ -1160,13 +1790,14 @@ export function App() {
       setSourceDictionaryOverrides(savedDictionaryOverrides);
       const restored = acceptData(
         preview.rows,
-        `二系列phis · ${legacyInspection.schema} · ${selected?.label || legacyScope}`,
+        `${sourceAdapterInspection.adapterName} · ${sourceAdapterInspection.schema} · ${selected?.label || legacyScope}`,
         {
-          sourceKey: "SOURCE_KEY",
-          description: `二系列phis内置模板:${legacyScope}; schema=${legacyInspection.schema}`,
+          sourceKey: workflow.sourceKeyField,
+          adapterId: sourceAdapterInspection.adapterId,
+          description: `来源适配器:${sourceAdapterInspection.adapterId}; scope=${legacyScope}; schema=${sourceAdapterInspection.schema}`,
           columnMetadata: customizedMetadata,
           mappingProfile: savedMappingProfile,
-          phis27Preset: true,
+          mappingPreset: workflow.mappingPreset,
           skipNotice: true,
         },
       );
@@ -1182,12 +1813,49 @@ export function App() {
     }
   }
 
-  async function inspectPhis27Inventory() {
-    if (sourceProfile.kind !== "oracle")
-      return fail("二系列phis库存检查当前需要选择 Oracle 老库连接");
+  function inventoryDiagnosticInspection(readiness) {
+    const structureBlocked = readiness?.compatibility?.status === "BLOCKED";
+    return {
+      ...readiness,
+      detected:
+        !structureBlocked && Boolean(readiness?.readyForLocationMapping),
+      metrics: [
+        {
+          id: "STOCK_ROWS",
+          label: "库存明细",
+          value: Number(readiness?.stockRowCount || 0),
+        },
+        {
+          id: "STOCK_GROUPS",
+          label: "药品-库房组合",
+          value: Number(readiness?.stockGroupCount || 0),
+        },
+        {
+          id: "MEDICINES",
+          label: "库存药品",
+          value: Number(readiness?.medicineCount || 0),
+        },
+        {
+          id: "LOCATIONS",
+          label: "库存位置",
+          value: Number(readiness?.locations?.length || 0),
+        },
+      ],
+    };
+  }
+
+  async function inspectInventorySourceAdapter() {
+    const adapter = sourceAdapters.find(
+      (item) =>
+        item.id === selectedInventoryAdapterId &&
+        item.migrationTasks.includes("INVENTORY") &&
+        item.databaseFamilies.includes(sourceProfile.kind),
+    );
+    if (!adapter) return fail("请选择支持当前数据库的库存来源适配器");
     setBusy("inventory-inspect");
     setInventoryReadiness(null);
-    setLegacyInventoryCatalog(null);
+    setInventorySourceDiagnostics([]);
+    setInventorySourceCatalog(null);
     setTargetOrganizationCatalog(null);
     setInventoryOrganizationMappings({});
     setInventorySelectedOrganizationIds([]);
@@ -1202,12 +1870,17 @@ export function App() {
     setInventoryUndoConfirmed(false);
     try {
       const schema =
-        `${sourceProfile.schema || sourceProfile.username || "PHIS27"}`
+        `${sourceProfile.schema || sourceProfile.username || "SOURCE"}`
           .trim()
           .toUpperCase();
-      const sourceIdentity = phis27SourceIdentity(sourceProfile, schema);
-      const readiness = await command("inspect_phis27_inventory", {
+      const sourceIdentity = sourceAdapterIdentity(
+        adapter.name,
+        sourceProfile,
+        schema,
+      );
+      const readiness = await command("inspect_inventory_source_adapter", {
         request: {
+          adapterId: adapter.id,
           connection: sourceProfile,
           sourceName: sourceIdentity,
         },
@@ -1218,9 +1891,20 @@ export function App() {
         readiness.locations.find((location) => location.organizationId)
           ?.organizationId || "",
       );
-      setInventorySourceExpanded(false);
+      const structureBlocked =
+        readiness.compatibility?.status === "BLOCKED";
+      await archiveSourceAdapterDiagnostic(
+        inventoryDiagnosticInspection(readiness),
+        {
+          migrationTask: "INVENTORY",
+          profile: sourceProfile,
+          setDiagnostics: setInventorySourceDiagnostics,
+        },
+      ).catch(() => setInventorySourceDiagnostics([]));
+      setInventorySourceExpanded(structureBlocked);
       setInventoryPreflightExpanded(false);
-      notify(readiness.message);
+      if (structureBlocked) fail(readiness.message);
+      else notify(readiness.message);
     } catch (error) {
       fail(error);
     } finally {
@@ -1229,11 +1913,17 @@ export function App() {
   }
 
   function inventorySourceIdentity() {
+    if (inventoryReadiness?.sourceName) return inventoryReadiness.sourceName;
     const schema =
-      `${sourceProfile.schema || sourceProfile.username || "PHIS27"}`
+      `${sourceProfile.schema || sourceProfile.username || "SOURCE"}`
         .trim()
         .toUpperCase();
-    return phis27SourceIdentity(sourceProfile, schema);
+    const adapter = sourceAdapters.find(
+      (item) => item.id === selectedInventoryAdapterId,
+    );
+    return adapter
+      ? sourceAdapterIdentity(adapter.name, sourceProfile, schema)
+      : `${selectedInventoryAdapterId} · ${databaseSourceIdentity(sourceProfile)}`;
   }
 
   async function loadInventoryTargetStorages() {
@@ -1242,8 +1932,20 @@ export function App() {
     setInventoryBatchDetail(null);
     try {
       const sourceName = inventorySourceIdentity();
-      const [legacyCatalog, organizationCatalog, catalog, savedMappings, savedOrganizations] = await Promise.all([
-        command("load_phis27_inventory_catalog", { profile: sourceProfile }),
+      const [
+        legacyCatalog,
+        organizationCatalog,
+        catalog,
+        savedMappings,
+        savedOrganizations,
+      ] = await Promise.all([
+        command("load_inventory_source_catalog", {
+          request: {
+            adapterId:
+              inventoryReadiness?.adapterId || selectedInventoryAdapterId,
+            connection: sourceProfile,
+          },
+        }),
         command("load_inventory_target_organizations"),
         command("load_inventory_target_storages", { target: targetProfile }),
         command("load_inventory_location_mappings", {
@@ -1257,23 +1959,28 @@ export function App() {
         catalog.storages.map((storage) => storage.idSto),
       );
       const availableOrganizationIds = new Set(
-        organizationCatalog.organizations.map((organization) => organization.id),
+        organizationCatalog.organizations.map(
+          (organization) => organization.id,
+        ),
       );
       const availableStorageOrganizationIds = new Set(
         catalog.storages
           .filter((storage) => ["1", "2"].includes(storage.storageType))
           .map((storage) => storage.organizationId),
       );
-      setLegacyInventoryCatalog(legacyCatalog);
+      setInventorySourceCatalog(legacyCatalog);
       setTargetOrganizationCatalog(organizationCatalog);
       setTargetStorageCatalog(catalog);
       setInventoryTargetExpanded(false);
       setInventoryOrganizationMappings(
         Object.fromEntries(
           savedOrganizations
-            .filter((mapping) =>
-              availableOrganizationIds.has(mapping.targetOrganizationId) &&
-              availableStorageOrganizationIds.has(mapping.targetOrganizationId),
+            .filter(
+              (mapping) =>
+                availableOrganizationIds.has(mapping.targetOrganizationId) &&
+                availableStorageOrganizationIds.has(
+                  mapping.targetOrganizationId,
+                ),
             )
             .map((mapping) => [
               mapping.sourceOrganizationId,
@@ -1288,10 +1995,7 @@ export function App() {
         Object.fromEntries(
           savedMappings
             .filter((mapping) => availableIds.has(mapping.targetIdSto))
-            .map((mapping) => [
-              mapping.sourceLocationKey,
-              mapping.targetIdSto,
-            ]),
+            .map((mapping) => [mapping.sourceLocationKey, mapping.targetIdSto]),
         ),
       );
       setInventoryResolvedLocations(
@@ -1314,11 +2018,11 @@ export function App() {
     }
   }
 
-  async function preparePhis27Inventory() {
+  async function prepareInventoryBatch() {
     const locations = inventoryReadiness?.locations || [];
     const storages = targetStorageCatalog?.storages || [];
     const targetOrganizations = targetOrganizationCatalog?.organizations || [];
-    const legacyOrganizations = legacyInventoryCatalog?.organizations || [];
+    const legacyOrganizations = inventorySourceCatalog?.organizations || [];
     const completedOrganizationIds = completeInventoryOrganizationIds(
       locations,
       inventoryOrganizationMappings,
@@ -1327,17 +2031,19 @@ export function App() {
       inventorySelectedLocationKeys,
     );
     const completedOrganizationIdSet = new Set(completedOrganizationIds);
-    const selectedBatchOrganizationIds = inventorySelectedOrganizationIds.filter(
-      (organizationId) => completedOrganizationIdSet.has(organizationId),
-    );
+    const selectedBatchOrganizationIds =
+      inventorySelectedOrganizationIds.filter((organizationId) =>
+        completedOrganizationIdSet.has(organizationId),
+      );
     if (!selectedBatchOrganizationIds.length) {
       return fail("请先选择并完成本批库房映射，再勾选至少一个机构纳入本批");
     }
     const selectedOrganizationIds = new Set(selectedBatchOrganizationIds);
     const selectedLocationKeySet = new Set(inventorySelectedLocationKeys);
-    const selectedLocations = locations.filter((location) =>
-      selectedOrganizationIds.has(location.organizationId) &&
-      selectedLocationKeySet.has(location.sourceLocationKey),
+    const selectedLocations = locations.filter(
+      (location) =>
+        selectedOrganizationIds.has(location.organizationId) &&
+        selectedLocationKeySet.has(location.sourceLocationKey),
     );
     if (!selectedLocations.length) {
       return fail("请先选择本批需要迁移的药库或药房");
@@ -1370,31 +2076,36 @@ export function App() {
         (inventoryLocationNeedsSourceResolution(location)
           ? ""
           : location.sourceLocationKey);
-      const resolvedLocation = legacyInventoryCatalog?.locations?.find(
+      const resolvedLocation = inventorySourceCatalog?.locations?.find(
         (item) => item.sourceLocationKey === resolvedSourceLocationKey,
       );
       return {
         sourceLocationKey: location.sourceLocationKey,
         sourceKind: location.sourceKind,
-        sourceLocationName: resolvedLocation?.name || location.sourceLocationName,
+        sourceLocationName:
+          resolvedLocation?.name || location.sourceLocationName,
         sourceOrganizationId: location.organizationId,
         resolvedSourceLocationKey,
+        sourceResolutionRequired:
+          inventoryLocationNeedsSourceResolution(location),
         targetIdSto: storage.idSto,
         targetName: storage.name,
         targetIdOrg: storage.organizationId,
       };
     });
-    const organizationMappings = selectedBatchOrganizationIds.map((sourceId) => {
-      const source = legacyOrganizations.find((item) => item.id === sourceId);
-      const targetId = inventoryOrganizationMappings[sourceId];
-      const target = targetOrganizations.find((item) => item.id === targetId);
-      return {
-        sourceOrganizationId: sourceId,
-        sourceOrganizationName: source?.name || sourceId,
-        targetOrganizationId: targetId,
-        targetOrganizationName: target?.name || targetId,
-      };
-    });
+    const organizationMappings = selectedBatchOrganizationIds.map(
+      (sourceId) => {
+        const source = legacyOrganizations.find((item) => item.id === sourceId);
+        const targetId = inventoryOrganizationMappings[sourceId];
+        const target = targetOrganizations.find((item) => item.id === targetId);
+        return {
+          sourceOrganizationId: sourceId,
+          sourceOrganizationName: source?.name || sourceId,
+          targetOrganizationId: targetId,
+          targetOrganizationName: target?.name || targetId,
+        };
+      },
+    );
     setBusy("inventory-prepare");
     setInventoryBatchDetail(null);
     setInventoryMedicineCatalog(null);
@@ -1415,8 +2126,10 @@ export function App() {
     setInventoryExceptionRow(null);
     setInventoryExceptionReason("");
     try {
-      const detail = await command("prepare_phis27_inventory", {
+      const detail = await command("prepare_inventory_batch", {
         request: {
+          adapterId:
+            inventoryReadiness?.adapterId || selectedInventoryAdapterId,
           source: sourceProfile,
           target: targetProfile,
           sourceName: inventorySourceIdentity(),
@@ -1506,16 +2219,18 @@ export function App() {
       if (!inventoryMedicineConfirmations[suggestion.key]) return [];
       const target = inventoryMedicineSelectedTargets[suggestion.key];
       if (!target) return [];
-      return [{
-        sourceProductKey: suggestion.sourceProductKey,
-        targetOrganizationId: suggestion.targetOrganizationId,
-        idMed: target.idMed,
-        idMedPro: target.idMedPro,
-        matchMethod:
-          suggestion.autoCandidate?.idMedPro === target.idMedPro
-            ? "EXACT_AUTO"
-            : "MANUAL",
-      }];
+      return [
+        {
+          sourceProductKey: suggestion.sourceProductKey,
+          targetOrganizationId: suggestion.targetOrganizationId,
+          idMed: target.idMed,
+          idMedPro: target.idMedPro,
+          matchMethod:
+            suggestion.autoCandidate?.idMedPro === target.idMedPro
+              ? "EXACT_AUTO"
+              : "MANUAL",
+        },
+      ];
     });
     if (!matches.length) {
       return fail("请至少确认一个匹配结果后再保存");
@@ -1529,7 +2244,7 @@ export function App() {
           matches,
         },
       });
-      await preparePhis27Inventory();
+      await prepareInventoryBatch();
     } catch (error) {
       fail(error);
     } finally {
@@ -1537,7 +2252,7 @@ export function App() {
     }
   }
 
-  async function executePhis27Inventory() {
+  async function executeInventoryBatch() {
     if (inventoryExecutionLock.current || busy === "inventory-execute") return;
     if (!inventoryBatchDetail || inventoryBatchDetail.batch.failCount > 0) {
       return fail("请先完成库房映射并处理全部库存预检失败项");
@@ -1561,9 +2276,11 @@ export function App() {
     setBusy("inventory-execute");
     try {
       await new Promise((resolve) =>
-        window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+        window.requestAnimationFrame(() =>
+          window.requestAnimationFrame(resolve),
+        ),
       );
-      const detail = await command("execute_phis27_inventory", {
+      const detail = await command("execute_inventory_batch", {
         request: {
           batchId: inventoryBatchDetail.batch.batchId,
           target: targetProfile,
@@ -1585,13 +2302,13 @@ export function App() {
     }
   }
 
-  async function trialPhis27Inventory(row) {
+  async function trialInventoryRow(row) {
     if (!inventoryBatchDetail || inventoryTrialLock.current) return;
     inventoryTrialLock.current = true;
     setInventoryTrialRowId(row.rowId);
     setBusy("inventory-trial");
     try {
-      const response = await command("trial_phis27_inventory", {
+      const response = await command("trial_inventory_row", {
         request: {
           batchId: inventoryBatchDetail.batch.batchId,
           rowId: row.rowId,
@@ -1612,13 +2329,13 @@ export function App() {
     }
   }
 
-  async function confirmPhis27InventoryException() {
+  async function confirmInventoryException() {
     if (!inventoryBatchDetail || !inventoryExceptionRow) return;
     const reason = inventoryExceptionReason.trim();
     if (reason.length < 2) return fail("请填写至少 2 个字的人工确认原因");
     setBusy("inventory-exception");
     try {
-      const detail = await command("confirm_phis27_inventory_exception", {
+      const detail = await command("confirm_inventory_exception", {
         request: {
           batchId: inventoryBatchDetail.batch.batchId,
           rowId: inventoryExceptionRow.rowId,
@@ -1638,13 +2355,13 @@ export function App() {
     }
   }
 
-  async function previewPhis27InventoryUndo() {
+  async function previewInventoryUndo() {
     if (!inventoryBatchDetail) return;
     setBusy("inventory-undo-preview");
     setInventoryUndoPreview(null);
     setInventoryUndoConfirmed(false);
     try {
-      const preview = await command("preview_phis27_inventory_undo", {
+      const preview = await command("preview_inventory_undo", {
         request: {
           batchId: inventoryBatchDetail.batch.batchId,
           target: targetProfile,
@@ -1659,7 +2376,7 @@ export function App() {
     }
   }
 
-  async function undoPhis27Inventory() {
+  async function undoInventoryBatch() {
     if (inventoryUndoLock.current || busy === "inventory-undo") return;
     if (!inventoryUndoPreview?.canUndo) {
       return fail("请先完成撤销预检，并处理所有后续业务阻断项");
@@ -1671,9 +2388,11 @@ export function App() {
     setBusy("inventory-undo");
     try {
       await new Promise((resolve) =>
-        window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+        window.requestAnimationFrame(() =>
+          window.requestAnimationFrame(resolve),
+        ),
       );
-      const detail = await command("undo_phis27_inventory", {
+      const detail = await command("undo_inventory_batch", {
         request: {
           batchId: inventoryBatchDetail.batch.batchId,
           target: targetProfile,
@@ -1694,7 +2413,7 @@ export function App() {
   function autoMatchInventoryMappings() {
     if (
       !inventoryReadiness ||
-      !legacyInventoryCatalog ||
+      !inventorySourceCatalog ||
       !targetOrganizationCatalog ||
       !targetStorageCatalog
     )
@@ -1718,7 +2437,7 @@ export function App() {
     let matchedOrganizations = 0;
     let matchedLocations = 0;
     for (const sourceOrganizationId of sourceOrganizationIds) {
-      const sourceOrganization = legacyInventoryCatalog.organizations.find(
+      const sourceOrganization = inventorySourceCatalog.organizations.find(
         (item) => item.id === sourceOrganizationId,
       );
       const matches = targetOrganizationCatalog.organizations.filter(
@@ -1737,7 +2456,7 @@ export function App() {
           item.organizationId === sourceOrganizationId &&
           selectedLocationKeySet.has(item.sourceLocationKey),
       )) {
-        const sourceCandidates = legacyInventoryCatalog.locations.filter(
+        const sourceCandidates = inventorySourceCatalog.locations.filter(
           (item) =>
             item.organizationId === sourceOrganizationId &&
             item.sourceKind === location.sourceKind &&
@@ -1745,16 +2464,15 @@ export function App() {
         );
         const needsSourceResolution =
           inventoryLocationNeedsSourceResolution(location);
-        const sourceLocation =
-          needsSourceResolution
-            ? sourceCandidates.find(
-                (item) =>
-                  normalizeName(item.name) ===
-                  normalizeName(location.sourceLocationName),
-              )
-            : sourceCandidates.find(
-                (item) => item.sourceLocationKey === location.sourceLocationKey,
-              );
+        const sourceLocation = needsSourceResolution
+          ? sourceCandidates.find(
+              (item) =>
+                normalizeName(item.name) ===
+                normalizeName(location.sourceLocationName),
+            )
+          : sourceCandidates.find(
+              (item) => item.sourceLocationKey === location.sourceLocationKey,
+            );
         if (
           needsSourceResolution &&
           sourceLocation &&
@@ -1764,8 +2482,7 @@ export function App() {
             sourceLocation.sourceLocationKey;
         }
         const sourceName = sourceLocation?.name || location.sourceLocationName;
-        const expectedType =
-          location.sourceKind === "WAREHOUSE" ? "1" : "2";
+        const expectedType = location.sourceKind === "WAREHOUSE" ? "1" : "2";
         const storageMatches = targetStorageCatalog.storages.filter(
           (storage) =>
             storage.organizationId === targetOrganizationId &&
@@ -1792,12 +2509,7 @@ export function App() {
     );
   }
 
-  const {
-    renderInventoryMappingBoard,
-    renderInventoryBatchScopeSummary,
-    renderInventoryBatchReview,
-    renderInventoryUndoPanel,
-  } = createInventoryRenderers({
+  const inventoryRenderContext = {
     autoMatchInventoryMappings,
     busy,
     inventoryBatchDetail,
@@ -1828,12 +2540,12 @@ export function App() {
     inventoryTrialStatus,
     inventoryUndoConfirmed,
     inventoryUndoPreview,
-    legacyInventoryCatalog,
-    preparePhis27Inventory,
-    confirmPhis27InventoryException,
+    inventorySourceCatalog,
+    prepareInventoryBatch,
+    confirmInventoryException,
     openInventoryMedicineMatching,
     searchInventoryTargetMedicines,
-    previewPhis27InventoryUndo,
+    previewInventoryUndo,
     setInventoryBatchDetail,
     setInventoryExceptionReason,
     setInventoryExceptionRow,
@@ -1859,58 +2571,450 @@ export function App() {
     targetOrganizationCatalog,
     targetStorageCatalog,
     saveInventoryMedicineMatches,
-    trialPhis27Inventory,
-    undoPhis27Inventory,
-  });
-
-
+    trialInventoryRow,
+    undoInventoryBatch,
+  };
 
   function beginMapping() {
+    const selectedAssessment = assessSourceKeyFields({
+      rows,
+      fields: sourceKeyFields,
+    });
+    if (!selectedAssessment.completeUnique) {
+      return fail(
+        sourceKeyFields.length
+          ? "当前来源字段组合在整批数据中存在空值或重复，请调整组合"
+          : "请选择一至三个字段组成当前批次非空且唯一的稳定业务键",
+      );
+    }
+    if (!activeAdapterProvidesSourceKey && !sourceKeyConfirmed)
+      return fail("请确认所选字段是老系统稳定业务主键，不会被复用或随业务修改");
     setFieldIndex(0);
     setStep(4);
   }
 
-  async function persistPhis27MappingProfile() {
-    if (!isPhis27Source(sourceDescription)) return null;
+  function currentSourceMappingProfileScope() {
+    return sourceMappingProfileScope({
+      adapterId: activeSourceAdapterId || sourceAdapterId({ sourceMode }),
+      fileName: sourceName,
+      profile: sourceProfile,
+      sourceObject: activeSourceSelection?.objectName || "",
+      sourceQuery: activeSourceSelection?.sourceQuery || "",
+      sourceMode,
+      targetTenantId: targetAuth?.tenantId || tenantId || loginTenantId,
+    });
+  }
+
+  function sourceAdapterVersionFor(adapterId) {
+    return Number(
+      sourceAdapters.find((adapter) => adapter.id === adapterId)?.version || 0,
+    );
+  }
+
+  function sourceAdapterCompatibleFromFor(adapterId) {
+    const adapter = sourceAdapters.find((item) => item.id === adapterId);
+    return Number(
+      adapter?.templateCompatibleFromVersion || adapter?.version || 0,
+    );
+  }
+
+  function currentSourceUsesScopedDictionaries() {
+    return Boolean(
+      sourceAdapters.find((adapter) => adapter.id === activeSourceAdapterId)
+        ?.automaticDetection,
+    );
+  }
+
+  async function persistSourceMappingProfile(
+    dictionaryOverrides = sourceDictionaryOverrides,
+  ) {
+    const scope = currentSourceMappingProfileScope();
+    if (!scope) return null;
     const completeMapping = Object.fromEntries(
       targetFields.map((field) => [field.key, mapping[field.key] || ""]),
     );
-    const saved = await command("save_phis27_mapping_profile", {
-      request: {
-        mapping: completeMapping,
-        rules,
-        dictionaryOverrides: sourceDictionaryOverrides,
-      },
+    const saveRequest = {
+      adapterVersion: sourceAdapterVersionFor(scope.adapterId),
+      sourceKey: sourceKeyFields.length === 1 ? sourceKeyFields[0] : "",
+      sourceKeyFields,
+      sourceQuery: activeSourceAdapter?.automaticDetection ? "" : query.trim(),
+      mapping: completeMapping,
+      rules,
+      dictionaryOverrides,
+    };
+    const saved = await command("save_source_mapping_profile", {
+      request: { scope, ...saveRequest },
     });
-    setPhis27MappingStatus({
+    if (
+      scope.adapterId === "GENERIC_DATABASE" &&
+      sourceMode === "database" &&
+      activeSourceSelection
+    ) {
+      const baseScope = sourceMappingProfileScope({
+        adapterId: scope.adapterId,
+        profile: sourceProfile,
+        sourceMode,
+        targetTenantId: targetAuth?.tenantId || tenantId || loginTenantId,
+      });
+      if (baseScope && baseScope.sourceIdentity !== scope.sourceIdentity) {
+        await command("save_source_mapping_profile", {
+          request: { scope: baseScope, ...saveRequest },
+        });
+      }
+    }
+    setMappingProfileStatus({
       restored: true,
       restoredCount: Object.values(saved.mapping).filter(Boolean).length,
       missingCount: 0,
       savedAt: saved.savedAt,
+      compatibility: saved.compatibility || "CURRENT",
+      compatibilityMessage: saved.compatibilityMessage || "",
+      requiresReview: Boolean(saved.requiresReview),
     });
     return saved;
   }
 
+  async function exportSourceMappingTemplate() {
+    const scope = currentSourceMappingProfileScope();
+    if (!scope) return fail("请先连接当前来源和目标租户，再导出来源模板");
+    const adapter = sourceAdapters.find((item) => item.id === scope.adapterId);
+    try {
+      const exported = await command("export_source_mapping_template", {
+        request: {
+          scope,
+          adapterVersion: `${adapter?.version || ""}`,
+          templateCompatibleFromVersion: Number(
+            adapter?.templateCompatibleFromVersion || adapter?.version || 0,
+          ),
+          dictionaryScopeKey: currentSourceUsesScopedDictionaries()
+            ? currentDictionaryScopeKey
+            : "",
+        },
+      });
+      const blob = new Blob([exported.content], {
+        type: "application/json;charset=utf-8",
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = exported.fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      notify("来源模板已导出；文件不含数据库地址、账号密码和目标租户");
+      return exported;
+    } catch (error) {
+      fail(error);
+      return null;
+    }
+  }
+
+  async function exportSourceObjectDiagnostic(suitability) {
+    if (
+      !selectedSourceObject ||
+      sourceObjectPreview?.objectName !== selectedSourceObject ||
+      !sourceObjectPreview.preview?.columns?.length
+    )
+      return fail("请先预览来源表或视图，再导出结构诊断");
+    try {
+      const exported = await buildSourceObjectDiagnostic({
+        databaseFamily: sourceProfile.kind,
+        schema: sourceProfile.schema,
+        objectName: selectedSourceObject,
+        preview: sourceObjectPreview.preview,
+        metadataMessage: sourceObjectPreview.metadataMessage,
+        rowCount:
+          sourceObjectCount?.objectName === selectedSourceObject
+            ? sourceObjectCount
+            : null,
+        suitability,
+      });
+      const blob = new Blob([exported.content], {
+        type: "application/json;charset=utf-8",
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = exported.fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      notify("脱敏结构诊断已导出；不含连接信息、目标租户或任何原始样例值");
+      return exported;
+    } catch (error) {
+      fail(error);
+      return null;
+    }
+  }
+
+  function exportSourceAdapterDiagnosticReport({
+    inspection,
+    migrationTask,
+    profile,
+  }) {
+    if (!inspection) return fail("请先识别当前三方 HIS 数据结构");
+    const adapter = sourceAdapters.find(
+      (item) => item.id === inspection.adapterId,
+    );
+    const compatibility = inspection.compatibility;
+    const taskLabel =
+      migrationTask === "INVENTORY" ? "机构库存" : "药品基础数据";
+    const compatibilityLines = (label, items = []) => [
+      `${label}（${items.length}）：`,
+      ...(items.length
+        ? items.map(
+            (item) =>
+              `- ${item.path}：${item.message}${item.usedBy?.length ? `；影响 ${item.usedBy.join("、")}` : ""}${item.fallback ? `；处理方式 ${item.fallback}` : ""}`,
+          )
+        : ["- 无"]),
+    ];
+    const lines = [
+      "三方 HIS 来源适配器项目差异报告",
+      `生成时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
+      `迁移任务：${taskLabel}（${migrationTask}）`,
+      `适配器：${inspection.adapterName} v${inspection.adapterVersion}`,
+      `适配器 ID：${inspection.adapterId}`,
+      `数据库类型：${profile.kind}`,
+      `来源 Schema：${inspection.schema || "未识别"}`,
+      `识别结论：${inspection.detected ? "通过" : "未通过"}`,
+      `说明：${inspection.message}`,
+      `能力：${adapter?.migrationTasks?.join("、") || "未声明"}`,
+      `已核对对象：${inspection.checkedObjects?.join("、") || "无"}`,
+      `缺失对象：${inspection.missingObjects?.join("、") || "无"}`,
+      ...(compatibility
+        ? [
+            `契约影响：${compatibility.status} · ${compatibility.message}`,
+            "",
+            ...compatibilityLines("阻断项", compatibility.blockers),
+            "",
+            ...compatibilityLines("需核对", compatibility.reviews),
+            "",
+            ...compatibilityLines(
+              "可兼容降级",
+              compatibility.compatibleFallbacks,
+            ),
+          ]
+        : []),
+      "",
+      "指标：",
+      ...(inspection.metrics || []).map(
+        (metric) => `- ${metric.label}：${metric.value}`,
+      ),
+      ...((inspection.scopes || []).length
+        ? [
+            "",
+            "可选范围：",
+            ...inspection.scopes.map(
+              (scope) =>
+                `- ${scope.label}（${scope.id}）：${scope.description}；${scope.medicineCount} 种 / 约 ${scope.estimatedRows} 行`,
+            ),
+          ]
+        : []),
+      "",
+      "提醒：",
+      ...((inspection.warnings || []).length
+        ? inspection.warnings.map((warning) => `- ${warning}`)
+        : ["- 无"]),
+      "",
+      "安全说明：本报告不包含主机地址、端口、数据库账号密码或目标租户。",
+    ];
+    const blob = new Blob([lines.join("\n")], {
+      type: "text/plain;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${inspection.adapterId.toLowerCase()}-${migrationTask
+      .toLowerCase()
+      .replaceAll("_", "-")}-project-diagnostic.txt`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    notify("适配器项目差异报告已导出，未包含连接地址或账号密码");
+  }
+
+  function exportSourceAdapterDiagnostic() {
+    return exportSourceAdapterDiagnosticReport({
+      inspection: sourceAdapterInspection,
+      migrationTask: "MEDICINE_BASE",
+      profile: sourceProfile,
+    });
+  }
+
+  function exportInventorySourceAdapterDiagnostic() {
+    return exportSourceAdapterDiagnosticReport({
+      inspection: inventoryReadiness
+        ? inventoryDiagnosticInspection(inventoryReadiness)
+        : null,
+      migrationTask: "INVENTORY",
+      profile: sourceProfile,
+    });
+  }
+
+  async function exportSourceAdapterSupportPackageFor({
+    inspection,
+    migrationTask,
+    profile,
+  }) {
+    if (!inspection) return fail("请先识别当前三方 HIS 数据结构");
+    const scope = sourceMappingProfileScope({
+      adapterId: inspection.adapterId,
+      profile,
+      sourceMode: "database",
+      targetTenantId: targetAuth?.tenantId || tenantId || loginTenantId,
+    });
+    if (!scope) return fail("当前来源身份尚未建立，请重新识别数据结构");
+    try {
+      const exported = await command("export_source_adapter_support_package", {
+        request: { scope, migrationTask },
+      });
+      const blob = new Blob([exported.content], {
+        type: "application/json;charset=utf-8",
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = exported.fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      notify(
+        `适配器支持包已导出，共 ${exported.diagnosticCount} 次结构变化；包含脱敏表字段结构，不含连接信息、账号密码、目标租户或业务数据`,
+      );
+      return exported;
+    } catch (error) {
+      fail(error);
+      return null;
+    }
+  }
+
+  function exportSourceAdapterSupportPackage() {
+    return exportSourceAdapterSupportPackageFor({
+      inspection: sourceAdapterInspection,
+      migrationTask: "MEDICINE_BASE",
+      profile: sourceProfile,
+    });
+  }
+
+  function exportInventorySourceAdapterSupportPackage() {
+    return exportSourceAdapterSupportPackageFor({
+      inspection: inventoryReadiness,
+      migrationTask: "INVENTORY",
+      profile: sourceProfile,
+    });
+  }
+
+  async function previewSourceMappingTemplateFile(file) {
+    if (!file) return;
+    const scope = currentSourceMappingProfileScope();
+    if (!scope) return fail("请先连接当前来源和目标租户，再导入来源模板");
+    try {
+      const content = await file.text();
+      const preview = await command("preview_source_mapping_template", {
+        request: {
+          scope,
+          content,
+          adapterVersion: sourceAdapterVersionFor(scope.adapterId),
+          templateCompatibleFromVersion: sourceAdapterCompatibleFromFor(
+            scope.adapterId,
+          ),
+          dictionaryScopeKey: currentSourceUsesScopedDictionaries()
+            ? currentDictionaryScopeKey
+            : "",
+        },
+      });
+      setSourceTemplateImport({ fileName: file.name, content, preview });
+    } catch (error) {
+      setSourceTemplateImport(null);
+      fail(error);
+    }
+  }
+
+  async function confirmSourceMappingTemplateImport() {
+    if (!sourceTemplateImport) return;
+    const scope = currentSourceMappingProfileScope();
+    if (!scope) return fail("当前来源身份已变化，请重新选择模板文件");
+    setBusy("source-template-import");
+    try {
+      const imported = await command("import_source_mapping_template", {
+        request: {
+          scope,
+          content: sourceTemplateImport.content,
+          adapterVersion: sourceAdapterVersionFor(scope.adapterId),
+          templateCompatibleFromVersion: sourceAdapterCompatibleFromFor(
+            scope.adapterId,
+          ),
+          dictionaryScopeKey: currentSourceUsesScopedDictionaries()
+            ? currentDictionaryScopeKey
+            : "",
+        },
+      });
+      let effectiveImported = imported;
+      if (
+        activeSourceAdapterId === "GENERIC_DATABASE" &&
+        sourceMode === "database"
+      ) {
+        const preservedRequest = {
+          adapterVersion: imported.adapterVersion,
+          sourceKey: imported.sourceKey,
+          sourceKeyFields: imported.sourceKeyFields || [],
+          sourceQuery: query.trim(),
+          mapping: imported.mapping,
+          rules: imported.rules,
+          dictionaryOverrides: imported.dictionaryOverrides || {},
+        };
+        effectiveImported = await command("save_source_mapping_profile", {
+          request: { scope, ...preservedRequest },
+        });
+        const baseScope = sourceMappingProfileScope({
+          adapterId: scope.adapterId,
+          profile: sourceProfile,
+          sourceMode,
+          targetTenantId: targetAuth?.tenantId || tenantId || loginTenantId,
+        });
+        if (baseScope && baseScope.sourceIdentity !== scope.sourceIdentity) {
+          await command("save_source_mapping_profile", {
+            request: { scope: baseScope, ...preservedRequest },
+          });
+        }
+      } else if (imported.sourceQuery) {
+        setQuery(imported.sourceQuery);
+      }
+      setSourceDictionaryOverrides(effectiveImported.dictionaryOverrides || {});
+      const restored = acceptData(rows, sourceName, {
+        adapterId: activeSourceAdapterId,
+        description: sourceDescription,
+        columnMetadata: Object.values(columnMetadata),
+        mappingProfile: effectiveImported,
+        mappingPreset: activeMedicineWorkflow.mappingPreset,
+        sourceSelection: activeSourceSelection,
+        skipNotice: true,
+      });
+      notify(
+        `来源模板已导入并恢复 ${restored.restoredCount} 项字段配置${restored.missingCount ? `；${restored.missingCount} 项字段与当前来源不一致，已重新建议` : ""}${effectiveImported.requiresReview ? "；适配器版本已变化，请核对后再进入校验" : ""}`,
+      );
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function saveSourceDictionaryOverride(dictionary, items) {
-    if (!dictionary?.id || !isPhis27Source(sourceDescription)) return;
+    if (!dictionary?.id || !currentSourceUsesScopedDictionaries()) return;
     const nextOverrides = updateScopedDictionaryOverride(
       sourceDictionaryOverrides,
       currentDictionaryScopeKey,
       dictionary.id,
       items,
     );
-    const completeMapping = Object.fromEntries(
-      targetFields.map((field) => [field.key, mapping[field.key] || ""]),
-    );
     setBusy("source-dictionary-save");
     try {
-      const saved = await command("save_phis27_mapping_profile", {
-        request: {
-          mapping: completeMapping,
-          rules,
-          dictionaryOverrides: nextOverrides,
-        },
-      });
+      const saved = await persistSourceMappingProfile(nextOverrides);
       const savedOverrides = saved.dictionaryOverrides || nextOverrides;
       const effectiveItems =
         items === null
@@ -1947,7 +3051,7 @@ export function App() {
           }),
         ),
       );
-      setPhis27MappingStatus({
+      setMappingProfileStatus({
         restored: true,
         restoredCount: Object.values(saved.mapping || completeMapping).filter(
           Boolean,
@@ -1982,9 +3086,9 @@ export function App() {
     }
     setBusy("mapping-save");
     try {
-      const saved = await persistPhis27MappingProfile();
+      const saved = await persistSourceMappingProfile();
       setStep(5);
-      if (saved) notify("二系列phis字段映射和转换规则已固化到本机");
+      if (saved) notify("当前来源的字段映射和转换规则已保存到本机");
     } catch (error) {
       fail(error);
     } finally {
@@ -2002,11 +3106,11 @@ export function App() {
     }
     setBusy("mapping-save");
     try {
-      const saved = await persistPhis27MappingProfile();
+      const saved = await persistSourceMappingProfile();
       setExpert(false);
       setExpertDictionaryFieldKey("");
       setStep(5);
-      if (saved) notify("二系列phis字段映射和转换规则已更新");
+      if (saved) notify("当前来源的字段映射和转换规则已更新");
     } catch (error) {
       fail(error);
     } finally {
@@ -2057,7 +3161,9 @@ export function App() {
     );
     const count = Object.keys(additions).length;
     if (!count) {
-      return fail("没有找到含义一致的字典项；相同编码不会自动视为相同含义，请人工确认未匹配项");
+      return fail(
+        "没有找到含义一致的字典项；相同编码不会自动视为相同含义，请人工确认未匹配项",
+      );
     }
     setRules((current) => ({
       ...current,
@@ -2069,7 +3175,9 @@ export function App() {
         ),
       },
     }));
-    notify(`已为“${field.label}”生成 ${count} 条高置信语义映射；歧义项仍保留人工确认`);
+    notify(
+      `已为“${field.label}”生成 ${count} 条高置信语义映射；歧义项仍保留人工确认`,
+    );
   }
 
   function setDictionaryMapping(field, sourceValue, targetValue) {
@@ -2176,20 +3284,23 @@ export function App() {
             rule.valueMappingCaseInsensitive || false,
         };
       });
-    const phis27Source = isPhis27Source(sourceDescription);
     const preparedRows = rows.map((row) => ({
       ...row,
-      _sourceKey: phis27Source ? row.SOURCE_KEY ?? "" : row[sourceKey] ?? "",
+      _sourceKey: activeAdapterProvidesSourceKey
+        ? (row[activeMedicineWorkflow.sourceKeyField] ?? "")
+        : encodeSourceKey(row, sourceKeyFields),
     }));
-    const stableSourceName = phis27Source
-      ? phis27SourceIdentity(
+    const stableSourceName = activeSourceAdapter?.automaticDetection
+      ? sourceAdapterIdentity(
+          activeSourceAdapter.name,
           sourceProfile,
-          legacyInspection?.schema ||
+          sourceAdapterInspection?.schema ||
             sourceProfile.schema ||
             sourceProfile.username ||
-            "PHIS27",
+            "SOURCE",
         )
       : sourceName;
+    const declaredBatchSourceType = activeMedicineWorkflow.batchSourceType;
     prepareBatchLock.current = true;
     setBusy("prepare");
     try {
@@ -2198,15 +3309,16 @@ export function App() {
           window.requestAnimationFrame(resolve),
         ),
       );
-      if (phis27Source) await persistPhis27MappingProfile();
+      await persistSourceMappingProfile();
       const detail = await command("prepare_migration_batch", {
         request: {
           batchName: `${sourceName}-药品迁移`,
-          sourceType: phis27Source
-            ? "PHIS27"
-            : sourceMode === "database"
-              ? "DATABASE"
-              : "FILE",
+          sourceType:
+            declaredBatchSourceType && declaredBatchSourceType !== "GENERIC"
+              ? declaredBatchSourceType
+              : sourceMode === "database"
+                ? "DATABASE"
+                : "FILE",
           sourceName: stableSourceName,
           sourceDescription: sourceDescription || query,
           conflictStrategy,
@@ -2397,13 +3509,16 @@ export function App() {
       <Header
         runtime={runtime}
         auth={targetAuth}
+        sectionLabel={
+          migrationType === "INVENTORY" ? "机构库存初始化" : "药品基础数据"
+        }
         connectionCount={databaseConnections.length}
         historyCount={historyBatches.length}
         onOpenConnections={() => setConnectionManagerOpen(true)}
         onOpenHistory={openMigrationHistory}
       />
       <Stepper active={step} />
-      <main className="workspace">
+      <main className="workspace" ref={workspaceRef}>
         <SystemConnectionScreen
           context={{
             busy,
@@ -2436,84 +3551,95 @@ export function App() {
             migrationType,
             setMigrationType,
             setStep,
+            sourceAdapters,
             step,
             targetAuth,
           }}
         />
 
-        <InventoryMigrationScreen
-          context={{
-            busy,
-            databaseConnections,
-            databaseDrivers,
-            driverPacks,
-            executePhis27Inventory,
-            forgetSourceConnection,
-            forgetTargetDatabaseConnection,
-            hasSavedSourceConnection,
-            hasSavedTargetDatabase,
-            inspectPhis27Inventory,
-            inventoryBatchDetail,
-            inventoryExecutionSeconds,
-            inventoryLocationMappings,
-            inventoryMappingExpanded,
-            inventoryOrganizationMappings,
-            inventoryPreflightExpanded,
-            inventoryReadiness,
-            inventoryResolvedLocations,
-            inventoryReviewConfirmed,
-            inventoryTrialStatus,
-            inventorySourceExpanded,
-            inventoryTargetExpanded,
-            legacyInventoryCatalog,
-            loadInventoryTargetStorages,
-            migrationType,
-            preparePhis27Inventory,
-            previewPhis27InventoryUndo,
-            rememberSourcePassword,
-            rememberTargetDatabasePassword,
-            renderInventoryBatchReview,
-            renderInventoryBatchScopeSummary,
-            renderInventoryMappingBoard,
-            renderInventoryUndoPanel,
-            selectDatabaseConnection,
-            selectedSourceConnectionId,
-            selectedTargetConnectionId,
-            setConnectionManagerOpen,
-            setInventoryBatchDetail,
-            setInventoryLocationMappings,
-            setInventoryOrganizationMappings,
-            setInventoryPreflightExpanded,
-            setInventoryReadiness,
-            setInventoryResolvedLocations,
-            setInventorySelectedOrganizationIds,
-            setInventoryReviewConfirmed,
-            setInventorySourceExpanded,
-            setInventoryTargetExpanded,
-            setLegacyInventoryCatalog,
-            setRememberSourcePassword,
-            setRememberTargetDatabasePassword,
-            setSelectedSourceConnectionId,
-            setSelectedTargetConnectionId,
-            setSourceConnectionEditing,
-            setSourceProfile,
-            setStep,
-            setTargetConnectionEditing,
-            setTargetOrganizationCatalog,
-            setTargetProfile,
-            setTargetStorageCatalog,
-            sourceConnectionEditing,
-            sourceProfile,
-            step,
-            targetAuth,
-            targetConnectionEditing,
-            targetOrganizationCatalog,
-            targetProfile,
-            targetStorageCatalog,
-            tenantId,
-            trialPhis27Inventory,
-          }}
-        />
+        {step === 2 && migrationType === "INVENTORY" && (
+          <Suspense
+            fallback={<DeferredModuleLoading label="正在打开机构库存工作台…" />}
+          >
+            <LazyInventoryMigrationScreen
+              context={{
+                busy,
+                databaseConnections,
+                databaseDrivers,
+                driverPacks,
+                executeInventoryBatch,
+                exportInventorySourceAdapterDiagnostic,
+                exportInventorySourceAdapterSupportPackage,
+                forgetSourceConnection,
+                forgetTargetDatabaseConnection,
+                hasSavedSourceConnection,
+                hasSavedTargetDatabase,
+                inspectInventorySourceAdapter,
+                inventoryBatchDetail,
+                inventoryExecutionSeconds,
+                inventoryLocationMappings,
+                inventoryMappingExpanded,
+                inventoryOrganizationMappings,
+                inventoryPreflightExpanded,
+                inventoryReadiness,
+                inventorySourceDiagnostics,
+                inventoryResolvedLocations,
+                inventoryReviewConfirmed,
+                inventoryTrialStatus,
+                inventorySourceExpanded,
+                inventoryTargetExpanded,
+                inventorySourceCatalog,
+                loadInventoryTargetStorages,
+                migrationType,
+                prepareInventoryBatch,
+                previewInventoryUndo,
+                rememberSourcePassword,
+                rememberTargetDatabasePassword,
+                inventoryRenderContext,
+                selectDatabaseConnection,
+                selectedSourceConnectionId,
+                selectedTargetConnectionId,
+                setConnectionManagerOpen,
+                setInventoryBatchDetail,
+                setInventoryLocationMappings,
+                setInventoryOrganizationMappings,
+                setInventoryPreflightExpanded,
+                setInventoryReadiness,
+                setInventoryResolvedLocations,
+                setInventorySelectedOrganizationIds,
+                setInventoryReviewConfirmed,
+                setInventorySourceExpanded,
+                setInventorySourceDiagnostics,
+                setInventoryTargetExpanded,
+                setInventorySourceCatalog,
+                selectedInventoryAdapterId,
+                setSelectedInventoryAdapterId,
+                setRememberSourcePassword,
+                setRememberTargetDatabasePassword,
+                setSelectedSourceConnectionId,
+                setSelectedTargetConnectionId,
+                setSourceConnectionEditing,
+                setSourceProfile,
+                setStep,
+                setTargetConnectionEditing,
+                setTargetOrganizationCatalog,
+                setTargetProfile,
+                setTargetStorageCatalog,
+                sourceConnectionEditing,
+                sourceAdapters,
+                sourceProfile,
+                step,
+                targetAuth,
+                targetConnectionEditing,
+                targetOrganizationCatalog,
+                targetProfile,
+                targetStorageCatalog,
+                tenantId,
+                trialInventoryRow,
+              }}
+            />
+          </Suspense>
+        )}
 
         <MedicineSourceScreen
           context={{
@@ -2525,31 +3651,64 @@ export function App() {
             fileInput,
             forgetSourceConnection,
             hasSavedSourceConnection,
-            inspectPhis27Source,
-            legacyInspection,
+            inspectMedicineSourceAdapter,
+            exportSourceAdapterDiagnostic,
+            exportSourceAdapterSupportPackage,
+            exportSourceObjectDiagnostic,
+            sourceAdapterInspection,
+            sourceAdapterDiagnostics,
             legacyScope,
             loadDatabase,
+            loadDatabaseObject,
+            previewDatabaseObject,
             loadFile,
-            loadPhis27Medicine,
+            loadMedicineSourceAdapter,
+            loadSourceObjects,
             migrationType,
             query,
             rememberSourcePassword,
             selectDatabaseConnection,
             selectedSourceConnectionId,
+            selectedMedicineAdapterId,
+            selectedSourceObject,
+            sourceObjectPreview,
+            sourceObjectCount,
+            sourceObjectCountBusy,
+            sourceObjectSurvey,
+            surveyLikelySourceObjects,
             setConnectionManagerOpen,
-            setLegacyInspection,
+            setSourceAdapterInspection,
             setLegacyScope,
             setQuery,
             setRememberSourcePassword,
             setSelectedSourceConnectionId,
+            setSelectedMedicineAdapterId: (adapterId) => {
+              setSelectedMedicineAdapterId(adapterId);
+              setSourceAdapterInspection(null);
+              setSourceAdapterDiagnostics([]);
+            },
+            setSelectedSourceObject: (objectName) => {
+              setSelectedSourceObject(objectName);
+              invalidateSourceObjectPreview();
+            },
             setShowCustomQuery,
             setSourceConnectionEditing,
             setSourceMode,
-            setSourceProfile,
+            setSourceProfile: (profile) => {
+              setSourceProfile(profile);
+              setSourceAdapterDiagnostics([]);
+              setSourceObjects([]);
+              setSelectedSourceObject("");
+              invalidateSourceObjectPreview();
+              invalidateSourceObjectSurvey();
+              setQuery("");
+            },
             setStep,
             showCustomQuery,
             sourceConnectionEditing,
+            sourceAdapters,
             sourceMode,
+            sourceObjects,
             sourceProfile,
             step,
             testSourceConnection,
@@ -2558,17 +3717,29 @@ export function App() {
 
         <SourceRecognitionScreen
           context={{
+            activeSourceAdapterId,
             beginMapping,
             columnMetadata,
             columns,
             medicinePreviewColumns,
             medicinePreviewLabels,
-            phis27MappingStatus,
+            mappingProfileStatus,
+            sourceTemplateImport,
+            cancelSourceTemplateImport: () => setSourceTemplateImport(null),
+            confirmSourceMappingTemplateImport,
+            exportSourceMappingTemplate,
+            previewSourceMappingTemplateFile,
             rows,
-            setSourceKey,
+            setSourceKeyFields: (nextSourceKeyFields) => {
+              setSourceKeyFields(nextSourceKeyFields);
+              setSourceKeyConfirmed(activeAdapterProvidesSourceKey);
+            },
+            setSourceKeyConfirmed,
             setStep,
             sourceDescription,
-            sourceKey,
+            sourceAdapters,
+            sourceKeyFields,
+            sourceKeyConfirmed,
             sourceName,
             step,
           }}
@@ -2613,7 +3784,10 @@ export function App() {
                   searchPlaceholder="按名称、字段、分组或来源查找"
                   value={currentField.key}
                 />
-                <button className="expert-switch" onClick={() => setExpert(true)}>
+                <button
+                  className="expert-switch"
+                  onClick={() => setExpert(true)}
+                >
                   <Code size={19} />
                   全部字段总览
                 </button>
@@ -2627,317 +3801,335 @@ export function App() {
                 targetLocations={targetLocations}
               />
               <div className="mapping-field-workbench">
-            <div className="source-line">
-              <Database size={20} />
-              <span>来源：</span>
-              <strong>{sourceName}</strong>
-              <span className="source-chip">唯一标识 {sourceKey}</span>
-            </div>
-            {validationFieldContext?.fieldKey === currentField.key && (
-              <div className="validation-jump-context">
-                <Warning size={18} weight="fill" />
-                <div>
-                  <strong>
-                    从校验失败定位：第 {validationFieldContext.rowNo} 行 · 来源键 {validationFieldContext.sourceKey}
-                  </strong>
-                  <span>{validationFieldContext.errorMessage}</span>
+                <div className="source-line">
+                  <Database size={20} />
+                  <span>来源：</span>
+                  <strong>{sourceName}</strong>
+                  <span className="source-chip">唯一标识 {sourceKey}</span>
                 </div>
-                <button
-                  className="button button--secondary"
-                  type="button"
-                  onClick={() => setStep(5)}
-                >
-                  返回校验结果
-                </button>
-              </div>
-            )}
-            <div className="question-copy">
-              <div className="question-copy__meta">
-                <span className="field-group">{currentField.group}</span>
-                <div className="target-destination">
-                  <span>
-                    <Database size={14} weight="duotone" />
-                    新系统落点
-                  </span>
-                  {targetLocations(currentField).map((location) => (
-                    <code key={location}>{location}</code>
-                  ))}
-                </div>
-              </div>
-              <h1>
-                老系统里，哪个字段代表“{currentField.label}”？
-                {currentField.required && <em>必填</em>}
-              </h1>
-              <p>{currentField.hint}</p>
-            </div>
-            {currentDictionary && (
-              <div className="dictionary-guide">
-                <div>
-                  <strong>新系统标准字典</strong>
-                  <code>{currentDictionary.dicId}</code>
-                  <span>{currentDictionary.items.length} 个可用值</span>
-                </div>
-                <div className="dictionary-guide__items">
-                  {currentDictionary.items.slice(0, 12).map((item) => (
-                    <span key={item.id || dictionaryItemValue(item)}>
-                      <b>{dictionaryItemValue(item)}</b>
-                      {item.text || item.na}
-                    </span>
-                  ))}
-                  {currentDictionary.items.length > 12 && (
-                    <em>另有 {currentDictionary.items.length - 12} 项</em>
-                  )}
-                </div>
-                <button
-                  className="button button--secondary"
-                  type="button"
-                  disabled={!mapping[currentField.key]}
-                  onClick={() => autoMapDictionary(currentField)}
-                >
-                  <LinkSimple size={17} />
-                  按含义自动生成转换
-                </button>
-              </div>
-            )}
-            <div className="suggestion-heading">
-              <span>智能推荐</span>
-              <small>只展示字段名或别名达到可信阈值的老系统字段</small>
-              <Info size={15} />
-            </div>
-            <div className="suggestions">
-              {suggestions.map((item, index) => (
-                <button
-                  className={`suggestion-row ${mapping[currentField.key] === item.column ? "suggestion-row--selected" : ""}`}
-                  onClick={() =>
-                    setMapping((current) => ({
-                      ...current,
-                      [currentField.key]: item.column,
-                    }))
-                  }
-                  key={item.column}
-                >
-                  <span className="radio">
-                    {mapping[currentField.key] === item.column && <i />}
-                  </span>
-                  <span className="suggestion-field">
-                    <strong>
-                      {sourceFieldDisplayName(
-                        item.column,
-                        columnMetadata[item.column],
-                      )}
-                    </strong>
-                    <small>
-                      {sourceFieldPhysicalOrigin(columnMetadata[item.column])
-                        ? `来源：${sourceFieldPhysicalOrigin(columnMetadata[item.column])}`
-                        : "来源数据字段"}
-                    </small>
-                  </span>
-                  <span>
-                    <small>当前药品样例</small>
-                    {sourceValueLabel(
-                      mappingSample[item.column],
-                      columnMetadata[item.column],
-                    )}
-                  </span>
-                  <b
-                    className={
-                      index === 0
-                        ? "badge badge--good"
-                        : "badge badge--possible"
-                    }
-                  >
-                    {index === 0 ? "推荐" : "可能匹配"}
-                  </b>
-                  <strong className="score">{item.score}%</strong>
-                </button>
-              ))}
-              {!suggestions.length && (
-                <div className="suggestions-empty">
-                  <Info size={18} />
-                  <span>
-                    <strong>没有达到可信阈值的推荐字段</strong>
-                    请在下方按字段注释、物理来源和当前药品样例人工选择。
-                  </span>
-                </div>
-              )}
-            </div>
-            <div className="inline-select">
-              <span>没有合适的推荐？</span>
-              <SearchableSelect
-                ariaLabel={`${currentField.label}来源字段`}
-                value={mapping[currentField.key] || ""}
-                onChange={(next) =>
-                  setMapping((current) => ({
-                    ...current,
-                    [currentField.key]: next,
-                  }))
-                }
-                options={[
-                  {
-                    value: "",
-                    label: "不映射 / 稍后使用默认值",
-                  },
-                  ...sourceFieldOptions,
-                ]}
-                searchPlaceholder="按字段名、注释、表名或样例值过滤"
-              />
-            </div>
-            {currentDictionary && currentSourceField && (
-              <DictionaryMappingEditor
-                dictionaryScopeLabel={currentDictionaryScopeLabel}
-                dictionary={currentDictionary}
-                field={currentField}
-                onAutoMap={() => autoMapDictionary(currentField)}
-                onChange={(sourceValue, targetValue) =>
-                  setDictionaryMapping(currentField, sourceValue, targetValue)
-                }
-                onClear={() => clearDictionaryMappings(currentField)}
-                onSaveSourceDictionary={(items) =>
-                  saveSourceDictionaryOverride(currentSourceDictionary, items)
-                }
-                rows={currentDictionaryRows}
-                sourceDictionary={currentSourceDictionary}
-                valueMappingsText={rules[currentField.key]?.valueMappingsText}
-              />
-            )}
-            <div className="sample-toolbar">
-              <div>
-                <strong>预览哪一条待迁移药品？</strong>
-                <span>推荐和即时预览都会跟随此处切换</span>
-              </div>
-              <button
-                className="button button--secondary"
-                disabled={rows.length < 2}
-                onClick={() =>
-                  setMappingSampleIndex((current) =>
-                    randomRowIndex(rows.length, current),
-                  )
-                }
-                type="button"
-              >
-                <ArrowCounterClockwise size={17} />
-                随机换一条
-              </button>
-              <SearchableSelect
-                ariaLabel="指定预览药品"
-                className="sample-row-select"
-                value={`${mappingSampleIndex}`}
-                onChange={(next) => setMappingSampleIndex(Number(next))}
-                options={sampleRowOptions}
-                searchPlaceholder="按药品名、规格、厂家或来源键查找"
-              />
-            </div>
-            <div className="preview-card">
-              <div className="preview-card__heading">
-                <LinkSimple size={17} />
-                <strong>即时预览</strong>
-                <span>
-                  {mapping[currentField.key]
-                    ? sourceFieldDisplayName(
-                        mapping[currentField.key],
-                        columnMetadata[mapping[currentField.key]],
-                      )
-                    : "未选择来源字段"}{" "}
-                  →{" "}
-                  {currentField.key}
-                </span>
-              </div>
-              <div className="preview-medicine-context">
-                {sampleContext.length ? (
-                  sampleContext.map(([label, value]) => (
-                    <span key={label}>
-                      <small>{label}</small>
-                      <strong>{value}</strong>
-                    </span>
-                  ))
-                ) : (
-                  <span>
-                    <small>待迁移记录</small>
-                    <strong>{medicineSampleLabel(mappingSample, mappingSampleIndex)}</strong>
-                  </span>
-                )}
-              </div>
-              <div className="preview-conversion">
-                <div>
-                  <span>
-                    二系列来源值
-                    {currentMappingPreview?.sourceDictionaryName
-                      ? ` · ${currentMappingPreview.sourceDictionaryName}`
-                      : ""}
-                  </span>
-                  <strong>
-                    {currentMappingPreview
-                      ? currentMappingPreview.sourceDictionaryText
-                        ? `${currentMappingPreview.sourceDictionaryText}（${currentMappingPreview.original}）`
-                        : `${currentMappingPreview.original ?? "空值"}`
-                      : "尚未选择来源字段"}
-                  </strong>
-                </div>
-                <ArrowRight size={20} />
-                <div>
-                  <span>清洗 / 转换后</span>
-                  <strong>
-                    {currentMappingPreview
-                      ? currentMappingPreview.ignored
-                        ? "已忽略，不写入新系统"
-                        : `${currentMappingPreview.converted ?? "空值"}`
-                      : "—"}
-                  </strong>
-                </div>
-                {currentDictionary && (
-                  <div className="preview-dictionary-value">
-                    <span>新系统字典含义</span>
-                    <strong>
-                      {currentMappingPreview?.ignored
-                        ? "该来源值已确认忽略，不参与目标字典校验"
-                        : currentMappingPreview?.dictionaryText
-                        ? `${currentMappingPreview.dictionaryText}（${currentMappingPreview.dictionaryCode}）`
-                        : currentMappingPreview
-                          ? "当前值尚未匹配到新系统字典"
-                          : "选择来源字段后显示"}
-                    </strong>
+                {validationFieldContext?.fieldKey === currentField.key && (
+                  <div className="validation-jump-context">
+                    <Warning size={18} weight="fill" />
+                    <div>
+                      <strong>
+                        从校验失败定位：第 {validationFieldContext.rowNo} 行 ·
+                        来源键 {validationFieldContext.sourceKey}
+                      </strong>
+                      <span>{validationFieldContext.errorMessage}</span>
+                    </div>
+                    <button
+                      className="button button--secondary"
+                      type="button"
+                      onClick={() => setStep(5)}
+                    >
+                      返回校验结果
+                    </button>
                   </div>
                 )}
-              </div>
-            </div>
-            <div className="screen-actions">
-              <button
-                className="button button--secondary"
-                onClick={() =>
-                  fieldIndex ? setFieldIndex(fieldIndex - 1) : setStep(3)
-                }
-              >
-                <ArrowLeft />
-                上一个
-              </button>
-              <div>
-                <button
-                  className="button button--ghost"
-                  onClick={() =>
-                    setMapping((current) => ({
-                      ...current,
-                      [currentField.key]: "",
-                    }))
-                  }
-                >
-                  此字段先不匹配
-                </button>
-                <button
-                  className="button button--primary"
-                  disabled={busy === "mapping-save"}
-                  onClick={continueFieldMapping}
-                >
-                  {busy === "mapping-save"
-                    ? "正在固化映射…"
-                    : fieldIndex < targetFields.length - 1
-                    ? `确认，继续匹配${targetFields[fieldIndex + 1].label}`
-                    : unresolvedDictionaryValueCount
-                      ? `处理 ${unresolvedDictionaryValueCount} 个待确认字典值`
-                      : "完成映射，进入校验"}
-                  <ArrowRight />
-                </button>
-              </div>
-            </div>
+                <div className="question-copy">
+                  <div className="question-copy__meta">
+                    <span className="field-group">{currentField.group}</span>
+                    <div className="target-destination">
+                      <span>
+                        <Database size={14} weight="duotone" />
+                        新系统落点
+                      </span>
+                      {targetLocations(currentField).map((location) => (
+                        <code key={location}>{location}</code>
+                      ))}
+                    </div>
+                  </div>
+                  <h1>
+                    老系统里，哪个字段代表“{currentField.label}”？
+                    {currentField.required && <em>必填</em>}
+                  </h1>
+                  <p>{currentField.hint}</p>
+                </div>
+                {currentDictionary && (
+                  <div className="dictionary-guide">
+                    <div>
+                      <strong>新系统标准字典</strong>
+                      <code>{currentDictionary.dicId}</code>
+                      <span>{currentDictionary.items.length} 个可用值</span>
+                    </div>
+                    <div className="dictionary-guide__items">
+                      {currentDictionary.items.slice(0, 12).map((item) => (
+                        <span key={item.id || dictionaryItemValue(item)}>
+                          <b>{dictionaryItemValue(item)}</b>
+                          {item.text || item.na}
+                        </span>
+                      ))}
+                      {currentDictionary.items.length > 12 && (
+                        <em>另有 {currentDictionary.items.length - 12} 项</em>
+                      )}
+                    </div>
+                    <button
+                      className="button button--secondary"
+                      type="button"
+                      disabled={!mapping[currentField.key]}
+                      onClick={() => autoMapDictionary(currentField)}
+                    >
+                      <LinkSimple size={17} />
+                      按含义自动生成转换
+                    </button>
+                  </div>
+                )}
+                <div className="suggestion-heading">
+                  <span>智能推荐</span>
+                  <small>只展示字段名或别名达到可信阈值的老系统字段</small>
+                  <Info size={15} />
+                </div>
+                <div className="suggestions">
+                  {suggestions.map((item, index) => (
+                    <button
+                      className={`suggestion-row ${mapping[currentField.key] === item.column ? "suggestion-row--selected" : ""}`}
+                      onClick={() =>
+                        setMapping((current) => ({
+                          ...current,
+                          [currentField.key]: item.column,
+                        }))
+                      }
+                      key={item.column}
+                    >
+                      <span className="radio">
+                        {mapping[currentField.key] === item.column && <i />}
+                      </span>
+                      <span className="suggestion-field">
+                        <strong>
+                          {sourceFieldDisplayName(
+                            item.column,
+                            columnMetadata[item.column],
+                          )}
+                        </strong>
+                        <small>
+                          {sourceFieldPhysicalOrigin(
+                            columnMetadata[item.column],
+                          )
+                            ? `来源：${sourceFieldPhysicalOrigin(columnMetadata[item.column])}`
+                            : "来源数据字段"}
+                        </small>
+                      </span>
+                      <span>
+                        <small>当前药品样例</small>
+                        {sourceValueLabel(
+                          mappingSample[item.column],
+                          columnMetadata[item.column],
+                        )}
+                      </span>
+                      <b
+                        className={
+                          index === 0
+                            ? "badge badge--good"
+                            : "badge badge--possible"
+                        }
+                      >
+                        {index === 0 ? "推荐" : "可能匹配"}
+                      </b>
+                      <strong className="score">{item.score}%</strong>
+                    </button>
+                  ))}
+                  {!suggestions.length && (
+                    <div className="suggestions-empty">
+                      <Info size={18} />
+                      <span>
+                        <strong>没有达到可信阈值的推荐字段</strong>
+                        请在下方按字段注释、物理来源和当前药品样例人工选择。
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div className="inline-select">
+                  <span>没有合适的推荐？</span>
+                  <SearchableSelect
+                    ariaLabel={`${currentField.label}来源字段`}
+                    value={mapping[currentField.key] || ""}
+                    onChange={(next) =>
+                      setMapping((current) => ({
+                        ...current,
+                        [currentField.key]: next,
+                      }))
+                    }
+                    options={[
+                      {
+                        value: "",
+                        label: "不映射 / 稍后使用默认值",
+                      },
+                      ...sourceFieldOptions,
+                    ]}
+                    searchPlaceholder="按字段名、注释、表名或样例值过滤"
+                  />
+                </div>
+                {currentDictionary && currentSourceField && (
+                  <DictionaryMappingEditor
+                    dictionaryScopeLabel={currentDictionaryScopeLabel}
+                    dictionary={currentDictionary}
+                    field={currentField}
+                    onAutoMap={() => autoMapDictionary(currentField)}
+                    onChange={(sourceValue, targetValue) =>
+                      setDictionaryMapping(
+                        currentField,
+                        sourceValue,
+                        targetValue,
+                      )
+                    }
+                    onClear={() => clearDictionaryMappings(currentField)}
+                    onSaveSourceDictionary={(items) =>
+                      saveSourceDictionaryOverride(
+                        currentSourceDictionary,
+                        items,
+                      )
+                    }
+                    rows={currentDictionaryRows}
+                    sourceDictionary={currentSourceDictionary}
+                    valueMappingsText={
+                      rules[currentField.key]?.valueMappingsText
+                    }
+                  />
+                )}
+                <div className="sample-toolbar">
+                  <div>
+                    <strong>预览哪一条待迁移药品？</strong>
+                    <span>推荐和即时预览都会跟随此处切换</span>
+                  </div>
+                  <button
+                    className="button button--secondary"
+                    disabled={rows.length < 2}
+                    onClick={() =>
+                      setMappingSampleIndex((current) =>
+                        randomRowIndex(rows.length, current),
+                      )
+                    }
+                    type="button"
+                  >
+                    <ArrowCounterClockwise size={17} />
+                    随机换一条
+                  </button>
+                  <SearchableSelect
+                    ariaLabel="指定预览药品"
+                    className="sample-row-select"
+                    value={`${mappingSampleIndex}`}
+                    onChange={(next) => setMappingSampleIndex(Number(next))}
+                    options={sampleRowOptions}
+                    searchPlaceholder="按药品名、规格、厂家或来源键查找"
+                  />
+                </div>
+                <div className="preview-card">
+                  <div className="preview-card__heading">
+                    <LinkSimple size={17} />
+                    <strong>即时预览</strong>
+                    <span>
+                      {mapping[currentField.key]
+                        ? sourceFieldDisplayName(
+                            mapping[currentField.key],
+                            columnMetadata[mapping[currentField.key]],
+                          )
+                        : "未选择来源字段"}{" "}
+                      → {currentField.key}
+                    </span>
+                  </div>
+                  <div className="preview-medicine-context">
+                    {sampleContext.length ? (
+                      sampleContext.map(([label, value]) => (
+                        <span key={label}>
+                          <small>{label}</small>
+                          <strong>{value}</strong>
+                        </span>
+                      ))
+                    ) : (
+                      <span>
+                        <small>待迁移记录</small>
+                        <strong>
+                          {medicineSampleLabel(
+                            mappingSample,
+                            mappingSampleIndex,
+                          )}
+                        </strong>
+                      </span>
+                    )}
+                  </div>
+                  <div className="preview-conversion">
+                    <div>
+                      <span>
+                        {activeSourceAdapter?.automaticDetection
+                          ? `${activeSourceAdapter.name}来源值`
+                          : "三方来源值"}
+                        {currentMappingPreview?.sourceDictionaryName
+                          ? ` · ${currentMappingPreview.sourceDictionaryName}`
+                          : ""}
+                      </span>
+                      <strong>
+                        {currentMappingPreview
+                          ? currentMappingPreview.sourceDictionaryText
+                            ? `${currentMappingPreview.sourceDictionaryText}（${currentMappingPreview.original}）`
+                            : `${currentMappingPreview.original ?? "空值"}`
+                          : "尚未选择来源字段"}
+                      </strong>
+                    </div>
+                    <ArrowRight size={20} />
+                    <div>
+                      <span>清洗 / 转换后</span>
+                      <strong>
+                        {currentMappingPreview
+                          ? currentMappingPreview.ignored
+                            ? "已忽略，不写入新系统"
+                            : `${currentMappingPreview.converted ?? "空值"}`
+                          : "—"}
+                      </strong>
+                    </div>
+                    {currentDictionary && (
+                      <div className="preview-dictionary-value">
+                        <span>新系统字典含义</span>
+                        <strong>
+                          {currentMappingPreview?.ignored
+                            ? "该来源值已确认忽略，不参与目标字典校验"
+                            : currentMappingPreview?.dictionaryText
+                              ? `${currentMappingPreview.dictionaryText}（${currentMappingPreview.dictionaryCode}）`
+                              : currentMappingPreview
+                                ? "当前值尚未匹配到新系统字典"
+                                : "选择来源字段后显示"}
+                        </strong>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="screen-actions">
+                  <button
+                    className="button button--secondary"
+                    onClick={() =>
+                      fieldIndex ? setFieldIndex(fieldIndex - 1) : setStep(3)
+                    }
+                  >
+                    <ArrowLeft />
+                    上一个
+                  </button>
+                  <div>
+                    <button
+                      className="button button--ghost"
+                      onClick={() =>
+                        setMapping((current) => ({
+                          ...current,
+                          [currentField.key]: "",
+                        }))
+                      }
+                    >
+                      此字段先不匹配
+                    </button>
+                    <button
+                      className="button button--primary"
+                      disabled={busy === "mapping-save"}
+                      onClick={continueFieldMapping}
+                    >
+                      {busy === "mapping-save"
+                        ? "正在固化映射…"
+                        : fieldIndex < targetFields.length - 1
+                          ? `确认，继续匹配${targetFields[fieldIndex + 1].label}`
+                          : unresolvedDictionaryValueCount
+                            ? `处理 ${unresolvedDictionaryValueCount} 个待确认字典值`
+                            : "完成映射，进入校验"}
+                      <ArrowRight />
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </section>
@@ -3038,12 +4230,13 @@ export function App() {
                 <label className="option-row">
                   <span>
                     <strong>
-                      {isPhis27Source(sourceDescription)
+                      {activeMedicineWorkflow.factoryPolicy ===
+                      "ADAPTER_MANAGED"
                         ? "同步缺失的生产厂家基础数据"
                         : "未匹配到生产厂家"}
                     </strong>
                     <small>
-                      {isPhis27Source(sourceDescription)
+                      {activeUsesPhis27Preset
                         ? "按 YK_YPCD.YPCD 关联 YK_CDDZ，厂家先迁入 HI_BD_FAC，商品再引用新厂家主键"
                         : "关闭时该行失败，不会静默制造厂家脏数据"}
                     </small>
@@ -3052,7 +4245,9 @@ export function App() {
                     className="switch"
                     type="checkbox"
                     checked={allowCreateFactory}
-                    disabled={isPhis27Source(sourceDescription)}
+                    disabled={
+                      activeMedicineWorkflow.factoryPolicy === "ADAPTER_MANAGED"
+                    }
                     onChange={(event) =>
                       setAllowCreateFactory(event.target.checked)
                     }
@@ -3064,7 +4259,9 @@ export function App() {
                   <FloppyDisk size={21} />
                   <div>
                     <strong>字段转换</strong>
-                    <small>支持清洗、组合、长度限制、简单条件、默认值和值字典映射</small>
+                    <small>
+                      支持清洗、组合、长度限制、简单条件、默认值和值字典映射
+                    </small>
                   </div>
                 </div>
                 <div className="rule-list">
@@ -3150,10 +4347,12 @@ export function App() {
                                 value: "",
                                 label: "缺失时不设置默认值",
                               },
-                              ...dictionaryForField(field).items.map((item) => ({
-                                value: dictionaryItemValue(item),
-                                label: `${dictionaryItemValue(item)} · ${item.text || item.na}`,
-                              })),
+                              ...dictionaryForField(field).items.map(
+                                (item) => ({
+                                  value: dictionaryItemValue(item),
+                                  label: `${dictionaryItemValue(item)} · ${item.text || item.na}`,
+                                }),
+                              ),
                             ]}
                             searchPlaceholder="过滤字典默认值"
                           />
@@ -3170,8 +4369,8 @@ export function App() {
                                 },
                               }))
                             }
-                            />
-                          )}
+                          />
+                        )}
                         <FieldAdvancedRuleEditor
                           fieldLabel={field.label}
                           primarySourceField={mapping[field.key] || ""}
@@ -3213,7 +4412,9 @@ export function App() {
                             )}
                             <textarea
                               rows={4}
-                              placeholder={"西药 = 1\n中成药 = 2\n无需迁移 = <忽略>"}
+                              placeholder={
+                                "西药 = 1\n中成药 = 2\n无需迁移 = <忽略>"
+                              }
                               value={rules[field.key]?.valueMappingsText || ""}
                               onChange={(event) =>
                                 setRules((current) => ({
@@ -3246,7 +4447,9 @@ export function App() {
                               英文字母忽略大小写
                             </label>
                             <small>
-                              每行一条，格式为“旧值 = 新值”；如需明确忽略某个来源值，可填写“旧值 = &lt;忽略&gt;”。
+                              每行一条，格式为“旧值 =
+                              新值”；如需明确忽略某个来源值，可填写“旧值 =
+                              &lt;忽略&gt;”。
                             </small>
                           </div>
                         </details>
@@ -3267,12 +4470,17 @@ export function App() {
               </>
             )}
             {busy === "prepare" && (
-              <div className="validation-running" role="status" aria-live="polite">
+              <div
+                className="validation-running"
+                role="status"
+                aria-live="polite"
+              >
                 <CircleNotch className="is-spinning" size={25} weight="bold" />
                 <div>
                   <strong>正在校验 {rows.length} 条待迁移数据</strong>
                   <span>
-                    正在逐行转换、核对字典并保存校验结果，已用时 {prepareElapsedSeconds} 秒
+                    正在逐行转换、核对字典并保存校验结果，已用时{" "}
+                    {prepareElapsedSeconds} 秒
                   </span>
                 </div>
                 <small>窗口会保持响应，请勿重复点击或关闭应用</small>
@@ -3292,7 +4500,8 @@ export function App() {
                     仅迁移校验通过的 {batchDetail.batch.validCount} 条数据
                   </strong>
                   <small>
-                    跳过 {validationFailureCount} 条校验失败数据；保留完整失败原因并写入本地审计，目标库不会写入这些记录。
+                    跳过 {validationFailureCount}{" "}
+                    条校验失败数据；保留完整失败原因并写入本地审计，目标库不会写入这些记录。
                   </small>
                 </span>
                 <em>跳过 {validationFailureCount} 条</em>
@@ -3367,7 +4576,8 @@ export function App() {
                     本次只写入 {batchDetail.batch.validCount} 条校验通过数据
                   </strong>
                   <span>
-                    {validationFailureCount} 条校验失败数据将在执行时记为“已跳过”，不会连接目标表执行写入。
+                    {validationFailureCount}{" "}
+                    条校验失败数据将在执行时记为“已跳过”，不会连接目标表执行写入。
                   </span>
                 </div>
               </div>
@@ -3404,7 +4614,9 @@ export function App() {
                       drivers={databaseDrivers}
                       driverPacks={driverPacks}
                       rememberPassword={rememberTargetDatabasePassword}
-                      onRememberPasswordChange={setRememberTargetDatabasePassword}
+                      onRememberPasswordChange={
+                        setRememberTargetDatabasePassword
+                      }
                       hasSavedConnection={hasSavedTargetDatabase}
                       onForgetSaved={forgetTargetDatabaseConnection}
                       showCredentialPreference={false}
@@ -3442,7 +4654,9 @@ export function App() {
                           : "试迁移会执行完整目标写入并强制回滚，不留下测试药品；通过后才开放正式迁移。"}
                       </span>
                     </div>
-                    <em>{targetTrialPassed ? "已通过 · 已回滚" : "等待单条验证"}</em>
+                    <em>
+                      {targetTrialPassed ? "已通过 · 已回滚" : "等待单条验证"}
+                    </em>
                   </div>
                   <div className="target-actions">
                     <button
@@ -3485,13 +4699,13 @@ export function App() {
                         ? "正在逐行写入…"
                         : formalMigrationNeedsTrial
                           ? "请先完成单条试迁移"
-                        : batchDetail.batch.status === "RUNNING"
-                          ? `重新执行中断批次 ${batchDetail.batch.validCount} 行`
-                        : batchDetail.batch.conflictStrategy === "OVERWRITE"
-                          ? `执行已确认的 ${selectedOverwriteRowIds.length} 行`
-                          : validationFailureCount > 0
-                            ? `正式迁移 ${batchDetail.batch.validCount} 行（跳过 ${validationFailureCount} 行）`
-                            : `正式迁移 ${batchDetail.batch.validCount} 行`}
+                          : batchDetail.batch.status === "RUNNING"
+                            ? `重新执行中断批次 ${batchDetail.batch.validCount} 行`
+                            : batchDetail.batch.conflictStrategy === "OVERWRITE"
+                              ? `执行已确认的 ${selectedOverwriteRowIds.length} 行`
+                              : validationFailureCount > 0
+                                ? `正式迁移 ${batchDetail.batch.validCount} 行（跳过 ${validationFailureCount} 行）`
+                                : `正式迁移 ${batchDetail.batch.validCount} 行`}
                     </button>
                   </div>
                 </div>
@@ -3522,9 +4736,7 @@ export function App() {
                           setSelectedOverwriteRowIds(
                             event.target.checked
                               ? overwritePreview.rows
-                                  .filter(
-                                    (row) => row.action !== "UNCHANGED",
-                                  )
+                                  .filter((row) => row.action !== "UNCHANGED")
                                   .map((row) => row.rowId)
                               : [],
                           )
@@ -3553,7 +4765,9 @@ export function App() {
                                   setSelectedOverwriteRowIds((current) =>
                                     event.target.checked
                                       ? [...new Set([...current, row.rowId])]
-                                      : current.filter((id) => id !== row.rowId),
+                                      : current.filter(
+                                          (id) => id !== row.rowId,
+                                        ),
                                   )
                                 }
                               />
@@ -3575,9 +4789,7 @@ export function App() {
                           {row.changes.length > 0 && (
                             <div className="field-diff-list">
                               {row.changes.map((change) => (
-                                <div
-                                  key={`${change.table}.${change.column}`}
-                                >
+                                <div key={`${change.table}.${change.column}`}>
                                   <strong>{change.label}</strong>
                                   <code>{diffValue(change.before)}</code>
                                   <ArrowRight />
@@ -3772,7 +4984,9 @@ export function App() {
                 <X />
               </button>
             </div>
-            <p>来源字段和字典项都可在此维护；也可直接进入任一字段的完整配置。</p>
+            <p>
+              来源字段和字典项都可在此维护；也可直接进入任一字段的完整配置。
+            </p>
             <div className="expert-overview-toolbar">
               <SearchableSelect
                 ariaLabel="专业模式快速定位字段"
@@ -3796,15 +5010,32 @@ export function App() {
                 value=""
               />
               <span>
-                <b>{mappingStatuses.filter((item) => item.state === "ready").length}</b>
+                <b>
+                  {
+                    mappingStatuses.filter((item) => item.state === "ready")
+                      .length
+                  }
+                </b>
                 已完成
               </span>
               <span className="is-warning">
-                <b>{mappingStatuses.filter((item) => item.state === "dictionary").length}</b>
+                <b>
+                  {
+                    mappingStatuses.filter(
+                      (item) => item.state === "dictionary",
+                    ).length
+                  }
+                </b>
                 字典待确认
               </span>
               <span>
-                <b>{mappingStatuses.filter((item) => ["pending", "optional"].includes(item.state)).length}</b>
+                <b>
+                  {
+                    mappingStatuses.filter((item) =>
+                      ["pending", "optional"].includes(item.state),
+                    ).length
+                  }
+                </b>
                 未配置
               </span>
             </div>
@@ -3858,12 +5089,15 @@ export function App() {
                           disabled={!status.sourceField}
                           onClick={() =>
                             setExpertDictionaryFieldKey((current) =>
-                              current === status.field.key ? "" : status.field.key,
+                              current === status.field.key
+                                ? ""
+                                : status.field.key,
                             )
                           }
                           type="button"
                         >
-                          字典 {status.dictionaryHandled}/{status.dictionaryTotal}
+                          字典 {status.dictionaryHandled}/
+                          {status.dictionaryTotal}
                         </button>
                       )}
                       <button
@@ -3901,7 +5135,8 @@ export function App() {
                           }
                           rows={status.dictionaryRows}
                           sourceDictionary={
-                            columnMetadata[status.sourceField]?.sourceDictionary || null
+                            columnMetadata[status.sourceField]
+                              ?.sourceDictionary || null
                           }
                           valueMappingsText={
                             rules[status.field.key]?.valueMappingsText
@@ -3949,15 +5184,21 @@ export function App() {
         onTest={testManagedDatabaseConnection}
         onUse={useDatabaseConnection}
       />
-      <MigrationHistory
-        open={migrationHistoryOpen}
-        batches={historyBatches}
-        detail={historyBatchDetail}
-        busy={busy}
-        onClose={() => setMigrationHistoryOpen(false)}
-        onRefresh={openMigrationHistory}
-        onSelect={loadHistoryBatch}
-      />
+      {migrationHistoryOpen && (
+        <Suspense
+          fallback={<DeferredModuleLoading dialog label="正在打开迁移历史…" />}
+        >
+          <LazyMigrationHistory
+            open
+            batches={historyBatches}
+            detail={historyBatchDetail}
+            busy={busy}
+            onClose={() => setMigrationHistoryOpen(false)}
+            onRefresh={openMigrationHistory}
+            onSelect={loadHistoryBatch}
+          />
+        </Suspense>
+      )}
       {notice && (
         <div
           className={`toast toast--${notice.tone}`}
@@ -3982,51 +5223,5 @@ export function App() {
         </div>
       )}
     </div>
-  );
-}
-
-function matchScore(column, field) {
-  const normalized = column
-    .toUpperCase()
-    .replace(/[^A-Z0-9\u4e00-\u9fa5]/g, "");
-  const exact = field.aliases.find(
-    (alias) =>
-      alias.toUpperCase().replace(/[^A-Z0-9\u4e00-\u9fa5]/g, "") === normalized,
-  );
-  if (exact) return 96;
-  const partial = field.aliases.some((alias) => {
-    const normalizedAlias = alias
-      .toUpperCase()
-      .replace(/[^A-Z0-9\u4e00-\u9fa5]/g, "");
-    const lengthSimilarity =
-      Math.min(normalized.length, normalizedAlias.length) /
-      Math.max(normalized.length, normalizedAlias.length);
-    // SPEC/DOSE/TYPE 等短字段含义过宽，只允许精确命中，避免误配到监管字段。
-    return (
-      Math.min(normalized.length, normalizedAlias.length) >= 6 &&
-      lengthSimilarity >= 0.8 &&
-      (normalized.includes(normalizedAlias) ||
-        normalizedAlias.includes(normalized))
-    );
-  });
-  if (partial) return 82;
-  const key = field.key.toUpperCase();
-  const keySimilarity =
-    Math.min(normalized.length, key.length) /
-    Math.max(normalized.length, key.length);
-  if (
-    Math.min(normalized.length, key.length) >= 6 &&
-    keySimilarity >= 0.8 &&
-    (normalized.includes(key) || key.includes(normalized))
-  )
-    return 72;
-  return 0;
-}
-
-function sourceFieldMatchScore(column, field, metadata = {}) {
-  return Math.max(
-    matchScore(column, field),
-    matchScore(metadata.sourceColumn || "", field),
-    matchScore(metadata.comment || "", field),
   );
 }

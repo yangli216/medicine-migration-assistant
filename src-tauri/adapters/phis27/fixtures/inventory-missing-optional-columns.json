@@ -1,0 +1,55 @@
+{
+  "fixtureSchemaVersion": 1,
+  "adapterId": "PHIS27",
+  "id": "inventory-missing-optional-columns",
+  "title": "库存账簿缺少金额合计、批号、效期和描述字段的项目变体",
+  "databaseFamily": "oracle",
+  "tasks": ["INVENTORY"],
+  "sourceObjects": [
+    {
+      "name": "YK_TYPK",
+      "columns": ["YPXH", "YPMC", "YPGG", "YPSX", "ZXDW", "YPDW", "ZXBZ", "YFDW", "YFBZ"]
+    },
+    {
+      "name": "YK_YPCD",
+      "columns": ["YPXH", "YPCD"]
+    },
+    {
+      "name": "YK_CDDZ",
+      "columns": ["YPCD"]
+    },
+    {
+      "name": "YK_KCMX",
+      "columns": ["SBXH", "JGID", "YPXH", "YPCD", "KCSL", "JHJG", "LSJG"]
+    },
+    {
+      "name": "YK_YKLB",
+      "columns": ["YKSB", "JGID", "YKMC"]
+    },
+    {
+      "name": "YK_YPXX",
+      "columns": ["YKSB", "YPXH"]
+    },
+    {
+      "name": "YF_KCMX",
+      "columns": ["SBXH", "YFSB", "JGID", "YPXH", "YPCD", "YPSL", "JHJG", "LSJG"]
+    },
+    {
+      "name": "YF_YPXX",
+      "columns": ["JGID", "YFSB", "YPXH", "YFBZ", "YFDW"]
+    },
+    {
+      "name": "YF_YFLB",
+      "columns": ["YFSB", "JGID", "YFMC"]
+    }
+  ],
+  "expectations": {
+    "outcome": "PASS",
+    "checks": [
+      "缺失 JHJE 和 LSJE 时按数量乘单价计算金额",
+      "缺失批号与效期时不生成无效列引用",
+      "缺失厂家、商品和药房规格描述时仍保留核心库存校验"
+    ]
+  },
+  "rustTest": "legacy_phis27::tests::inventory_optional_columns_do_not_generate_invalid_identifiers"
+}

@@ -1,0 +1,23 @@
+{
+  "fixtureSchemaVersion": 1,
+  "adapterId": "STANDARD_HIS",
+  "id": "medicine-without-product",
+  "title": "项目仅提供核心药品主表，不提供厂家商品表",
+  "databaseFamily": "postgresql",
+  "tasks": ["MEDICINE_BASE"],
+  "sourceObjects": [
+    {
+      "name": "HIS_DRUG",
+      "columns": ["DRUG_ID", "DRUG_NAME", "MINIMUM_UNIT"]
+    }
+  ],
+  "expectations": {
+    "outcome": "PASS",
+    "checks": [
+      "核心药品字段完整时仍可识别",
+      "厂家商品表缺失时生成 DRUG_ID:BASE 稳定来源键",
+      "不生成对 HIS_PRODUCT 的无效引用"
+    ]
+  },
+  "rustTest": "source_adapter::standard_his_adapter_example::tests::optional_product_table_keeps_medicine_readable"
+}

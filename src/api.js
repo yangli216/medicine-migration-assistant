@@ -18,10 +18,131 @@ let mockSavedConnections = {
 };
 let mockDatabaseConnections = [];
 let mockPhis27MappingProfile = null;
+const mockSourceMappingProfiles = new Map();
+const mockSourceAdapterDiagnostics = new Map();
 const mockCostMergeMappingProfiles = new Map();
 let mockInventoryLocationMappings = [];
 let mockInventoryOrganizationMappings = [];
 const mockInventoryMedicineMatches = new Map();
+const mockSourceObjects = [
+  ...Array.from(
+    { length: 220 },
+    (_, index) => `SYS_OBJECT_${String(index + 1).padStart(3, "0")}`,
+  ),
+  "T_DRUG_INFO",
+  "V_DRUG_CATALOG",
+  "T_DRUG_PRICE",
+  "T_FACTORY",
+  "YK_TYPK",
+  "YK_YPCD",
+];
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonicalJson(value[key])]),
+    );
+  }
+  return value;
+}
+
+function mockTemplateChecksum(value) {
+  const unsigned = { ...value };
+  delete unsigned.checksum;
+  const text = JSON.stringify(canonicalJson(unsigned));
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0").repeat(8);
+}
+
+async function mockSha256Checksum(value) {
+  const unsigned = { ...value };
+  delete unsigned.checksum;
+  const bytes = new TextEncoder().encode(
+    JSON.stringify(canonicalJson(unsigned)),
+  );
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)]
+    .map((item) => item.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function mockFingerprint(value) {
+  let hash = 2166136261;
+  for (const character of `${value}`) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  const block = hash.toString(16).padStart(8, "0");
+  return `${block}${block}${block}`.slice(0, 20);
+}
+
+function mockObjectId() {
+  const seconds = Math.floor(Date.now() / 1000)
+    .toString(16)
+    .padStart(8, "0");
+  const random = Array.from({ length: 16 }, () =>
+    Math.floor(Math.random() * 16).toString(16),
+  ).join("");
+  return `${seconds}${random}`;
+}
+
+function mockSourceKeyFields(fields, legacySourceKey = "") {
+  const requested = Array.isArray(fields) ? fields : [];
+  return [...requested, ...(requested.length ? [] : [legacySourceKey])]
+    .map((field) => `${field || ""}`.trim())
+    .filter((field, index, all) => field && all.indexOf(field) === index)
+    .slice(0, 3);
+}
+
+function mockAdapterCompatibility(
+  savedVersion,
+  currentVersion,
+  compatibleFromVersion,
+  subject,
+) {
+  const saved = Number(savedVersion || 0);
+  const current = Number(currentVersion || 0);
+  if (current > 0 && saved > current)
+    throw new Error(
+      `${subject}来自适配器 v${saved}，当前程序仅有 v${current}；请升级后再使用，不能降级套用`,
+    );
+  if (!saved || !current)
+    return {
+      compatibility: "LEGACY_REVIEW",
+      compatibilityMessage: `${subject}缺少可比较的适配器版本，必须重新核对`,
+      requiresReview: true,
+    };
+  if (saved < current && saved >= Number(compatibleFromVersion || current))
+    return {
+      compatibility: "COMPATIBLE_UPGRADE",
+      compatibilityMessage: `${subject}由适配器 v${saved} 创建，当前声明兼容 v${Number(compatibleFromVersion || current)}–v${current}`,
+      requiresReview: false,
+    };
+  if (saved < current)
+    return {
+      compatibility: "UPGRADE_REVIEW",
+      compatibilityMessage: `${subject}由适配器 v${saved} 创建，当前为 v${current}，请重新核对`,
+      requiresReview: true,
+    };
+  return {
+    compatibility: "CURRENT",
+    compatibilityMessage: `${subject}与当前适配器 v${current} 一致`,
+    requiresReview: false,
+  };
+}
+
+function isMockInventoryBatch(detail) {
+  return ["INSTITUTION_INVENTORY", "PHIS27_INVENTORY"].includes(
+    detail?.batch?.sourceType,
+  );
+}
 const mockInventoryTargetMedicines = [
   {
     idMed: "64b2fca10a1f2e3d4c5b7101",
@@ -67,8 +188,120 @@ const mockInventoryTargetMedicines = [
   },
 ];
 
+const mockSourceAdapters = [
+  {
+    packageSchemaVersion: 1,
+    id: "GENERIC_FILE",
+    name: "通用文件导入",
+    version: 2,
+    templateCompatibleFromVersion: 1,
+    changes: [
+      { version: 1, summary: "建立文件来源映射模板。" },
+      { version: 2, summary: "支持最多三个字段组成来源业务键。" },
+    ],
+    summary: "读取 CSV / JSON，由引导式字段映射生成可复用模板。",
+    sourceModes: ["file"],
+    databaseFamilies: [],
+    migrationTasks: ["MEDICINE_BASE"],
+    automaticDetection: false,
+    reusableMappingProfiles: true,
+    builtIn: true,
+    implementation: "GUIDED_MAPPING",
+    medicineWorkflow: {
+      sourceKeyMode: "USER_SELECTED",
+      sourceKeyField: "",
+      sourceKeyLabel: "",
+      mappingPreset: "GUIDED",
+      batchSourceType: "GENERIC",
+      factoryPolicy: "OPTIONAL_CREATE",
+      legacyProfileKind: "NONE",
+    },
+  },
+  {
+    packageSchemaVersion: 1,
+    id: "GENERIC_DATABASE",
+    name: "通用数据库查询",
+    version: 2,
+    templateCompatibleFromVersion: 1,
+    changes: [
+      { version: 1, summary: "建立数据库只读查询映射模板。" },
+      { version: 2, summary: "支持最多三个字段组成来源业务键。" },
+    ],
+    summary: "通过只读 SQL 接入三方 HIS，并按来源实例保存字段与转换配置。",
+    sourceModes: ["database"],
+    databaseFamilies: [
+      "mysql",
+      "oracle",
+      "dameng",
+      "opengauss",
+      "vastbase",
+      "gbase8c",
+      "gbase8a",
+      "gbase8s",
+      "kingbase",
+      "postgresql",
+    ],
+    migrationTasks: ["MEDICINE_BASE"],
+    automaticDetection: false,
+    reusableMappingProfiles: true,
+    builtIn: true,
+    implementation: "GUIDED_MAPPING",
+    medicineWorkflow: {
+      sourceKeyMode: "USER_SELECTED",
+      sourceKeyField: "",
+      sourceKeyLabel: "",
+      mappingPreset: "GUIDED",
+      batchSourceType: "GENERIC",
+      factoryPolicy: "OPTIONAL_CREATE",
+      legacyProfileKind: "NONE",
+    },
+  },
+  {
+    packageSchemaVersion: 1,
+    id: "PHIS27",
+    name: "二系列phis",
+    version: 1,
+    templateCompatibleFromVersion: 1,
+    changes: [{ version: 1, summary: "支持药品与机构库存迁移。" }],
+    summary: "自动识别标准表结构，支持药品主数据与机构首次盘点库存迁移。",
+    sourceModes: ["database"],
+    databaseFamilies: ["oracle"],
+    migrationTasks: ["MEDICINE_BASE", "INVENTORY"],
+    automaticDetection: true,
+    reusableMappingProfiles: true,
+    builtIn: true,
+    implementation: "PHIS27_BUILTIN",
+    sourceCompatibility: {
+      product: "二系列phis",
+      mode: "STRUCTURE_CONTRACT",
+      declaredVersions: [],
+      gate: "版本号仅作项目记录，不按版本号直接放行；连接后必须通过当前任务的来源表字段契约和项目变体回归。",
+    },
+    medicineWorkflow: {
+      sourceKeyMode: "ADAPTER_PROVIDED",
+      sourceKeyField: "SOURCE_KEY",
+      sourceKeyLabel: "YPXH:YPCD",
+      mappingPreset: "PHIS27",
+      batchSourceType: "PHIS27",
+      factoryPolicy: "ADAPTER_MANAGED",
+      legacyProfileKind: "PHIS27_V2",
+    },
+    inventoryWorkflow: {
+      normalizedLocationKinds: ["WAREHOUSE", "PHARMACY"],
+      sourceProductKeyLabel: "YPXH:YPCD",
+      sourceStockKeyMode: "PHIS27_LEGACY",
+      writeMode: "FIRST_STOCKTAKE",
+      organizationMapping: "REQUIRED",
+      medicineLedger: "REQUIRED",
+      trialPolicy: "PER_TARGET_STORAGE",
+      undoPolicy: "VERIFIED_BATCH_ONLY",
+    },
+  },
+];
+
 export async function command(name, args = {}) {
   if (isDesktop) return invoke(name, args);
+  if (name === "list_source_adapters") return mockSourceAdapters;
   if (name === "load_saved_connections") return mockSavedConnections;
   if (name === "list_database_connections") return mockDatabaseConnections;
   if (name === "save_database_connection") {
@@ -101,8 +334,7 @@ export async function command(name, args = {}) {
     );
     return null;
   }
-  if (name === "load_phis27_mapping_profile")
-    return mockPhis27MappingProfile;
+  if (name === "load_phis27_mapping_profile") return mockPhis27MappingProfile;
   if (name === "save_phis27_mapping_profile") {
     mockPhis27MappingProfile = {
       version: 2,
@@ -115,11 +347,300 @@ export async function command(name, args = {}) {
     };
     return mockPhis27MappingProfile;
   }
+  if (name === "load_source_mapping_profile") {
+    const profile = mockSourceMappingProfiles.get(
+      mockSourceMappingScope(args.request?.scope),
+    );
+    if (!profile) return null;
+    return {
+      ...profile,
+      ...mockAdapterCompatibility(
+        profile.adapterVersion,
+        args.request?.adapterVersion,
+        args.request?.templateCompatibleFromVersion,
+        "本地来源模板",
+      ),
+    };
+  }
+  if (name === "save_source_mapping_profile") {
+    const scope = args.request?.scope || {};
+    const sourceKeyFields = mockSourceKeyFields(
+      args.request?.sourceKeyFields,
+      args.request?.sourceKey,
+    );
+    const profile = {
+      version: 1,
+      adapterId: `${scope.adapterId || ""}`.trim().toUpperCase(),
+      adapterVersion: Number(args.request?.adapterVersion || 0),
+      sourceIdentity: `${scope.sourceIdentity || ""}`.trim().toLowerCase(),
+      targetTenantId: `${scope.targetTenantId || ""}`.trim().toLowerCase(),
+      sourceKey: sourceKeyFields.length === 1 ? sourceKeyFields[0] : "",
+      sourceKeyFields,
+      sourceQuery: `${args.request?.sourceQuery || ""}`.trim(),
+      mapping: { ...(args.request?.mapping || {}) },
+      rules: { ...(args.request?.rules || {}) },
+      dictionaryOverrides: structuredClone(
+        args.request?.dictionaryOverrides || {},
+      ),
+      savedAt: new Date().toISOString(),
+      compatibility: "CURRENT",
+      compatibilityMessage: `已按适配器 v${Number(args.request?.adapterVersion || 0)} 保存`,
+      requiresReview: !Number(args.request?.adapterVersion || 0),
+    };
+    mockSourceMappingProfiles.set(mockSourceMappingScope(profile), profile);
+    return profile;
+  }
+  if (name === "recommend_source_mapping_profile") {
+    const scope = args.request?.scope || {};
+    const columns = new Set(args.request?.columns || []);
+    const reusableMapping = {
+      naMed: "DRUG_NAME",
+      sdMed: "DRUG_TYPE",
+      sdDose: "FORM_CODE",
+      unitPre: "PRE_UNIT",
+      spec: "SPEC",
+      naFac: "FACTORY_NAME",
+      naMedPro: "PRODUCT_NAME",
+    };
+    const mappedFields = Object.values(reusableMapping);
+    if (!mappedFields.every((field) => columns.has(field))) return null;
+    const profile = {
+      version: 1,
+      adapterId: `${scope.adapterId || ""}`.trim().toUpperCase(),
+      adapterVersion: Number(args.request?.adapterVersion || 0),
+      sourceIdentity: "browser-preview-similar-source",
+      targetTenantId: `${scope.targetTenantId || ""}`.trim().toLowerCase(),
+      sourceKey: columns.has("DRUG_CODE") ? "DRUG_CODE" : "",
+      sourceKeyFields: columns.has("DRUG_CODE") ? ["DRUG_CODE"] : [],
+      sourceQuery: "",
+      mapping: reusableMapping,
+      rules: { naMed: { transform: "TRIM" } },
+      dictionaryOverrides: {},
+      savedAt: "2026-08-26T08:00:00Z",
+      compatibility: "SIMILAR_SOURCE_REVIEW",
+      compatibilityMessage:
+        "发现同一目标租户中的本地模板，7 个已映射来源字段在当前数据中全部存在；仅复用字段和转换规则，不复用旧查询、连接或来源字典",
+      requiresReview: true,
+    };
+    return {
+      profile,
+      matchedMappingCount: mappedFields.length,
+      sourceKeyMatched: profile.sourceKeyFields.length > 0,
+      message: "已发现可复用的同结构本地模板建议，进入校验前请逐项核对",
+    };
+  }
+  if (name === "save_source_adapter_diagnostic") {
+    const request = args.request || {};
+    const migrationTask = `${request.migrationTask || "MEDICINE_BASE"}`
+      .trim()
+      .toUpperCase();
+    const baseScopeKey = mockSourceMappingScope(request.scope);
+    const scopeKey = `${baseScopeKey}\u0000${migrationTask}`;
+    const fingerprint = mockFingerprint(baseScopeKey);
+    const safeSnapshot = {
+      adapterId: `${request.scope?.adapterId || ""}`.trim().toUpperCase(),
+      migrationTask,
+      adapterVersion: Number(request.adapterVersion || 0),
+      sourceFingerprint: fingerprint,
+      databaseFamily: `${request.databaseFamily || ""}`.trim().toLowerCase(),
+      schema: `${request.schema || ""}`.trim().toUpperCase(),
+      detected: Boolean(request.detected),
+      checkedObjects: [...(request.checkedObjects || [])],
+      missingObjects: [...(request.missingObjects || [])],
+      objectStructures: structuredClone(request.objectStructures || []),
+      metrics: structuredClone(request.metrics || []),
+      warnings: [...(request.warnings || [])],
+      message: `${request.message || ""}`.trim(),
+    };
+    const structureHash = mockTemplateChecksum(safeSnapshot);
+    const history = [...(mockSourceAdapterDiagnostics.get(scopeKey) || [])];
+    if (history[0]?.structureHash !== structureHash) {
+      history.unshift({
+        diagnosticId: mockObjectId(),
+        ...safeSnapshot,
+        structureHash,
+        recordedAt: new Date().toISOString(),
+      });
+      history.splice(20);
+      mockSourceAdapterDiagnostics.set(scopeKey, history);
+    }
+    return history;
+  }
+  if (name === "load_source_adapter_diagnostics") {
+    const migrationTask = `${args.request?.migrationTask || "MEDICINE_BASE"}`
+      .trim()
+      .toUpperCase();
+    return [
+      ...(mockSourceAdapterDiagnostics.get(
+        `${mockSourceMappingScope(args.request?.scope)}\u0000${migrationTask}`,
+      ) || []),
+    ];
+  }
+  if (name === "export_source_adapter_support_package") {
+    const scope = args.request?.scope || {};
+    const migrationTask = `${args.request?.migrationTask || "MEDICINE_BASE"}`
+      .trim()
+      .toUpperCase();
+    const history = [
+      ...(mockSourceAdapterDiagnostics.get(
+        `${mockSourceMappingScope(scope)}\u0000${migrationTask}`,
+      ) || []),
+    ];
+    if (!history.length)
+      throw new Error("当前来源还没有结构诊断记录，请先执行一次适配器检查");
+    const exchange = {
+      format: "medicine-migration-adapter-support",
+      version: 2,
+      adapterId: `${scope.adapterId || ""}`.trim().toUpperCase(),
+      migrationTask,
+      sourceFingerprint: history[0].sourceFingerprint,
+      diagnostics: structuredClone(history),
+      exportedAt: new Date().toISOString(),
+      checksum: "",
+    };
+    exchange.checksum = await mockSha256Checksum(exchange);
+    return {
+      fileName: `${exchange.adapterId.toLowerCase()}-${migrationTask
+        .toLowerCase()
+        .replaceAll("_", "-")}-adapter-support-${new Date()
+        .toISOString()
+        .slice(0, 10)
+        .replaceAll("-", "")}.json`,
+      content: JSON.stringify(exchange, null, 2),
+      checksum: exchange.checksum,
+      diagnosticCount: history.length,
+    };
+  }
+  if (name === "export_source_mapping_template") {
+    const scope = args.request?.scope || {};
+    const profile = mockSourceMappingProfiles.get(
+      mockSourceMappingScope(scope),
+    );
+    if (!profile)
+      throw new Error("当前来源还没有已保存的字段映射，请先完成一次字段核对");
+    const dictionaryScopeKey =
+      `${args.request?.dictionaryScopeKey || ""}`.trim();
+    const scopedDictionaries = dictionaryScopeKey
+      ? profile.dictionaryOverrides?.[dictionaryScopeKey] || {}
+      : Object.keys(profile.dictionaryOverrides || {}).length === 1
+        ? Object.values(profile.dictionaryOverrides)[0]
+        : {};
+    const exchange = {
+      format: "medicine-migration-source-template",
+      version: 1,
+      adapterId: profile.adapterId,
+      adapterVersion: `${args.request?.adapterVersion || ""}`.trim(),
+      sourceKey: profile.sourceKey,
+      sourceKeyFields: [...(profile.sourceKeyFields || [])],
+      sourceQuery: profile.sourceQuery,
+      mapping: { ...profile.mapping },
+      rules: structuredClone(profile.rules || {}),
+      dictionaryOverrides: Object.keys(scopedDictionaries).length
+        ? { __CURRENT_SOURCE__: structuredClone(scopedDictionaries) }
+        : {},
+      exportedAt: new Date().toISOString(),
+      checksum: "",
+    };
+    exchange.checksum = mockTemplateChecksum(exchange);
+    return {
+      fileName: `${profile.adapterId.toLowerCase()}-source-template.json`,
+      content: JSON.stringify(exchange, null, 2),
+      checksum: exchange.checksum,
+    };
+  }
+  if (
+    name === "preview_source_mapping_template" ||
+    name === "import_source_mapping_template"
+  ) {
+    const scope = args.request?.scope || {};
+    let exchange;
+    try {
+      exchange = JSON.parse(args.request?.content || "");
+    } catch (error) {
+      throw new Error(`来源模板文件格式无效：${error.message}`);
+    }
+    if (
+      exchange.format !== "medicine-migration-source-template" ||
+      exchange.version !== 1
+    )
+      throw new Error("这不是当前版本支持的来源模板文件");
+    if (
+      `${exchange.adapterId || ""}`.toUpperCase() !==
+      `${scope.adapterId || ""}`.toUpperCase()
+    )
+      throw new Error("模板适配器与当前适配器不一致，不能直接套用");
+    const compatibility = mockAdapterCompatibility(
+      exchange.adapterVersion,
+      args.request?.adapterVersion,
+      args.request?.templateCompatibleFromVersion,
+      "导入来源模板",
+    );
+    if (
+      `${exchange.checksum || ""}`.toLowerCase() !==
+      mockTemplateChecksum(exchange)
+    )
+      throw new Error("来源模板完整性校验失败，文件可能被修改或传输不完整");
+    if (name === "preview_source_mapping_template") {
+      const dictionaries = Object.values(
+        exchange.dictionaryOverrides || {},
+      ).flatMap((items) => Object.values(items || {}));
+      return {
+        adapterId: exchange.adapterId,
+        adapterVersion: exchange.adapterVersion || "",
+        sourceKey: exchange.sourceKey || "",
+        sourceKeyFields: mockSourceKeyFields(
+          exchange.sourceKeyFields,
+          exchange.sourceKey,
+        ),
+        hasSourceQuery: Boolean(`${exchange.sourceQuery || ""}`.trim()),
+        mappingCount: Object.values(exchange.mapping || {}).filter(Boolean)
+          .length,
+        ruleCount: Object.keys(exchange.rules || {}).length,
+        dictionaryCount: dictionaries.length,
+        dictionaryItemCount: dictionaries.reduce(
+          (total, items) => total + items.length,
+          0,
+        ),
+        exportedAt: exchange.exportedAt,
+        checksum: exchange.checksum,
+        ...compatibility,
+      };
+    }
+    const dictionaryScopeKey =
+      `${args.request?.dictionaryScopeKey || ""}`.trim();
+    const portableDictionaries =
+      exchange.dictionaryOverrides?.__CURRENT_SOURCE__ || {};
+    if (Object.keys(portableDictionaries).length && !dictionaryScopeKey)
+      throw new Error("当前适配器需要来源字典绑定信息，请重新读取老库后再导入");
+    const sourceKeyFields = mockSourceKeyFields(
+      exchange.sourceKeyFields,
+      exchange.sourceKey,
+    );
+    const profile = {
+      version: 1,
+      adapterId: `${scope.adapterId || ""}`.trim().toUpperCase(),
+      adapterVersion: Number(args.request?.adapterVersion || 0),
+      sourceIdentity: `${scope.sourceIdentity || ""}`.trim().toLowerCase(),
+      targetTenantId: `${scope.targetTenantId || ""}`.trim().toLowerCase(),
+      sourceKey: sourceKeyFields.length === 1 ? sourceKeyFields[0] : "",
+      sourceKeyFields,
+      sourceQuery: `${exchange.sourceQuery || ""}`.trim(),
+      mapping: { ...(exchange.mapping || {}) },
+      rules: structuredClone(exchange.rules || {}),
+      dictionaryOverrides: Object.keys(portableDictionaries).length
+        ? { [dictionaryScopeKey]: structuredClone(portableDictionaries) }
+        : {},
+      savedAt: new Date().toISOString(),
+      compatibility: "CURRENT",
+      compatibilityMessage: `已按适配器 v${Number(args.request?.adapterVersion || 0)} 保存`,
+      requiresReview: false,
+    };
+    mockSourceMappingProfiles.set(mockSourceMappingScope(profile), profile);
+    return profile;
+  }
   if (name === "load_cost_merge_mapping_profile") {
     return (
-      mockCostMergeMappingProfiles.get(
-        mockCostMergeScope(args.request),
-      ) || null
+      mockCostMergeMappingProfiles.get(mockCostMergeScope(args.request)) || null
     );
   }
   if (name === "save_cost_merge_mapping_profile") {
@@ -240,10 +761,34 @@ export async function command(name, args = {}) {
         "bundled",
         "",
       ),
-      mockDriverPack("vastbase", "海量 Vastbase G100 PostgreSQL 协议", "应用内置", "bundled", ""),
-      mockDriverPack("gbase8c", "南大通用 GBase 8c PostgreSQL 协议", "应用内置", "bundled", ""),
-      mockDriverPack("gbase8a", "南大通用 GBase 8a ODBC", "随服务端版本", "profile-ready", "GBase ODBC 8.3 Driver"),
-      mockDriverPack("gbase8s", "南大通用 GBase 8s ODBC", "随服务端版本", "profile-ready", "GBase ODBC DRIVER"),
+      mockDriverPack(
+        "vastbase",
+        "海量 Vastbase G100 PostgreSQL 协议",
+        "应用内置",
+        "bundled",
+        "",
+      ),
+      mockDriverPack(
+        "gbase8c",
+        "南大通用 GBase 8c PostgreSQL 协议",
+        "应用内置",
+        "bundled",
+        "",
+      ),
+      mockDriverPack(
+        "gbase8a",
+        "南大通用 GBase 8a ODBC",
+        "随服务端版本",
+        "profile-ready",
+        "GBase ODBC 8.3 Driver",
+      ),
+      mockDriverPack(
+        "gbase8s",
+        "南大通用 GBase 8s ODBC",
+        "随服务端版本",
+        "profile-ready",
+        "GBase ODBC DRIVER",
+      ),
     ];
   if (name === "generate_object_id") return objectId();
   if (name === "probe_target_system") {
@@ -280,6 +825,83 @@ export async function command(name, args = {}) {
   }
   if (name === "load_target_dictionaries") return mockTargetDictionaryCatalog();
   if (name === "load_medicine_cost_merges") return mockMedicineCostMerges();
+  if (name === "inspect_medicine_source_adapter") {
+    const request = args.request || {};
+    if (`${request.adapterId || ""}`.toUpperCase() !== "PHIS27")
+      throw new Error(`未注册来源适配器 ${request.adapterId || ""}`);
+    const inspection = await command("inspect_phis27_source", {
+      profile: request.connection,
+    });
+    return {
+      detected: inspection.detected,
+      adapterId: "PHIS27",
+      adapterName: "二系列phis",
+      adapterVersion: 1,
+      schema: inspection.schema,
+      checkedObjects: inspection.checkedTables,
+      missingObjects: inspection.missingTables,
+      objectStructures: inspection.objectStructures || [],
+      scopes: inspection.scopes,
+      metrics: [
+        {
+          id: "TOTAL_MEDICINES",
+          label: "通用药品",
+          value: inspection.totalMedicines,
+        },
+        {
+          id: "CONFIGURED_MEDICINES",
+          label: "机构配置",
+          value: inspection.configuredMedicines,
+        },
+        {
+          id: "ACTIVE_CONFIGURED_MEDICINES",
+          label: "在用药品",
+          value: inspection.activeConfiguredMedicines,
+        },
+        {
+          id: "PRODUCT_ROWS",
+          label: "厂家商品",
+          value: inspection.productRows,
+        },
+        {
+          id: "STOCK_MEDICINES",
+          label: "有库存药品",
+          value: inspection.stockMedicines,
+        },
+      ],
+      guidance: [
+        {
+          id: "MEDICINE_BASE_RELATIONS",
+          title: "主数据读取与自动合并",
+          body: "药品基础信息来自 YK_TYPK，厂家商品来自 YK_YPCD；机构在用范围只看 YK_CDXX，不关联 YK_YPXX、YF_YPXX。名称、规格、最小单位一致的多个 YPXH 会复用同一新药品，每个 YPXH:YPCD 仍分别保留迁移映射。",
+          tone: "SUCCESS",
+        },
+      ],
+      compatibility: {
+        status: "COMPATIBLE",
+        task: "MEDICINE_BASE",
+        blockers: [],
+        reviews: [],
+        compatibleFallbacks: [
+          {
+            path: "YK_TYPK.YCJL",
+            message: "字段缺失或当前账号不可见",
+            usedBy: ["默认一次剂量"],
+            fallback: "默认一次剂量留空并在校验时人工补充",
+          },
+        ],
+        message: "当前来源字段结构满足药品迁移核心契约",
+      },
+      warnings: inspection.warnings,
+      message: inspection.message,
+    };
+  }
+  if (name === "load_medicine_source_adapter") {
+    const request = args.request || {};
+    if (`${request.adapterId || ""}`.toUpperCase() !== "PHIS27")
+      throw new Error(`未注册来源适配器 ${request.adapterId || ""}`);
+    return demoPhis27Preview();
+  }
   if (name === "inspect_phis27_source")
     return {
       detected: true,
@@ -301,6 +923,26 @@ export async function command(name, args = {}) {
         "YK_YPSX",
       ],
       missingTables: [],
+      objectStructures: [
+        {
+          name: "YK_TYPK",
+          columns: [
+            { name: "YPXH", dataType: "NUMBER" },
+            { name: "YPMC", dataType: "NVARCHAR2" },
+            { name: "YPGG", dataType: "NVARCHAR2" },
+            { name: "ZXDW", dataType: "NVARCHAR2" },
+            { name: "ZXBZ", dataType: "NUMBER" },
+          ],
+        },
+        {
+          name: "YK_YPCD",
+          columns: [
+            { name: "YPXH", dataType: "NUMBER" },
+            { name: "YPCD", dataType: "NUMBER" },
+            { name: "PZWH", dataType: "NVARCHAR2" },
+          ],
+        },
+      ],
       totalMedicines: 12646,
       configuredMedicines: 85,
       activeConfiguredMedicines: 85,
@@ -330,7 +972,8 @@ export async function command(name, args = {}) {
         {
           id: "ALL_MEDICINES",
           label: "全部通用药品",
-          description: "读取药品主表中的全部通用药品，不受机构配置和作废状态限制",
+          description:
+            "读取药品主表中的全部通用药品，不受机构配置和作废状态限制",
           estimatedRows: 12646,
           medicineCount: 12646,
           recommended: false,
@@ -341,6 +984,34 @@ export async function command(name, args = {}) {
       ],
       message: "已识别二系列phis药品主数据结构，可使用内置安全查询模板",
     };
+  if (name === "inspect_inventory_source_adapter") {
+    const request = args.request || {};
+    if (`${request.adapterId || ""}`.toUpperCase() !== "PHIS27")
+      throw new Error(`未注册来源适配器 ${request.adapterId || ""}`);
+    const readiness = await command("inspect_phis27_inventory", {
+      request,
+    });
+    return {
+      adapterId: "PHIS27",
+      adapterName: "二系列phis",
+      adapterVersion: 1,
+      ...readiness,
+    };
+  }
+  if (name === "load_inventory_source_catalog") {
+    const request = args.request || {};
+    if (`${request.adapterId || ""}`.toUpperCase() !== "PHIS27")
+      throw new Error(`未注册来源适配器 ${request.adapterId || ""}`);
+    const catalog = await command("load_phis27_inventory_catalog", {
+      profile: request.connection,
+    });
+    return {
+      adapterId: "PHIS27",
+      adapterName: "二系列phis",
+      adapterVersion: 1,
+      ...catalog,
+    };
+  }
   if (name === "inspect_phis27_inventory")
     return {
       readyForLocationMapping: true,
@@ -361,6 +1032,7 @@ export async function command(name, args = {}) {
           stockRowCount: 49,
           stockGroupCount: 43,
           medicineCount: 39,
+          requiresSourceLocationResolution: false,
           mappingStatus: "PENDING_TARGET_MAPPING",
           mappingMessage: "已通过 YK_YPXX 唯一关系识别药库",
         },
@@ -373,6 +1045,7 @@ export async function command(name, args = {}) {
           stockRowCount: 25,
           stockGroupCount: 25,
           medicineCount: 23,
+          requiresSourceLocationResolution: false,
           mappingStatus: "PENDING_TARGET_MAPPING",
           mappingMessage: "已通过 YK_YPXX 唯一关系识别药库",
         },
@@ -385,6 +1058,7 @@ export async function command(name, args = {}) {
           stockRowCount: 32,
           stockGroupCount: 28,
           medicineCount: 24,
+          requiresSourceLocationResolution: false,
           mappingStatus: "PENDING_TARGET_MAPPING",
           mappingMessage: "老系统位置已识别，可选择对应的新系统库房",
         },
@@ -397,14 +1071,51 @@ export async function command(name, args = {}) {
           stockRowCount: 12,
           stockGroupCount: 11,
           medicineCount: 8,
+          requiresSourceLocationResolution: false,
           mappingStatus: "PENDING_TARGET_MAPPING",
           mappingMessage: "老系统位置已识别，可在后续批次继续映射",
         },
       ],
       unresolvedSourceKeys: [],
+      checkedObjects: [
+        "YK_TYPK",
+        "YK_YPCD",
+        "YK_CDDZ",
+        "SYS_ORGANIZATION",
+        "YK_KCMX",
+        "YF_KCMX",
+        "YF_YPXX",
+        "YK_YKLB",
+        "YF_YFLB",
+        "YK_YPXX",
+      ],
+      missingObjects: [],
+      objectStructures: [],
+      compatibility: {
+        status: "COMPATIBLE",
+        task: "INVENTORY",
+        blockers: [],
+        reviews: [],
+        compatibleFallbacks: [
+          {
+            path: "YK_YPXX.JGID",
+            message: "字段缺失或当前账号不可见",
+            usedBy: ["药库关系机构消歧"],
+            fallback: "仅按药库编号关联并要求人工确认机构",
+          },
+        ],
+        message: "当前来源字段结构满足库存迁移核心契约",
+      },
+      guidance: [
+        {
+          id: "PHIS27_INVENTORY_RELATIONS",
+          title: "药库归属与库存数量依据",
+          body: "药库库存通过 YK_YPXX 的 YKSB + YPXH 唯一关系定位；无法唯一判断时只将该药品列为待确认，不复制库存。药库数量取 YK_KCMX.KCSL，药房数量取 YF_KCMX.YPSL。",
+          tone: "INFO",
+        },
+      ],
       warnings: ["药品主键台账将在选定本批机构后，仅对所选库存明细核对"],
-      message:
-        "已读取轻量库存范围，请先选择并映射本批要迁移的机构与库房",
+      message: "已读取轻量库存范围，请先选择并映射本批要迁移的机构与库房",
     };
   if (name === "load_phis27_inventory_catalog")
     return {
@@ -547,7 +1258,8 @@ export async function command(name, args = {}) {
       suggestions,
       catalogCount: mockInventoryTargetMedicines.length,
       comparedCount:
-        (args.request.sources?.length || 0) * mockInventoryTargetMedicines.length,
+        (args.request.sources?.length || 0) *
+        mockInventoryTargetMedicines.length,
       elapsedMs: Math.round(performance.now() - started),
       cacheHit: true,
       message: `浏览器预览：已索引 ${mockInventoryTargetMedicines.length} 个新系统药品商品，完成 ${suggestions.length} 种推荐`,
@@ -595,7 +1307,7 @@ export async function command(name, args = {}) {
       message: `浏览器预览：已保存 ${args.request.matches?.length || 0} 项药品目录匹配`,
     };
   }
-  if (name === "prepare_phis27_inventory") {
+  if (["prepare_inventory_batch", "prepare_phis27_inventory"].includes(name)) {
     mockInventoryLocationMappings = args.request.mappings.map((mapping) => ({
       ...mapping,
     }));
@@ -617,7 +1329,9 @@ export async function command(name, args = {}) {
     return {
       ok: true,
       databaseVersion:
-        args.profile?.kind === "oracle" ? "Oracle（演示）" : "MySQL 8.0（演示）",
+        args.profile?.kind === "oracle"
+          ? "Oracle（演示）"
+          : "MySQL 8.0（演示）",
       latencyMs: 38,
       message: "浏览器预览模式：桌面版将执行真实连接测试",
     };
@@ -635,20 +1349,108 @@ export async function command(name, args = {}) {
       warnings: ["浏览器预览模式不会验证真实写权限"],
       message: "目标药品表结构与当前迁移版本兼容",
     };
-  if (name === "list_source_tables")
-    return ["T_DRUG_INFO", "T_DRUG_PRICE", "T_FACTORY"];
+  if (name === "list_source_tables") return mockSourceObjects;
+  if (name === "survey_source_objects") {
+    const objectNames = (args.request?.objectNames || []).map((item) =>
+      `${item || ""}`.trim(),
+    );
+    if (!objectNames.length || objectNames.length > 5)
+      throw new Error("候选结构核对一次只允许 1–5 个来源对象");
+    if (new Set(objectNames).size !== objectNames.length)
+      throw new Error("候选结构核对不能包含重复对象");
+    const results = [];
+    for (const objectName of objectNames) {
+      try {
+        const sourceResult = await command("preview_source_object", {
+          request: {
+            connection: args.request?.connection,
+            objectName,
+            limit: 2,
+          },
+        });
+        results.push({
+          objectName,
+          status: "READY",
+          sourceResult,
+          message: "",
+        });
+      } catch {
+        results.push({
+          objectName,
+          status: "FAILED",
+          sourceResult: null,
+          message: "未能在受控时间内读取两行候选样例，可稍后单独预览",
+        });
+      }
+    }
+    return results;
+  }
+  if (name === "preview_source_object") {
+    const objectName = `${args.request?.objectName || ""}`.trim();
+    if (!mockSourceObjects.includes(objectName))
+      throw new Error("来源表或视图已不存在或当前账号不可见，请刷新清单后重试");
+    const mysql = args.request?.connection?.kind === "mysql";
+    const escaped = mysql
+      ? `\`${objectName.replaceAll("`", "``")}\``
+      : `"${objectName.replaceAll('"', '""')}"`;
+    const schema = `${args.request?.connection?.schema || ""}`.trim();
+    const qualified =
+      !mysql && schema
+        ? `"${schema.replaceAll('"', '""')}".${escaped}`
+        : escaped;
+    const preview = demoPreview();
+    const limit = Math.max(0, Number(args.request?.limit || 0));
+    const previewRows = limit ? preview.rows.slice(0, limit) : preview.rows;
+    return {
+      objectName,
+      query: `SELECT * FROM ${qualified}`,
+      metadataMessage: "演示数据已提供标准字段名，将按字段名和样例辅助识别",
+      preview: {
+        ...preview,
+        rows: previewRows,
+        truncated:
+          Boolean(preview.truncated) ||
+          (limit > 0 && preview.rows.length > previewRows.length),
+      },
+    };
+  }
+  if (name === "count_source_object_rows") {
+    const objectName = `${args.request?.objectName || ""}`.trim();
+    if (!mockSourceObjects.includes(objectName))
+      throw new Error("来源表或视图已不存在或当前账号不可见，请刷新清单后重试");
+    if (objectName === "T_FACTORY")
+      throw new Error("浏览器预览：模拟后台行数探测超过 12 秒");
+    return {
+      objectName,
+      rowCount: objectName === "T_DRUG_PRICE" ? 10_001 : demoRows().length,
+      isExact: objectName !== "T_DRUG_PRICE",
+      probeLimit: 10_001,
+      elapsedMs: 24,
+    };
+  }
   if (name === "preview_source") return demoPreview();
   if (name === "prepare_migration_batch") return mockPrepare(args.request);
   if (name === "preview_overwrite_batch")
     return mockPreviewOverwrite(args.request);
   if (name === "trial_migration_row") return mockTrialMigration(args.request);
   if (name === "execute_migration_batch") return mockExecute(args.request);
-  if (name === "execute_phis27_inventory")
+  if (["execute_inventory_batch", "execute_phis27_inventory"].includes(name))
     return mockExecuteInventory(args.request);
-  if (name === "trial_phis27_inventory")
+  if (["trial_inventory_row", "trial_phis27_inventory"].includes(name))
     return mockTrialInventory(args.request);
-  if (name === "confirm_phis27_inventory_exception")
+  if (
+    [
+      "confirm_inventory_exception",
+      "confirm_phis27_inventory_exception",
+    ].includes(name)
+  )
     return mockConfirmInventoryException(args.request);
+  if (
+    ["preview_inventory_undo", "preview_phis27_inventory_undo"].includes(name)
+  )
+    return mockPreviewInventoryUndo(args.request);
+  if (["undo_inventory_batch", "undo_phis27_inventory"].includes(name))
+    return mockUndoInventory(args.request);
   if (name === "undo_migration_batch") return mockUndo(args.request);
   if (name === "load_migration_batch") return mockBatches.get(args.batchId);
   if (name === "list_recent_batches")
@@ -671,17 +1473,22 @@ function mockPrepareInventory(request) {
     const packagingException =
       !missingMedicine && mapping.sourceKind === "PHARMACY" && index % 2 === 0;
     const validationIssues = missingMedicine
-      ? [{
-          code: "MEDICINE_LEDGER_REQUIRED",
-          message: `药品 ${sourceProductKey} 缺少完整的 id_med/id_med_pro 基础迁移台账`,
-          reviewable: false,
-        }]
+      ? [
+          {
+            code: "MEDICINE_LEDGER_REQUIRED",
+            message: `药品 ${sourceProductKey} 缺少完整的 id_med/id_med_pro 基础迁移台账`,
+            reviewable: false,
+          },
+        ]
       : packagingException
-        ? [{
-            code: "PHARMACY_SINGLE_PACKAGE_UNCONFIRMED",
-            message: "药房包装系数为 1，但库存单位“盒”与最小单位“粒”不一致，而 YK_TYPK.ZXBZ 当前值为“12”（需为 1）",
-            reviewable: true,
-          }]
+        ? [
+            {
+              code: "PHARMACY_SINGLE_PACKAGE_UNCONFIRMED",
+              message:
+                "药房包装系数为 1，但库存单位“盒”与最小单位“粒”不一致，而 YK_TYPK.ZXBZ 当前值为“12”（需为 1）",
+              reviewable: true,
+            },
+          ]
         : [];
     const invalid = validationIssues.length > 0;
     return {
@@ -707,9 +1514,8 @@ function mockPrepareInventory(request) {
         productUnitSaleFactor: index % 2 ? "24" : "36",
         productName: index % 2 ? "阿莫西林胶囊" : "维生素D滴剂",
         factoryName: "示例生产厂家",
-        packagingNotes: index % 2
-          ? []
-          : ["已采用当前药房的实际包装：粒×1；商品主档为 盒×36"],
+        packagingNotes:
+          index % 2 ? [] : ["已采用当前药房的实际包装：粒×1；商品主档为 盒×36"],
         inventoryValidationIssues: validationIssues,
       },
       normalizedData: {
@@ -743,7 +1549,7 @@ function mockPrepareInventory(request) {
     batch: {
       batchId,
       batchName: "二系列phis库存预检-浏览器预览",
-      sourceType: "PHIS27_INVENTORY",
+      sourceType: "INSTITUTION_INVENTORY",
       sourceName: request.sourceName,
       sourceDescription: "YK_KCMX/YF_KCMX 非零库存防重预检",
       conflictStrategy: "FAIL",
@@ -768,7 +1574,7 @@ function mockPrepareInventory(request) {
 
 function mockConfirmInventoryException(request) {
   const detail = mockBatches.get(request.batchId);
-  if (!detail || detail.batch.sourceType !== "PHIS27_INVENTORY") {
+  if (!isMockInventoryBatch(detail)) {
     throw new Error("浏览器预览中未找到对应的库存预检批次");
   }
   const row = detail.rows.find((item) => item.rowId === request.rowId);
@@ -841,7 +1647,7 @@ function mockConfirmInventoryException(request) {
 
 function mockExecuteInventory(request) {
   const detail = mockBatches.get(request.batchId);
-  if (!detail || detail.batch.sourceType !== "PHIS27_INVENTORY") {
+  if (!isMockInventoryBatch(detail)) {
     throw new Error("浏览器预览中未找到对应的库存预检批次");
   }
   if (!inventoryTrialCoverage(detail, request.target).complete) {
@@ -900,9 +1706,94 @@ function mockExecuteInventory(request) {
   return next;
 }
 
+function mockPreviewInventoryUndo(request) {
+  const detail = mockBatches.get(request.batchId);
+  if (!isMockInventoryBatch(detail)) {
+    throw new Error("浏览器预览中未找到对应的库存迁移批次");
+  }
+  if (detail.batch.status !== "SUCCESS") {
+    throw new Error("仅已完成的首次盘点批次可以执行安全撤销预检");
+  }
+  const rowsByStorage = new Map();
+  for (const row of detail.rows.filter((item) => item.status === "SUCCESS")) {
+    const idSto = row.normalizedData?.idSto || "";
+    if (!rowsByStorage.has(idSto)) rowsByStorage.set(idSto, []);
+    rowsByStorage.get(idSto).push(row);
+  }
+  const storages = [...rowsByStorage.entries()].map(([idSto, rows]) => {
+    const audit = detail.audits.find(
+      (item) =>
+        item.targetTable === "hi_sto_check" && item.afterData?.idSto === idSto,
+    );
+    return {
+      idSto,
+      name: rows[0]?.normalizedData?.naSto || idSto,
+      cdStoCheck: audit?.afterData?.cdStoCheck || "20260827001",
+      inventoryCount: rows.length,
+      canUndo: true,
+      messages: [],
+    };
+  });
+  return {
+    canUndo: true,
+    batchId: request.batchId,
+    storageCount: storages.length,
+    inventoryCount: detail.rows.filter((row) => row.status === "SUCCESS")
+      .length,
+    storages,
+    message: "浏览器预览：未发现后续库存业务，可以安全撤销本批首次盘点",
+  };
+}
+
+function mockUndoInventory(request) {
+  const detail = mockBatches.get(request.batchId);
+  if (!isMockInventoryBatch(detail)) {
+    throw new Error("浏览器预览中未找到对应的库存迁移批次");
+  }
+  const now = new Date().toISOString();
+  const next = {
+    ...detail,
+    batch: {
+      ...detail.batch,
+      status: "UNDONE",
+      successCount: 0,
+      updatedAt: now,
+      finishedAt: now,
+    },
+    rows: detail.rows.map((row) => ({
+      ...row,
+      status: row.status === "SUCCESS" ? "SKIPPED" : row.status,
+      errorCode: row.status === "SUCCESS" ? "INVENTORY_UNDONE" : row.errorCode,
+      errorMessage:
+        row.status === "SUCCESS" ? "本批首次盘点已安全撤销" : row.errorMessage,
+      updatedAt: now,
+    })),
+    audits: [
+      {
+        auditId: objectId(),
+        batchId: request.batchId,
+        rowId: "",
+        traceId: objectId(),
+        operation: "INVENTORY_UNDO",
+        targetTable: "hi_sto_check",
+        targetId: request.batchId,
+        result: "SUCCESS",
+        beforeData: { status: detail.batch.status },
+        afterData: { status: "UNDONE" },
+        message: "浏览器预览：首次盘点、初始库存和初始账簿已安全撤销",
+        operatorId: "preview-system",
+        operatedAt: now,
+      },
+      ...detail.audits,
+    ],
+  };
+  mockBatches.set(request.batchId, next);
+  return next;
+}
+
 function mockTrialInventory(request) {
   const detail = mockBatches.get(request.batchId);
-  if (!detail || detail.batch.sourceType !== "PHIS27_INVENTORY") {
+  if (!isMockInventoryBatch(detail)) {
     throw new Error("浏览器预览中未找到对应的库存预检批次");
   }
   const row = detail.rows.find((item) => item.rowId === request.rowId);
@@ -969,10 +1860,16 @@ function mockDriverPack(databaseKind, title, version, state, defaultDriver) {
     defaultDriver,
     defaultPort: 0,
     delivery: state === "bundled" ? "bundled" : "open-source-pack",
-    licenseNote: state === "bundled" ? "通用协议随应用内置，无需单独安装。" : "连接配置已预置，桌面版会检测本机实际安装状态。",
+    licenseNote:
+      state === "bundled"
+        ? "通用协议随应用内置，无需单独安装。"
+        : "连接配置已预置，桌面版会检测本机实际安装状态。",
     officialUrl: "https://www.postgresql.org/docs/current/protocol.html",
     protocol: state === "bundled" ? "postgresql-wire" : "odbc",
-    installGuide: state === "bundled" ? "无需安装，填写连接参数即可测试。" : "安装与数据库服务端版本及操作系统架构一致的 64 位厂商 ODBC 驱动。",
+    installGuide:
+      state === "bundled"
+        ? "无需安装，填写连接参数即可测试。"
+        : "安装与数据库服务端版本及操作系统架构一致的 64 位厂商 ODBC 驱动。",
     platformPriority: ["windows-x64", "macos-arm64", "macos-x64"],
     state,
     detectedDriver: ["installed", "bundled"].includes(state)
@@ -1002,11 +1899,17 @@ function mockTargetDictionaryCatalog() {
     bindings: [
       { targetField: "sdMed", dictionaryId: "rbmh.base.med.articleType" },
       { targetField: "sdDose", dictionaryId: "rbmh.base.med.doseType" },
-      { targetField: "fgMedRx", dictionaryId: "rbmh.base.med.prescriptiondrugIdentification" },
+      {
+        targetField: "fgMedRx",
+        dictionaryId: "rbmh.base.med.prescriptiondrugIdentification",
+      },
       { targetField: "sdChrgitmLv", dictionaryId: "phis.medicareLevel" },
       { targetField: "sdAllergy", dictionaryId: "rbmh.base.med.sdAllergy" },
       { targetField: "sdStorage", dictionaryId: "phis.storageType" },
-      { targetField: "sdRound", dictionaryId: "rbmh.base.med.roundingStrategy" },
+      {
+        targetField: "sdRound",
+        dictionaryId: "rbmh.base.med.roundingStrategy",
+      },
       { targetField: "sdDps", dictionaryId: "rbmh.base.med.dispensingMethod" },
       { targetField: "dftUsage", dictionaryId: "rbmh.base.med.usage" },
       { targetField: "dftFreq", dictionaryId: "rbmh.base.freq" },
@@ -1078,6 +1981,12 @@ function mockTargetDictionaryCatalog() {
 
 function mockCostMergeScope(request = {}) {
   return `${`${request.baseUrl || ""}`.trim().replace(/\/+$/, "")}\u0000${`${request.tenantId || ""}`.trim()}`;
+}
+
+function mockSourceMappingScope(scope = {}) {
+  return [scope.adapterId, scope.sourceIdentity, scope.targetTenantId]
+    .map((value) => `${value || ""}`.trim().toLowerCase())
+    .join("\u0000");
 }
 
 function mockMedicineCostMerges() {
@@ -1208,21 +2117,126 @@ function demoPhis27Preview() {
     DAILY_LIMIT: ["一日限量", "YK_TYPK", "YCYL"],
   };
   const sourceDictionaries = {
-    DRUG_TYPE: ["处方类型", [["1", "西药"], ["2", "中药"], ["3", "草药"], ["9", "疫苗"]]],
-    FORM_CODE: ["剂型", [["CAP", "胶囊剂"], ["INJ", "注射剂"]]],
-    USAGE_CODE: ["使用途径", [["1", "口服"], ["2", "静滴"]]],
-    FREQ_CODE: ["用药频次", [["QD", "每日一次"], ["TID", "每日三次"]]],
-    ROUND_CODE: ["取整策略", [["0", "每次发药数量取整"], ["1", "每天发药数量取整"], ["2", "不取整"]]],
-    DISPENSE_CODE: ["发药方式", [["1", "药房发药"], ["2", "病区发药"]]],
-    RX_FLAG: ["处方药", [["1", "处方药品（RX）"], ["2", "非处方药品（OTC）"]]],
-    BASIC_DRUG_TYPE: ["基药类型", [["1", "非基本药物"], ["2", "国家基本药物"], ["3", "省基本药物"], ["4", "区自选"]]],
-    INSURANCE_LEVEL: ["医保分类", [["1", "甲类"], ["2", "乙类"], ["3", "丙类"]]],
-    ORIGIN_TYPE: ["产地档次", [["1", "国产"], ["2", "合资"], ["3", "进口"]]],
-    STORAGE_CODE: ["药品贮藏", [["1", "常温"], ["2", "阴凉"], ["3", "低温"]]],
-    SPECIAL_DRUG_TYPE: ["特殊药品", [["1", "麻醉"], ["3", "贵重"], ["4", "毒性"], ["5", "放射"], ["6", "一般"], ["7", "一类精神"], ["8", "二类精神"]]],
-    ALLERGY_CODE: ["过敏药物类别", [["1", "青霉素"], ["2", "磺胺"], ["3", "喹诺酮"], ["4", "头孢"]]],
-    ANTI_APPROVAL: ["是否审批", [["1", "需要"], ["2", "不需要"]]],
-    ANTIBIOTIC_FLAG: ["确认", [["0", "否"], ["1", "是"]]],
+    DRUG_TYPE: [
+      "处方类型",
+      [
+        ["1", "西药"],
+        ["2", "中药"],
+        ["3", "草药"],
+        ["9", "疫苗"],
+      ],
+    ],
+    FORM_CODE: [
+      "剂型",
+      [
+        ["CAP", "胶囊剂"],
+        ["INJ", "注射剂"],
+      ],
+    ],
+    USAGE_CODE: [
+      "使用途径",
+      [
+        ["1", "口服"],
+        ["2", "静滴"],
+      ],
+    ],
+    FREQ_CODE: [
+      "用药频次",
+      [
+        ["QD", "每日一次"],
+        ["TID", "每日三次"],
+      ],
+    ],
+    ROUND_CODE: [
+      "取整策略",
+      [
+        ["0", "每次发药数量取整"],
+        ["1", "每天发药数量取整"],
+        ["2", "不取整"],
+      ],
+    ],
+    DISPENSE_CODE: [
+      "发药方式",
+      [
+        ["1", "药房发药"],
+        ["2", "病区发药"],
+      ],
+    ],
+    RX_FLAG: [
+      "处方药",
+      [
+        ["1", "处方药品（RX）"],
+        ["2", "非处方药品（OTC）"],
+      ],
+    ],
+    BASIC_DRUG_TYPE: [
+      "基药类型",
+      [
+        ["1", "非基本药物"],
+        ["2", "国家基本药物"],
+        ["3", "省基本药物"],
+        ["4", "区自选"],
+      ],
+    ],
+    INSURANCE_LEVEL: [
+      "医保分类",
+      [
+        ["1", "甲类"],
+        ["2", "乙类"],
+        ["3", "丙类"],
+      ],
+    ],
+    ORIGIN_TYPE: [
+      "产地档次",
+      [
+        ["1", "国产"],
+        ["2", "合资"],
+        ["3", "进口"],
+      ],
+    ],
+    STORAGE_CODE: [
+      "药品贮藏",
+      [
+        ["1", "常温"],
+        ["2", "阴凉"],
+        ["3", "低温"],
+      ],
+    ],
+    SPECIAL_DRUG_TYPE: [
+      "特殊药品",
+      [
+        ["1", "麻醉"],
+        ["3", "贵重"],
+        ["4", "毒性"],
+        ["5", "放射"],
+        ["6", "一般"],
+        ["7", "一类精神"],
+        ["8", "二类精神"],
+      ],
+    ],
+    ALLERGY_CODE: [
+      "过敏药物类别",
+      [
+        ["1", "青霉素"],
+        ["2", "磺胺"],
+        ["3", "喹诺酮"],
+        ["4", "头孢"],
+      ],
+    ],
+    ANTI_APPROVAL: [
+      "是否审批",
+      [
+        ["1", "需要"],
+        ["2", "不需要"],
+      ],
+    ],
+    ANTIBIOTIC_FLAG: [
+      "确认",
+      [
+        ["0", "否"],
+        ["1", "是"],
+      ],
+    ],
   };
   const dynamicDictionaryConfig = {
     FORM_CODE: ["YK_YPSX", "YPSX", "SXMC", []],
@@ -1352,6 +2366,24 @@ export function demoRows() {
 function mockPrepare(request) {
   const batchId = objectId();
   const now = new Date().toISOString();
+  const sourceKeys = new Set();
+  request.rows.forEach((raw, index) => {
+    const rawSourceKey = raw?._sourceKey;
+    if (rawSourceKey !== null && typeof rawSourceKey === "object")
+      throw new Error(
+        `第 ${index + 1} 行的来源唯一标识不是可用的文本或数字字段`,
+      );
+    const sourceKey = `${rawSourceKey ?? ""}`.trim();
+    if (!sourceKey)
+      throw new Error(
+        `第 ${index + 1} 行缺少来源唯一标识；禁止使用行号代替，请重新选择稳定业务主键`,
+      );
+    if (sourceKeys.has(sourceKey))
+      throw new Error(
+        `第 ${index + 1} 行的来源唯一标识重复；请重新选择真正唯一的业务主键`,
+      );
+    sourceKeys.add(sourceKey);
+  });
   const rows = request.rows.map((raw, index) => {
     const normalized = {};
     const ignoredFields = [];
@@ -1402,20 +2434,21 @@ function mockPrepare(request) {
       "cdMedPro",
     ].some((key) => `${normalized[key] ?? ""}`.trim() !== "");
     if (hasProduct) {
-      ["unitSale", "unitSaleFactor", "pricePur", "priceSale"].forEach(
-        (key) => {
-          if (`${normalized[key] ?? ""}`.trim() === "")
-            errors.push(`${key}不能为空`);
-        },
-      );
-      if (!`${normalized.idFac ?? ""}`.trim() && !`${normalized.naFac ?? ""}`.trim())
+      ["unitSale", "unitSaleFactor", "pricePur", "priceSale"].forEach((key) => {
+        if (`${normalized[key] ?? ""}`.trim() === "")
+          errors.push(`${key}不能为空`);
+      });
+      if (
+        !`${normalized.idFac ?? ""}`.trim() &&
+        !`${normalized.naFac ?? ""}`.trim()
+      )
         errors.push("生产厂家主键或名称至少填写一项");
     }
     return {
       rowId: objectId(),
       batchId,
       rowNo: index + 1,
-      sourceKey: raw._sourceKey || `${index + 1}`,
+      sourceKey: `${raw._sourceKey}`.trim(),
       sourceHash: objectId(),
       status: errors.length ? "INVALID" : "VALIDATED",
       rawData: raw,
@@ -1483,9 +2516,7 @@ function mockExecute(request) {
     detail.batch.successCount === 0 &&
     !hasSuccessfulTargetTrial(detail.audits, request.target)
   ) {
-    throw new Error(
-      "正式迁移前请先在迁移明细中选择一条数据完成单条试迁移",
-    );
+    throw new Error("正式迁移前请先在迁移明细中选择一条数据完成单条试迁移");
   }
   const selected = new Set(request.selectedRowIds || []);
   const mergedMedicineIds = new Map();

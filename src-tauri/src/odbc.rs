@@ -1,4 +1,6 @@
-use crate::model::{ConnectionCheck, ConnectionProfile, SourcePreview, TargetReadiness};
+use crate::model::{
+    ConnectionCheck, ConnectionProfile, SourceColumnMetadata, SourcePreview, TargetReadiness,
+};
 use crate::target_contract::{validate_schema_identifier, TARGET_TABLE_PROJECTIONS};
 use odbc_api::{
     buffers::{BufferDesc, ColumnarDynBuffer, Indicator},
@@ -99,13 +101,17 @@ pub fn list_tables(profile: &ConnectionProfile) -> Result<Vec<String>, String> {
             profile.schema.trim()
         };
         let mut tables = Vec::new();
-        for item in connection
-            .tables("", schema, "%", "TABLE")
-            .map_err(odbc_error)?
-        {
-            let item = item.map_err(odbc_error)?;
-            if let Some(table) = item.table.as_str().map_err(odbc_error)? {
-                tables.push(table.to_string());
+        for object_type in ["TABLE", "VIEW"] {
+            let rows = match connection.tables("", schema, "%", object_type) {
+                Ok(rows) => rows,
+                Err(_) if object_type == "VIEW" => continue,
+                Err(error) => return Err(odbc_error(error)),
+            };
+            for item in rows {
+                let item = item.map_err(odbc_error)?;
+                if let Some(table) = item.table.as_str().map_err(odbc_error)? {
+                    tables.push(table.to_string());
+                }
             }
         }
         tables.sort();
@@ -114,16 +120,83 @@ pub fn list_tables(profile: &ConnectionProfile) -> Result<Vec<String>, String> {
     })
 }
 
+pub fn source_object_column_metadata(
+    profile: &ConnectionProfile,
+    object_name: &str,
+) -> Result<Vec<SourceColumnMetadata>, String> {
+    with_connection(profile, |connection| {
+        let schema_pattern = if profile.schema.trim().is_empty() {
+            "%"
+        } else {
+            profile.schema.trim()
+        };
+        let mut metadata = Vec::new();
+        for item in connection
+            .columns("", schema_pattern, object_name, "%")
+            .map_err(odbc_error)?
+        {
+            let item = item.map_err(odbc_error)?;
+            let Some(table) = item.table.as_str().ok().flatten() else {
+                continue;
+            };
+            if !table.eq_ignore_ascii_case(object_name) {
+                continue;
+            }
+            if !profile.schema.trim().is_empty()
+                && !item
+                    .schema
+                    .as_str()
+                    .ok()
+                    .flatten()
+                    .is_some_and(|schema| schema.eq_ignore_ascii_case(profile.schema.trim()))
+            {
+                continue;
+            }
+            let Some(name) = item.column_name.as_str().ok().flatten() else {
+                continue;
+            };
+            metadata.push(SourceColumnMetadata {
+                name: name.to_string(),
+                comment: item
+                    .remarks
+                    .as_str()
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .to_string(),
+                source_table: object_name.to_string(),
+                source_column: name.to_string(),
+                mapping_eligible: true,
+                source_dictionary: None,
+            });
+        }
+        Ok(metadata)
+    })
+}
+
 pub fn preview_source(
     profile: &ConnectionProfile,
     query: &str,
     limit: u32,
 ) -> Result<SourcePreview, String> {
+    preview_source_with_timeout(profile, query, limit, QUERY_TIMEOUT_SECONDS)
+}
+
+pub(crate) fn preview_source_with_timeout(
+    profile: &ConnectionProfile,
+    query: &str,
+    limit: u32,
+    timeout_seconds: usize,
+) -> Result<SourcePreview, String> {
     let started = Instant::now();
     let row_limit = limit.clamp(1, 10_000) as usize;
     with_connection(profile, |connection| {
         let mut cursor = connection
-            .execute(query, (), Some(QUERY_TIMEOUT_SECONDS))
+            .execute(
+                query,
+                (),
+                Some(timeout_seconds.clamp(1, QUERY_TIMEOUT_SECONDS)),
+            )
             .map_err(odbc_error)?
             .ok_or_else(|| "只读查询没有返回结果集".to_string())?;
         let columns = cursor

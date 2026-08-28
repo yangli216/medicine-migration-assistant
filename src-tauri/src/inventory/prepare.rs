@@ -92,8 +92,11 @@ pub async fn prepare(
     request: PrepareInventoryRequest,
 ) -> Result<BatchDetail, String> {
     if request.source_name.trim().is_empty() {
-        return Err("缺少二系列phis数据库身份".into());
+        return Err("缺少库存来源数据库身份".into());
     }
+    let adapter_id = source_adapter::inventory_adapter_id(&request.adapter_id)?;
+    let adapter_name = source_adapter::inventory_adapter_name(adapter_id)?;
+    let inventory_workflow = source_adapter::inventory_workflow(adapter_id)?;
     let catalog = load_target_storages(&request.target, tenant_id).await?;
     let storages = catalog
         .storages
@@ -138,7 +141,8 @@ pub async fn prepare(
         &request.mappings,
     )?;
     let source_items = select_inventory_items(
-        load_inventory_stock_items(
+        source_adapter::load_inventory_stock_items(
+            adapter_id,
             &request.source,
             &selected_organization_ids,
             &selected_location_keys,
@@ -168,7 +172,11 @@ pub async fn prepare(
             missing_location_names.join("、")
         ));
     }
-    let groups = group_inventory(source_items)?;
+    let groups = group_inventory(
+        source_items,
+        adapter_id,
+        &inventory_workflow.source_stock_key_mode,
+    )?;
     if groups.is_empty() {
         return Err("老系统没有需要初始化的非零库存".into());
     }
@@ -177,7 +185,7 @@ pub async fn prepare(
         .map(|group| {
             let source_link = store.find_source_link(
                 tenant_id,
-                "PHIS27",
+                adapter_id,
                 request.source_name.trim(),
                 &group.source_product_key,
             )?;
@@ -277,8 +285,19 @@ pub async fn prepare(
             ));
         }
         let mut packaging_notes = Vec::new();
-        let typk_confirms_single_unit =
-            typk_confirms_single_minimum_unit_package(&group.typk_unit_sale_factor);
+        let evidence_confirms_single_unit =
+            structured_evidence_confirms_single_minimum_unit_package(
+                &group.single_minimum_package_factor,
+            );
+        let package_evidence_source = if group
+            .single_minimum_package_factor_source
+            .trim()
+            .is_empty()
+        {
+            "来源药品主档的一单位包装依据"
+        } else {
+            group.single_minimum_package_factor_source.trim()
+        };
         if group.source_kind == "PHARMACY"
             && unit_sale_factor == Some(1)
             && !group.minimum_unit.trim().is_empty()
@@ -287,22 +306,25 @@ pub async fn prepare(
                 .trim()
                 .eq_ignore_ascii_case(group.minimum_unit.trim())
         {
-            if typk_confirms_single_unit {
+            if evidence_confirms_single_unit {
                 packaging_notes.push(format!(
-                    "YK_TYPK.ZXBZ=1，确认每{}仅含 1{}，药房包装系数 1 合法",
-                    group.sale_unit, group.minimum_unit,
+                    "{}=1，确认每{}仅含 1{}，药房包装系数 1 合法",
+                    package_evidence_source, group.sale_unit, group.minimum_unit,
                 ));
             } else {
-                let typk_factor = if group.typk_unit_sale_factor.trim().is_empty() {
+                let evidence_factor = if group.single_minimum_package_factor.trim().is_empty() {
                     "未读取".to_string()
                 } else {
-                    group.typk_unit_sale_factor.clone()
+                    group.single_minimum_package_factor.clone()
                 };
                 issues.push(InventoryValidationIssue::reviewable(
                     "PHARMACY_SINGLE_PACKAGE_UNCONFIRMED",
                     format!(
-                        "药房包装系数为 1，但库存单位“{}”与最小单位“{}”不一致，而 YK_TYPK.ZXBZ 当前值为“{}”（需为 1）；请核实 YK_TYPK.ZXBZ 及 YF_YPXX.YFBZ/YFDW",
-                        group.sale_unit, group.minimum_unit, typk_factor
+                        "药房包装系数为 1，但库存单位“{}”与最小单位“{}”不一致，而结构化依据“{}”当前值为“{}”（需为 1）；请核实库存位置包装与药品主档包装关系",
+                        group.sale_unit,
+                        group.minimum_unit,
+                        package_evidence_source,
+                        evidence_factor
                     ),
                 ));
             }
@@ -438,9 +460,19 @@ pub async fn prepare(
             Value::String(group.unit_sale_factor.clone()),
         );
         raw_data.insert(
-            "typkUnitSaleFactor".into(),
-            Value::String(group.typk_unit_sale_factor.clone()),
+            "singleMinimumPackageFactor".into(),
+            Value::String(group.single_minimum_package_factor.clone()),
         );
+        raw_data.insert(
+            "singleMinimumPackageFactorSource".into(),
+            Value::String(group.single_minimum_package_factor_source.clone()),
+        );
+        if adapter_id == "PHIS27" {
+            raw_data.insert(
+                "typkUnitSaleFactor".into(),
+                Value::String(group.single_minimum_package_factor.clone()),
+            );
+        }
         raw_data.insert(
             "productSaleUnit".into(),
             Value::String(group.product_sale_unit.clone()),
@@ -553,14 +585,16 @@ pub async fn prepare(
     let batch = MigrationBatch {
         batch_id: batch_id.clone(),
         batch_name: format!(
-            "二系列phis库存预检-{}机构-{}",
+            "{}库存预检-{}机构-{}",
+            adapter_name,
             selected_organization_ids.len(),
             Utc::now().format("%Y%m%d-%H%M")
         ),
-        source_type: "PHIS27_INVENTORY".into(),
+        source_type: INSTITUTION_INVENTORY_SOURCE_TYPE.into(),
         source_name: request.source_name.trim().into(),
         source_description: format!(
-            "YK_KCMX/YF_KCMX 非零库存；本批选择 {} 个机构；按仓储、商品、价格、批号、效期合并",
+            "{}非零库存；本批选择 {} 个机构；按仓储、商品、价格、批号、效期合并",
+            adapter_name,
             selected_organization_ids.len()
         ),
         conflict_strategy: "FAIL".into(),
@@ -583,7 +617,7 @@ pub async fn prepare(
     store.insert_batch(
         &batch,
         &json!({
-            "task":"PHIS27_INVENTORY",
+            "task":INSTITUTION_INVENTORY_SOURCE_TYPE,
             "targetIdentity":target_identity_value,
             "selectedOrganizationIds":selected_organization_ids,
             "organizationMappings":request.organization_mappings,

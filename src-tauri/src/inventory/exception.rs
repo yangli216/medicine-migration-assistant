@@ -12,8 +12,8 @@ pub fn confirm_validation_exception(
     }
 
     let mut detail = store.load_batch(&request.batch_id)?;
-    if detail.batch.source_type != "PHIS27_INVENTORY" {
-        return Err("当前批次不是二系列phis机构库存批次".into());
+    if !is_inventory_batch_source_type(&detail.batch.source_type) {
+        return Err("当前批次不是机构库存首次盘点批次".into());
     }
     if detail.batch.success_count > 0
         || matches!(detail.batch.status.as_str(), "SUCCESS" | "PARTIAL" | "UNDONE")

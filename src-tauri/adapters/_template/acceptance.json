@@ -1,0 +1,54 @@
+{
+  "acceptanceSchemaVersion": 2,
+  "adapterId": "VENDOR_HIS_ID",
+  "medicine": {
+    "requiredObjects": ["TODO: 核心药品表"],
+    "sourceIdentityFields": ["TODO: 稳定药品与商品键"],
+    "scopes": ["TODO: 迁移范围"],
+    "testCases": ["TODO: 标准版本", "TODO: 项目变体"]
+  },
+  "inventory": null,
+  "sourceStructure": {
+    "objects": [
+      {
+        "name": "TODO: 核心药品表",
+        "requirement": "REQUIRED",
+        "appliesToTasks": ["MEDICINE_BASE"],
+        "usedBy": ["TODO: 药品主档读取"],
+        "columns": [
+          {
+            "name": "TODO: 稳定药品键",
+            "requirement": "REQUIRED",
+            "usedBy": ["TODO: 来源身份"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "TODO: 可选显示字段",
+            "requirement": "OPTIONAL",
+            "usedBy": ["TODO: 界面核对"],
+            "fallback": "TODO: 缺失时如何安全降级",
+            "acceptedTypeFamilies": ["CHARACTER"]
+          }
+        ]
+      }
+    ]
+  },
+  "evidence": [
+    {
+      "requirement": "TODO: 药品范围与稳定来源键",
+      "tasks": ["MEDICINE_BASE"],
+      "file": "TODO: 测试文件相对路径",
+      "contains": "TODO: 可执行测试函数或验收标记",
+      "rustTest": "TODO::完整::Rust::测试路径",
+      "execution": "REQUIRED"
+    },
+    {
+      "requirement": "TODO: 项目变体兼容",
+      "tasks": ["MEDICINE_BASE"],
+      "file": "TODO: 测试文件相对路径",
+      "contains": "TODO: 可执行测试函数或验收标记",
+      "rustTest": "TODO::完整::Rust::测试路径",
+      "execution": "REQUIRED"
+    }
+  ]
+}

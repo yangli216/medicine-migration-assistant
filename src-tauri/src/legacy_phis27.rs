@@ -1,7 +1,7 @@
 use crate::local_store::LocalStore;
 use crate::model::{
     ConnectionProfile, SourceColumnMetadata, SourceDictionaryItem, SourceDictionaryMetadata,
-    SourcePreview,
+    SourceObjectColumnStructure, SourceObjectStructure, SourcePreview,
 };
 use crate::odbc;
 use crate::target_contract::validate_schema_identifier;
@@ -57,6 +57,8 @@ pub struct Phis27Inspection {
     pub schema: String,
     pub checked_tables: Vec<String>,
     pub missing_tables: Vec<String>,
+    #[serde(default)]
+    pub object_structures: Vec<SourceObjectStructure>,
     pub total_medicines: usize,
     pub configured_medicines: usize,
     pub active_configured_medicines: usize,
@@ -106,6 +108,9 @@ pub struct Phis27InventoryReadiness {
     pub ready_for_location_mapping: bool,
     pub schema: String,
     pub source_name: String,
+    pub checked_tables: Vec<String>,
+    pub missing_tables: Vec<String>,
+    pub object_structures: Vec<SourceObjectStructure>,
     pub stock_row_count: usize,
     pub stock_group_count: usize,
     pub medicine_count: usize,
@@ -233,10 +238,48 @@ pub fn inspect_inventory(
         .iter()
         .any(|item| item == "YF_KCMX");
     if !has_warehouse_stock && !has_pharmacy_stock {
-        return Err("当前老库无法读取 YK_KCMX 或 YF_KCMX，不能检查机构库存".into());
+        return Ok(Phis27InventoryReadiness {
+            ready_for_location_mapping: false,
+            schema,
+            source_name: source_name.into(),
+            checked_tables: inspection.checked_tables,
+            missing_tables: inspection.missing_tables,
+            object_structures: inspection.object_structures,
+            stock_row_count: 0,
+            stock_group_count: 0,
+            medicine_count: 0,
+            mapped_medicine_count: 0,
+            unresolved_medicine_count: 0,
+            locations: Vec::new(),
+            unresolved_source_keys: Vec::new(),
+            warnings: vec!["当前老库无法读取 YK_KCMX 或 YF_KCMX，不能检查机构库存".into()],
+            message: "库存来源结构存在阻断项，请先核对库存表或读取权限".into(),
+        });
     }
     let physical_columns = load_physical_columns(&request.connection, &schema)?;
-    validate_inventory_source_columns(&physical_columns, has_warehouse_stock, has_pharmacy_stock)?;
+    if let Err(error) = validate_inventory_source_columns(
+        &physical_columns,
+        has_warehouse_stock,
+        has_pharmacy_stock,
+    ) {
+        return Ok(Phis27InventoryReadiness {
+            ready_for_location_mapping: false,
+            schema,
+            source_name: source_name.into(),
+            checked_tables: inspection.checked_tables,
+            missing_tables: inspection.missing_tables,
+            object_structures: inspection.object_structures,
+            stock_row_count: 0,
+            stock_group_count: 0,
+            medicine_count: 0,
+            mapped_medicine_count: 0,
+            unresolved_medicine_count: 0,
+            locations: Vec::new(),
+            unresolved_source_keys: Vec::new(),
+            warnings: vec![error],
+            message: "库存来源结构存在阻断项，请先核对表字段或读取权限".into(),
+        });
+    }
     let has_warehouse_list = inspection
         .checked_tables
         .iter()
@@ -296,6 +339,9 @@ pub fn inspect_inventory(
         ready_for_location_mapping,
         schema,
         source_name: source_name.into(),
+        checked_tables: inspection.checked_tables,
+        missing_tables: inspection.missing_tables,
+        object_structures: inspection.object_structures,
         stock_row_count,
         stock_group_count,
         medicine_count,
@@ -1120,6 +1166,9 @@ fn inspect_connection(
     }
 
     if !missing_tables.is_empty() {
+        let object_structures = load_physical_columns_from_connection(connection, schema)
+            .map(|columns| physical_object_structures(&columns, &checked_tables))
+            .unwrap_or_default();
         return Ok(Phis27Inspection {
             detected: false,
             adapter_id: "PHIS27".into(),
@@ -1127,6 +1176,7 @@ fn inspect_connection(
             schema: schema.into(),
             checked_tables,
             missing_tables: missing_tables.clone(),
+            object_structures,
             total_medicines: 0,
             configured_medicines: 0,
             active_configured_medicines: 0,
@@ -1144,6 +1194,7 @@ fn inspect_connection(
     }
 
     let physical_columns = load_physical_columns_from_connection(connection, schema)?;
+    let object_structures = physical_object_structures(&physical_columns, &checked_tables);
     validate_medicine_source_columns(&physical_columns, Scope::UsedAll)?;
 
     let typk = table_name(schema, "YK_TYPK");
@@ -1261,6 +1312,7 @@ fn inspect_connection(
         schema: schema.into(),
         checked_tables,
         missing_tables,
+        object_structures,
         total_medicines,
         configured_medicines,
         active_configured_medicines,
@@ -1774,6 +1826,34 @@ fn load_physical_columns_from_connection(
             })
         })
         .collect())
+}
+
+fn physical_object_structures(
+    physical_columns: &[LegacyPhysicalColumn],
+    checked_tables: &[String],
+) -> Vec<SourceObjectStructure> {
+    let checked = checked_tables
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    INSPECTED_TABLES
+        .iter()
+        .filter(|table| checked.contains(**table))
+        .filter_map(|table| {
+            let columns = physical_columns
+                .iter()
+                .filter(|column| column.table == *table)
+                .map(|column| SourceObjectColumnStructure {
+                    name: column.column.clone(),
+                    data_type: column.data_type.clone(),
+                })
+                .collect::<Vec<_>>();
+            (!columns.is_empty()).then_some(SourceObjectStructure {
+                name: (*table).into(),
+                columns,
+            })
+        })
+        .collect()
 }
 
 fn phis27_column_metadata(
@@ -2317,12 +2397,87 @@ mod tests {
     use super::{
         additional_physical_columns, inventory_detail_query, inventory_group_query,
         inventory_location_summary_query, medicine_query, medicine_query_with_physical_columns,
-        normalize_scope, phis27_column_definitions, phis27_source_dictionary, source_schema,
-        table_dictionary_query, validate_inventory_source_columns,
-        validate_medicine_source_columns, InventoryTableAvailability, LegacyPhysicalColumn, Scope,
+        normalize_scope, phis27_column_definitions, phis27_source_dictionary,
+        physical_object_structures, source_schema, table_dictionary_query,
+        validate_inventory_source_columns, validate_medicine_source_columns,
+        InventoryTableAvailability, LegacyPhysicalColumn, Scope,
     };
     use crate::model::ConnectionProfile;
-    use std::collections::HashSet;
+    use serde::Deserialize;
+    use serde_json::Value;
+    use std::collections::{HashMap, HashSet};
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AdapterFixture {
+        source_objects: Vec<FixtureSourceObject>,
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureSourceObject {
+        name: String,
+        columns: Vec<FixtureColumn>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum FixtureColumn {
+        Legacy(String),
+        Typed {
+            name: String,
+            #[serde(rename = "dataType")]
+            data_type: String,
+        },
+    }
+
+    fn fixture_physical_columns(source: &str) -> Vec<LegacyPhysicalColumn> {
+        serde_json::from_str::<AdapterFixture>(source)
+            .expect("valid adapter fixture")
+            .source_objects
+            .into_iter()
+            .flat_map(|object| {
+                object.columns.into_iter().map(move |column| {
+                    let (column, data_type) = match column {
+                        FixtureColumn::Legacy(name) => (name, "NVARCHAR2".into()),
+                        FixtureColumn::Typed { name, data_type } => (name, data_type),
+                    };
+                    LegacyPhysicalColumn {
+                        table: object.name.clone(),
+                        column,
+                        data_type,
+                        comment: String::new(),
+                    }
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn adapter_support_structure_contains_only_object_column_and_type() {
+        let columns = vec![
+            LegacyPhysicalColumn {
+                table: "YK_TYPK".into(),
+                column: "YPMC".into(),
+                data_type: "NVARCHAR2".into(),
+                comment: "项目内部说明，不应进入支持包".into(),
+            },
+            LegacyPhysicalColumn {
+                table: "YK_YPCD".into(),
+                column: "PZWH".into(),
+                data_type: "NVARCHAR2".into(),
+                comment: "元数据可见但当前账号不可读取的对象也不能交付".into(),
+            },
+        ];
+        let structures = physical_object_structures(&columns, &["YK_TYPK".into()]);
+        assert_eq!(structures.len(), 1);
+        assert_eq!(structures[0].name, "YK_TYPK");
+        assert_eq!(structures[0].columns[0].name, "YPMC");
+        assert_eq!(structures[0].columns[0].data_type, "NVARCHAR2");
+        let serialized = serde_json::to_string(&structures).unwrap();
+        assert!(!serialized.contains("项目内部说明"));
+        assert!(!serialized.contains("comment"));
+        assert!(!serialized.contains("sample"));
+    }
 
     fn profile(schema: &str) -> ConnectionProfile {
         ConnectionProfile {
@@ -2486,22 +2641,9 @@ mod tests {
 
     #[test]
     fn project_specific_missing_optional_columns_use_null_projections_instead_of_invalid_sql() {
-        let physical_columns = [
-            ("YK_TYPK", "YPXH"),
-            ("YK_TYPK", "YPMC"),
-            ("YK_YPCD", "YPXH"),
-            ("YK_YPCD", "YPCD"),
-            ("YK_CDDZ", "YPCD"),
-            ("YK_CDXX", "YPXH"),
-        ]
-        .into_iter()
-        .map(|(table, column)| LegacyPhysicalColumn {
-            table: table.into(),
-            column: column.into(),
-            data_type: "NVARCHAR2".into(),
-            comment: String::new(),
-        })
-        .collect::<Vec<_>>();
+        let physical_columns = fixture_physical_columns(include_str!(
+            "../adapters/phis27/fixtures/medicine-missing-optional-columns.json"
+        ));
 
         validate_medicine_source_columns(&physical_columns, Scope::UsedActive).unwrap();
         let query =
@@ -2739,26 +2881,9 @@ mod tests {
 
     #[test]
     fn inventory_optional_columns_do_not_generate_invalid_identifiers() {
-        let physical_columns = inventory_physical_columns()
-            .into_iter()
-            .filter(|column| {
-                !matches!(
-                    (column.table.as_str(), column.column.as_str()),
-                    ("YK_KCMX", "JHJE")
-                        | ("YK_KCMX", "LSJE")
-                        | ("YK_KCMX", "YPPH")
-                        | ("YK_KCMX", "YPXQ")
-                        | ("YF_KCMX", "JHJE")
-                        | ("YF_KCMX", "LSJE")
-                        | ("YF_KCMX", "YPPH")
-                        | ("YF_KCMX", "YPXQ")
-                        | ("YF_YPXX", "YFGG")
-                        | ("YK_CDDZ", "CDQC")
-                        | ("YK_CDDZ", "CDMC")
-                        | ("YK_YPCD", "YBSPMC")
-                )
-            })
-            .collect::<Vec<_>>();
+        let physical_columns = fixture_physical_columns(include_str!(
+            "../adapters/phis27/fixtures/inventory-missing-optional-columns.json"
+        ));
         validate_inventory_source_columns(&physical_columns, true, true).unwrap();
         let detail = inventory_detail_query(
             "PHIS27",
@@ -2824,6 +2949,88 @@ mod tests {
                 .unwrap()
                 .4
         );
+    }
+
+    #[test]
+    fn acceptance_contract_covers_every_standard_read_column() {
+        let acceptance: Value =
+            serde_json::from_str(include_str!("../adapters/phis27/acceptance.json"))
+                .expect("valid PHIS27 acceptance contract");
+        let declared = acceptance["sourceStructure"]["objects"]
+            .as_array()
+            .expect("sourceStructure objects")
+            .iter()
+            .flat_map(|object| {
+                let table = object["name"].as_str().unwrap_or_default().to_string();
+                object["columns"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(move |column| {
+                        (
+                            (
+                                table.clone(),
+                                column["name"].as_str().unwrap_or_default().to_string(),
+                            ),
+                            column["requirement"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_string(),
+                        )
+                    })
+            })
+            .collect::<HashMap<_, _>>();
+
+        for (_, table, column, _, _) in phis27_column_definitions() {
+            if table.is_empty() || column.is_empty() || column.contains(':') {
+                continue;
+            }
+            assert!(
+                declared.contains_key(&(table.to_string(), column.to_string())),
+                "acceptance.json 未声明药品读取字段 {table}.{column}"
+            );
+        }
+
+        for (table, column) in [
+            ("SYS_ORGANIZATION", "ORGANIZCODE"),
+            ("SYS_ORGANIZATION", "ORGANIZNAME"),
+            ("SYS_ORGANIZATION", "PARENTID"),
+            ("SYS_ORGANIZATION", "ORGANIZTYPE"),
+            ("SYS_ORGANIZATION", "LOGOFF"),
+            ("YK_KCMX", "JHJE"),
+            ("YK_KCMX", "LSJE"),
+            ("YK_KCMX", "YPPH"),
+            ("YK_KCMX", "YPXQ"),
+            ("YF_KCMX", "JHJE"),
+            ("YF_KCMX", "LSJE"),
+            ("YF_KCMX", "YPPH"),
+            ("YF_KCMX", "YPXQ"),
+            ("YF_YPXX", "YFGG"),
+            ("YK_YKLB", "YKLB"),
+            ("YF_YFLB", "YFMC"),
+            ("YF_YFLB", "ZXBZ"),
+            ("YK_YPXX", "JGID"),
+        ] {
+            assert!(
+                declared.contains_key(&(table.into(), column.into())),
+                "acceptance.json 未声明库存读取字段 {table}.{column}"
+            );
+        }
+
+        assert_eq!(
+            declared
+                .get(&("SYS_ORGANIZATION".into(), "ORGANIZCODE".into()))
+                .map(String::as_str),
+            Some("REQUIRED")
+        );
+        assert_eq!(
+            declared
+                .get(&("SYS_ORGANIZATION".into(), "ORGANIZNAME".into()))
+                .map(String::as_str),
+            Some("REQUIRED")
+        );
+        assert!(!declared.contains_key(&("SYS_ORGANIZATION".into(), "JGID".into())));
+        assert!(!declared.contains_key(&("SYS_ORGANIZATION".into(), "JGMC".into())));
     }
 
     #[test]

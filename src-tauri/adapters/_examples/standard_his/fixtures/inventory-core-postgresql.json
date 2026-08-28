@@ -1,0 +1,64 @@
+{
+  "fixtureSchemaVersion": 2,
+  "adapterId": "STANDARD_HIS",
+  "id": "inventory-core-postgresql",
+  "title": "库存核心字段完整但缺少批号、效期与来源金额合计",
+  "databaseFamily": "postgresql",
+  "tasks": ["INVENTORY"],
+  "sourceObjects": [
+    {
+      "name": "HIS_DRUG",
+      "columns": [
+        { "name": "DRUG_ID", "dataType": "BIGINT" },
+        { "name": "DRUG_NAME", "dataType": "TEXT" },
+        { "name": "MINIMUM_UNIT", "dataType": "VARCHAR(20)" }
+      ]
+    },
+    {
+      "name": "HIS_PRODUCT",
+      "columns": [
+        { "name": "PRODUCT_ID", "dataType": "BIGINT" },
+        { "name": "DRUG_ID", "dataType": "BIGINT" }
+      ]
+    },
+    {
+      "name": "HIS_ORGANIZATION",
+      "columns": [
+        { "name": "ORG_ID", "dataType": "VARCHAR(40)" },
+        { "name": "ORG_NAME", "dataType": "TEXT" }
+      ]
+    },
+    {
+      "name": "HIS_STORAGE",
+      "columns": [
+        { "name": "STORAGE_ID", "dataType": "VARCHAR(40)" },
+        { "name": "ORG_ID", "dataType": "VARCHAR(40)" },
+        { "name": "STORAGE_NAME", "dataType": "TEXT" },
+        { "name": "STORAGE_KIND", "dataType": "VARCHAR(20)" }
+      ]
+    },
+    {
+      "name": "HIS_INVENTORY",
+      "columns": [
+        { "name": "INVENTORY_ID", "dataType": "BIGINT" },
+        { "name": "STORAGE_ID", "dataType": "VARCHAR(40)" },
+        { "name": "PRODUCT_ID", "dataType": "BIGINT" },
+        { "name": "QUANTITY", "dataType": "NUMERIC(18,4)" },
+        { "name": "SALE_UNIT", "dataType": "VARCHAR(20)" },
+        { "name": "UNIT_SALE_FACTOR", "dataType": "NUMERIC(18,4)" },
+        { "name": "PURCHASE_PRICE", "dataType": "NUMERIC(18,6)" },
+        { "name": "RETAIL_PRICE", "dataType": "NUMERIC(18,6)" }
+      ]
+    }
+  ],
+  "expectations": {
+    "outcome": "PASS",
+    "checks": [
+      "核心机构、库房、商品和库存关系可以进入范围映射",
+      "缺少金额合计时按数量乘单价计算",
+      "缺少批号和效期时不生成无效字段引用",
+      "库存稳定键继续使用来源库存行与药品商品复合键"
+    ]
+  },
+  "rustTest": "source_adapter::standard_his_adapter_example::tests::inventory_core_fixture_maps_to_public_stock_contract"
+}

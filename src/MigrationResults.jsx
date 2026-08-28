@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CaretLeft, CaretRight, LinkSimple, ListMagnifyingGlass } from "@phosphor-icons/react";
 import { fieldsMentionedInValidationError } from "./migrationFields";
 import { sourceValueLabel } from "./migrationPreview";
-import { statusMeta } from "./MigrationHistory";
+import { statusMeta } from "./MigrationStatus";
 
 function validationMedicineName(row) {
   const candidates = [

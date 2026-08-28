@@ -1,0 +1,35 @@
+{
+  "fixtureSchemaVersion": 1,
+  "adapterId": "PHIS27",
+  "id": "medicine-missing-optional-columns",
+  "title": "药品主表只保留核心关系字段的项目变体",
+  "databaseFamily": "oracle",
+  "tasks": ["MEDICINE_BASE"],
+  "sourceObjects": [
+    {
+      "name": "YK_TYPK",
+      "columns": ["YPXH", "YPMC"]
+    },
+    {
+      "name": "YK_YPCD",
+      "columns": ["YPXH", "YPCD"]
+    },
+    {
+      "name": "YK_CDDZ",
+      "columns": ["YPCD"]
+    },
+    {
+      "name": "YK_CDXX",
+      "columns": ["YPXH"]
+    }
+  ],
+  "expectations": {
+    "outcome": "PASS",
+    "checks": [
+      "缺失频次等可选字段时使用 Oracle 11g 合法的有类型空值",
+      "不生成对缺失 ZFPB 字段的引用",
+      "核心药品与商品关系仍可校验"
+    ]
+  },
+  "rustTest": "legacy_phis27::tests::project_specific_missing_optional_columns_use_null_projections_instead_of_invalid_sql"
+}

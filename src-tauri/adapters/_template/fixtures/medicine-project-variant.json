@@ -1,0 +1,21 @@
+{
+  "fixtureSchemaVersion": 2,
+  "adapterId": "VENDOR_HIS_ID",
+  "id": "medicine-project-variant",
+  "title": "TODO: 药品项目结构变体",
+  "databaseFamily": "oracle",
+  "tasks": ["MEDICINE_BASE"],
+  "sourceObjects": [
+    {
+      "name": "TODO: 核心药品表",
+      "columns": [
+        { "name": "TODO: 稳定药品键", "dataType": "TODO: 物理类型" }
+      ]
+    }
+  ],
+  "expectations": {
+    "outcome": "PASS",
+    "checks": ["TODO: 项目可选字段缺失时的预期行为"]
+  },
+  "rustTest": "TODO::完整::Rust::测试路径"
+}

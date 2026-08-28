@@ -20,6 +20,7 @@ const locations = [
     organizationId: "org-b",
     sourceLocationKey: "warehouse-b",
     mappingStatus: "SOURCE_LOCATION_AMBIGUOUS",
+    requiresSourceLocationResolution: true,
   },
 ];
 
@@ -54,12 +55,13 @@ test("requires an explicit legacy warehouse for ambiguous stock ledgers", () => 
   );
 });
 
-test("requires source resolution for missing or ambiguous YKORG inventory groups", () => {
+test("uses the adapter contract instead of vendor key prefixes for source resolution", () => {
   assert.equal(
     inventoryLocationNeedsSourceResolution({
       sourceKind: "WAREHOUSE",
-      sourceLocationKey: "YKORG:ORG-1:YPXH-10",
+      sourceLocationKey: "VENDOR:ORG-1:MED-10",
       mappingStatus: "SOURCE_LOCATION_MISSING",
+      requiresSourceLocationResolution: true,
     }),
     true,
   );
@@ -68,6 +70,7 @@ test("requires source resolution for missing or ambiguous YKORG inventory groups
       sourceKind: "WAREHOUSE",
       sourceLocationKey: "YK:1001",
       mappingStatus: "PENDING_TARGET_MAPPING",
+      requiresSourceLocationResolution: false,
     }),
     false,
   );

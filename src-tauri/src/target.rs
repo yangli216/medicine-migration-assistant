@@ -770,7 +770,7 @@ pub async fn trial_row(
 ) -> Result<TrialMigrationResponse, String> {
     let _active_batch = ActiveBatchGuard::enter(&request.batch_id)?;
     let detail = store.load_batch(&request.batch_id)?;
-    if detail.batch.source_type == "PHIS27_INVENTORY" {
+    if crate::inventory::is_inventory_batch_source_type(&detail.batch.source_type) {
         return Err("机构库存必须按首次盘点整体核对，不支持单条试迁移".into());
     }
     let mut row = detail

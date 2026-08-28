@@ -40,6 +40,7 @@ export function Stepper({ active }) {
 export function Header({
   runtime,
   auth,
+  sectionLabel = "药品基础数据",
   connectionCount = 0,
   historyCount = 0,
   onOpenConnections,
@@ -52,7 +53,7 @@ export function Header({
         <span className="brand__title">数据迁移助手</span>
       </div>
       <div className="topbar__divider" />
-      <span className="topbar__section">药品基础数据</span>
+      <span className="topbar__section">{sectionLabel}</span>
       <span className="desktop-chip">
         {runtime === "tauri-rust" ? "桌面版 · 本地运行" : "交互预览"}
       </span>

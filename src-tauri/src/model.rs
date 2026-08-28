@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +38,60 @@ pub struct SourcePreviewRequest {
     pub query: String,
     #[serde(default = "default_preview_limit")]
     pub limit: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceObjectPreviewRequest {
+    pub connection: ConnectionProfile,
+    pub object_name: String,
+    #[serde(default = "default_preview_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceObjectSurveyRequest {
+    pub connection: ConnectionProfile,
+    pub object_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceObjectSurveyItem {
+    pub object_name: String,
+    pub status: String,
+    #[serde(default)]
+    pub source_result: Option<SourceObjectPreview>,
+    #[serde(default)]
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceObjectCountRequest {
+    pub connection: ConnectionProfile,
+    pub object_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceObjectCount {
+    pub object_name: String,
+    pub row_count: u64,
+    pub is_exact: bool,
+    pub probe_limit: u32,
+    pub elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceObjectPreview {
+    pub object_name: String,
+    pub query: String,
+    pub preview: SourcePreview,
+    #[serde(default)]
+    pub metadata_message: String,
 }
 
 fn default_preview_limit() -> u32 {
@@ -88,6 +143,88 @@ pub struct SourceColumnMetadata {
     pub mapping_eligible: bool,
     #[serde(default)]
     pub source_dictionary: Option<SourceDictionaryMetadata>,
+}
+
+/// Redacted physical source structure suitable for local diagnostics and support exchange.
+/// It intentionally contains no samples, row values, connection properties, or free-text comments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceObjectStructure {
+    pub name: String,
+    #[serde(default)]
+    pub columns: Vec<SourceObjectColumnStructure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceObjectColumnStructure {
+    pub name: String,
+    #[serde(default)]
+    pub data_type: String,
+}
+
+pub(crate) fn sanitize_source_object_structures(
+    values: Vec<SourceObjectStructure>,
+    checked_objects: &[String],
+) -> Vec<SourceObjectStructure> {
+    let checked = checked_objects
+        .iter()
+        .map(|name| name.to_ascii_uppercase())
+        .collect::<HashSet<_>>();
+    let mut seen_objects = HashSet::new();
+    let mut remaining_columns = 5_000usize;
+    let mut structures = values
+        .into_iter()
+        .filter_map(|structure| {
+            let name = structure
+                .name
+                .trim()
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(120)
+                .collect::<String>();
+            let identity = name.to_ascii_uppercase();
+            if name.is_empty()
+                || !checked.contains(&identity)
+                || !seen_objects.insert(identity)
+                || remaining_columns == 0
+            {
+                return None;
+            }
+            let mut seen_columns = HashSet::new();
+            let mut columns = structure
+                .columns
+                .into_iter()
+                .filter_map(|column| {
+                    let name = column
+                        .name
+                        .trim()
+                        .chars()
+                        .filter(|character| !character.is_control())
+                        .take(120)
+                        .collect::<String>();
+                    if name.is_empty() || !seen_columns.insert(name.to_ascii_uppercase()) {
+                        return None;
+                    }
+                    let data_type = column
+                        .data_type
+                        .trim()
+                        .chars()
+                        .filter(|character| !character.is_control())
+                        .take(120)
+                        .collect::<String>();
+                    Some(SourceObjectColumnStructure { name, data_type })
+                })
+                .take(remaining_columns.min(500))
+                .collect::<Vec<_>>();
+            columns.sort_by(|left, right| left.name.cmp(&right.name));
+            remaining_columns = remaining_columns.saturating_sub(columns.len());
+            Some(SourceObjectStructure { name, columns })
+        })
+        .take(80)
+        .collect::<Vec<_>>();
+    structures.sort_by(|left, right| left.name.cmp(&right.name));
+    structures
 }
 
 fn default_true() -> bool {

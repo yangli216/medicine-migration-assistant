@@ -1,4 +1,6 @@
-use crate::model::{ConnectionCheck, ConnectionProfile, SourcePreview, TargetReadiness};
+use crate::model::{
+    ConnectionCheck, ConnectionProfile, SourceColumnMetadata, SourcePreview, TargetReadiness,
+};
 use crate::target_contract::{validate_schema_identifier, TARGET_TABLE_PROJECTIONS};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -90,13 +92,13 @@ pub async fn list_tables(profile: &ConnectionProfile) -> Result<Vec<String>, Str
     let schema = validate_schema_identifier(&profile.schema)?;
     let tables = if schema.is_empty() {
         query_scalar::<Postgres, String>(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE' ORDER BY table_name",
+            "SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() AND table_type IN ('BASE TABLE','VIEW') ORDER BY table_name",
         )
         .fetch_all(&pool)
         .await
     } else {
         query_scalar::<Postgres, String>(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema=$1 AND table_type='BASE TABLE' ORDER BY table_name",
+            "SELECT table_name FROM information_schema.tables WHERE table_schema=$1 AND table_type IN ('BASE TABLE','VIEW') ORDER BY table_name",
         )
         .bind(schema)
         .fetch_all(&pool)
@@ -145,6 +147,50 @@ pub async fn preview_source(
         truncated,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+pub async fn source_object_column_metadata(
+    profile: &ConnectionProfile,
+    object_name: &str,
+) -> Result<Vec<SourceColumnMetadata>, String> {
+    let pool = connect(profile).await?;
+    let schema = validate_schema_identifier(&profile.schema)?;
+    let rows = if schema.is_empty() {
+        query::<Postgres>(
+            "SELECT a.attname AS column_name, COALESCE(pg_catalog.col_description(c.oid, a.attnum), '') AS column_comment FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid WHERE n.nspname = current_schema() AND c.relname = $1 AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum",
+        )
+        .bind(object_name)
+        .fetch_all(&pool)
+        .await
+    } else {
+        query::<Postgres>(
+            "SELECT a.attname AS column_name, COALESCE(pg_catalog.col_description(c.oid, a.attnum), '') AS column_comment FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum",
+        )
+        .bind(&schema)
+        .bind(object_name)
+        .fetch_all(&pool)
+        .await
+    };
+    pool.close().await;
+    rows.map_err(|error| friendly_sqlx_error(&error))?
+        .into_iter()
+        .map(|row| {
+            let name = row
+                .try_get::<String, _>("column_name")
+                .map_err(|error| friendly_sqlx_error(&error))?;
+            let comment = row
+                .try_get::<String, _>("column_comment")
+                .unwrap_or_default();
+            Ok(SourceColumnMetadata {
+                source_table: object_name.to_string(),
+                source_column: name.clone(),
+                name,
+                comment,
+                mapping_eligible: true,
+                source_dictionary: None,
+            })
+        })
+        .collect()
 }
 
 pub async fn inspect_target_schema(profile: &ConnectionProfile) -> Result<TargetReadiness, String> {

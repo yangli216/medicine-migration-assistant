@@ -1,0 +1,335 @@
+{
+  "acceptanceSchemaVersion": 2,
+  "adapterId": "STANDARD_HIS",
+  "medicine": {
+    "requiredObjects": ["HIS_DRUG"],
+    "sourceIdentityFields": ["HIS_DRUG.DRUG_ID"],
+    "scopes": ["ALL_MEDICINES"],
+    "testCases": [
+      "药品主表满足核心字段时可进入引导映射",
+      "厂家商品表缺失时仍保留药品主档并使用 BASE 来源键"
+    ]
+  },
+  "inventory": {
+    "organizationObjects": ["HIS_ORGANIZATION"],
+    "locationObjects": ["HIS_STORAGE"],
+    "stockObjects": ["HIS_INVENTORY"],
+    "stableKeys": [
+      "sourceOrganizationId",
+      "sourceLocationKey",
+      "sourceRecordId",
+      "sourceProductKey"
+    ],
+    "packagingEvidence": [
+      "HIS_INVENTORY.SALE_UNIT/UNIT_SALE_FACTOR",
+      "HIS_DRUG.MIN_PACKAGE_FACTOR"
+    ],
+    "amountEvidence": [
+      "HIS_INVENTORY.QUANTITY",
+      "HIS_INVENTORY.PURCHASE_PRICE/RETAIL_PRICE",
+      "HIS_INVENTORY.PURCHASE_TOTAL/RETAIL_TOTAL"
+    ],
+    "testCases": [
+      "机构与药库药房目录使用稳定主键并限制标准位置类型",
+      "轻量范围只统计非零库存且不提前读取全部明细",
+      "正式明细只读取本批选定机构和库房",
+      "可选金额、批号和效期缺失时使用可核对的安全降级"
+    ]
+  },
+  "sourceStructure": {
+    "objects": [
+      {
+        "name": "HIS_DRUG",
+        "requirement": "REQUIRED",
+        "appliesToTasks": ["MEDICINE_BASE", "INVENTORY"],
+        "usedBy": ["药品主档", "稳定来源身份"],
+        "columns": [
+          {
+            "name": "DRUG_ID",
+            "requirement": "REQUIRED",
+            "usedBy": ["药品稳定来源身份"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "DRUG_NAME",
+            "requirement": "REQUIRED",
+            "usedBy": ["药品名称"],
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "MINIMUM_UNIT",
+            "requirement": "REQUIRED",
+            "usedBy": ["最小单位"],
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "SPECIFICATION",
+            "requirement": "OPTIONAL",
+            "usedBy": ["药品规格", "智能匹配"],
+            "fallback": "规格留空并在字段映射和校验阶段人工核对",
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "DOSAGE_FORM",
+            "requirement": "OPTIONAL",
+            "usedBy": ["剂型显示与映射"],
+            "fallback": "剂型留空并在字段映射阶段人工补充",
+            "acceptedTypeFamilies": ["CHARACTER", "NUMERIC"]
+          },
+          {
+            "name": "MIN_PACKAGE_FACTOR",
+            "requirement": "OPTIONAL",
+            "appliesToTasks": ["INVENTORY"],
+            "usedBy": ["单最小单位包装结构化证据"],
+            "fallback": "不声明单最小单位包装证据，由库存包装关系校验决定是否需人工确认",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          }
+        ]
+      },
+      {
+        "name": "HIS_PRODUCT",
+        "requirement": "CONDITIONAL",
+        "appliesToTasks": ["MEDICINE_BASE", "INVENTORY"],
+        "requiredForTasks": ["INVENTORY"],
+        "requiredWhenObjectsPresent": ["HIS_INVENTORY"],
+        "usedBy": ["厂家商品"],
+        "fallback": "仅迁移药品主档，厂家与商品由实施人员在新系统维护",
+        "columns": [
+          {
+            "name": "PRODUCT_ID",
+            "requirement": "REQUIRED",
+            "usedBy": ["厂家商品稳定来源身份"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "DRUG_ID",
+            "requirement": "REQUIRED",
+            "usedBy": ["药品与厂家商品关联"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "MANUFACTURER_NAME",
+            "requirement": "OPTIONAL",
+            "usedBy": ["生产厂家"],
+            "fallback": "厂家留空并在目标写入前人工核对",
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "PRODUCT_NAME",
+            "requirement": "OPTIONAL",
+            "usedBy": ["商品名称"],
+            "fallback": "回退使用药品名称作为核对信息",
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "SALE_UNIT",
+            "requirement": "OPTIONAL",
+            "appliesToTasks": ["INVENTORY"],
+            "usedBy": ["商品包装单位对照"],
+            "fallback": "不显示商品包装对照，不覆盖库房实际包装",
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "UNIT_SALE_FACTOR",
+            "requirement": "OPTIONAL",
+            "appliesToTasks": ["INVENTORY"],
+            "usedBy": ["商品包装系数对照"],
+            "fallback": "不显示商品包装对照，不覆盖库房实际包装",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          }
+        ]
+      },
+      {
+        "name": "HIS_ORGANIZATION",
+        "requirement": "REQUIRED",
+        "appliesToTasks": ["INVENTORY"],
+        "usedBy": ["来源机构目录"],
+        "columns": [
+          {
+            "name": "ORG_ID",
+            "requirement": "REQUIRED",
+            "usedBy": ["机构稳定来源身份"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "ORG_NAME",
+            "requirement": "REQUIRED",
+            "usedBy": ["机构名称映射"],
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "PARENT_ID",
+            "requirement": "OPTIONAL",
+            "usedBy": ["机构层级核对"],
+            "fallback": "按平级机构展示并由实施人员选择目标机构",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "ACTIVE_FLAG",
+            "requirement": "OPTIONAL",
+            "usedBy": ["来源机构启用状态"],
+            "fallback": "将当前可读机构视为可选择并要求人工核对",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER", "BOOLEAN"]
+          }
+        ]
+      },
+      {
+        "name": "HIS_STORAGE",
+        "requirement": "REQUIRED",
+        "appliesToTasks": ["INVENTORY"],
+        "usedBy": ["药库药房目录", "库存归属"],
+        "columns": [
+          {
+            "name": "STORAGE_ID",
+            "requirement": "REQUIRED",
+            "usedBy": ["库房稳定来源身份"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "ORG_ID",
+            "requirement": "REQUIRED",
+            "usedBy": ["库房所属机构"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "STORAGE_NAME",
+            "requirement": "REQUIRED",
+            "usedBy": ["库房名称映射"],
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "STORAGE_KIND",
+            "requirement": "REQUIRED",
+            "usedBy": ["标准药库药房类型"],
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "ACTIVE_FLAG",
+            "requirement": "OPTIONAL",
+            "usedBy": ["来源库房启用状态"],
+            "fallback": "将当前可读库房视为可选择并要求人工核对",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER", "BOOLEAN"]
+          }
+        ]
+      },
+      {
+        "name": "HIS_INVENTORY",
+        "requirement": "REQUIRED",
+        "appliesToTasks": ["INVENTORY"],
+        "usedBy": ["机构库存首次盘点"],
+        "columns": [
+          {
+            "name": "INVENTORY_ID",
+            "requirement": "REQUIRED",
+            "usedBy": ["库存行稳定来源身份"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "STORAGE_ID",
+            "requirement": "REQUIRED",
+            "usedBy": ["库存所属库房"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "PRODUCT_ID",
+            "requirement": "REQUIRED",
+            "usedBy": ["库存厂家商品关系"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "QUANTITY",
+            "requirement": "REQUIRED",
+            "usedBy": ["库存数量"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "SALE_UNIT",
+            "requirement": "REQUIRED",
+            "usedBy": ["库房管理单位"],
+            "acceptedTypeFamilies": ["CHARACTER"]
+          },
+          {
+            "name": "UNIT_SALE_FACTOR",
+            "requirement": "REQUIRED",
+            "usedBy": ["库房实际包装系数"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "PURCHASE_PRICE",
+            "requirement": "REQUIRED",
+            "usedBy": ["进货单价与金额核对"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "RETAIL_PRICE",
+            "requirement": "REQUIRED",
+            "usedBy": ["零售单价与金额核对"],
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "PURCHASE_TOTAL",
+            "requirement": "OPTIONAL",
+            "usedBy": ["来源进货金额复核"],
+            "fallback": "按库存数量乘进货单价计算并在预检中核对",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "RETAIL_TOTAL",
+            "requirement": "OPTIONAL",
+            "usedBy": ["来源零售金额复核"],
+            "fallback": "按库存数量乘零售单价计算并在预检中核对",
+            "acceptedTypeFamilies": ["NUMERIC", "CHARACTER"]
+          },
+          {
+            "name": "BATCH_CODE",
+            "requirement": "OPTIONAL",
+            "usedBy": ["库存批号"],
+            "fallback": "批号留空并在校验结果中明确显示",
+            "acceptedTypeFamilies": ["CHARACTER", "NUMERIC"]
+          },
+          {
+            "name": "EXPIRY_DATE",
+            "requirement": "OPTIONAL",
+            "usedBy": ["库存有效期"],
+            "fallback": "有效期留空并在校验结果中明确显示",
+            "acceptedTypeFamilies": ["TEMPORAL", "CHARACTER", "NUMERIC"]
+          }
+        ]
+      }
+    ]
+  },
+  "evidence": [
+    {
+      "requirement": "公共 SDK 完成结构识别与药品读取绑定",
+      "tasks": ["MEDICINE_BASE"],
+      "file": "src-tauri/adapters/_examples/standard_his/adapter.rs",
+      "contains": "example_binding_uses_only_public_adapter_sdk",
+      "rustTest": "source_adapter::standard_his_adapter_example::tests::example_binding_uses_only_public_adapter_sdk",
+      "execution": "REQUIRED"
+    },
+    {
+      "requirement": "缺少可选厂家商品表时安全降级",
+      "tasks": ["MEDICINE_BASE"],
+      "file": "src-tauri/adapters/_examples/standard_his/adapter.rs",
+      "contains": "optional_product_table_keeps_medicine_readable",
+      "rustTest": "source_adapter::standard_his_adapter_example::tests::optional_product_table_keeps_medicine_readable",
+      "execution": "REQUIRED"
+    },
+    {
+      "requirement": "库存明细只读取本批机构和库房并映射公共包装金额模型",
+      "tasks": ["INVENTORY"],
+      "file": "src-tauri/adapters/_examples/standard_his/adapter.rs",
+      "contains": "inventory_core_fixture_maps_to_public_stock_contract",
+      "rustTest": "source_adapter::standard_his_adapter_example::tests::inventory_core_fixture_maps_to_public_stock_contract",
+      "execution": "REQUIRED"
+    },
+    {
+      "requirement": "库存查询使用转义来源标识且不允许空范围",
+      "tasks": ["INVENTORY"],
+      "file": "src-tauri/adapters/_examples/standard_his/adapter.rs",
+      "contains": "inventory_scope_filter_is_bounded_and_escaped",
+      "rustTest": "source_adapter::standard_his_adapter_example::tests::inventory_scope_filter_is_bounded_and_escaped",
+      "execution": "REQUIRED"
+    }
+  ]
+}

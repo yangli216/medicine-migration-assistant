@@ -1,0 +1,34 @@
+{
+  "packageSchemaVersion": 1,
+  "id": "GENERIC_FILE",
+  "name": "通用文件导入",
+  "version": 2,
+  "templateCompatibleFromVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "建立 CSV、JSON 文件来源的可复用字段映射模板。"
+    },
+    {
+      "version": 2,
+      "summary": "支持最多三个字段组成无碰撞来源业务键，并兼容旧单字段模板。"
+    }
+  ],
+  "summary": "读取 CSV / JSON，由引导式字段映射生成可复用模板。",
+  "sourceModes": ["file"],
+  "databaseFamilies": [],
+  "migrationTasks": ["MEDICINE_BASE"],
+  "automaticDetection": false,
+  "reusableMappingProfiles": true,
+  "builtIn": true,
+  "implementation": "GUIDED_MAPPING",
+  "medicineWorkflow": {
+    "sourceKeyMode": "USER_SELECTED",
+    "sourceKeyField": "",
+    "sourceKeyLabel": "",
+    "mappingPreset": "GUIDED",
+    "batchSourceType": "GENERIC",
+    "factoryPolicy": "OPTIONAL_CREATE",
+    "legacyProfileKind": "NONE"
+  }
+}

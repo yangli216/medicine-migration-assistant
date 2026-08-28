@@ -6,8 +6,8 @@ pub async fn execute(
 ) -> Result<BatchDetail, String> {
     let _active_batch = ActiveBatchGuard::enter(&request.batch_id)?;
     let detail = store.load_batch(&request.batch_id)?;
-    if detail.batch.source_type != "PHIS27_INVENTORY" {
-        return Err("当前批次不是二系列phis机构库存批次".into());
+    if !is_inventory_batch_source_type(&detail.batch.source_type) {
+        return Err("当前批次不是机构库存首次盘点批次".into());
     }
     if detail.batch.status == "SUCCESS" {
         return Ok(detail);
@@ -157,8 +157,8 @@ fn inventory_undo_plan(
     detail: &BatchDetail,
     profile: &ConnectionProfile,
 ) -> Result<Vec<InventoryUndoStorage>, String> {
-    if detail.batch.source_type != "PHIS27_INVENTORY" {
-        return Err("当前批次不是二系列phis机构库存批次".into());
+    if !is_inventory_batch_source_type(&detail.batch.source_type) {
+        return Err("当前批次不是机构库存首次盘点批次".into());
     }
     match detail.batch.status.as_str() {
         "SUCCESS" | "PARTIAL" => {}

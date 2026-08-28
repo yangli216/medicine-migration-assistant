@@ -59,11 +59,11 @@ export function createInventoryRenderers(context) {
     inventoryUndoConfirmed,
     inventoryUndoPreview,
     legacyInventoryCatalog,
-    preparePhis27Inventory,
-    confirmPhis27InventoryException,
+    prepareInventoryBatch,
+    confirmInventoryException,
     openInventoryMedicineMatching,
     searchInventoryTargetMedicines,
-    previewPhis27InventoryUndo,
+    previewInventoryUndo,
     setInventoryBatchDetail,
     setInventoryExceptionReason,
     setInventoryExceptionRow,
@@ -89,8 +89,8 @@ export function createInventoryRenderers(context) {
     targetOrganizationCatalog,
     targetStorageCatalog,
     saveInventoryMedicineMatches,
-    trialPhis27Inventory,
-    undoPhis27Inventory,
+    trialInventoryRow,
+    undoInventoryBatch,
   } = context;
 
 function renderInventoryMappingBoard() {
@@ -621,7 +621,7 @@ function renderInventoryMappingBoard() {
         <button
           className="button button--primary"
           disabled={busy === "inventory-prepare" || selectedOrganizationCount === 0}
-          onClick={preparePhis27Inventory}
+          onClick={prepareInventoryBatch}
         >
           <ListMagnifyingGlass size={18} />
           {busy === "inventory-prepare"
@@ -1074,7 +1074,7 @@ function renderInventoryBatchReview() {
                         className="button button--secondary button--compact inventory-trial-button"
                         type="button"
                         disabled={busy === "inventory-trial"}
-                        onClick={() => trialPhis27Inventory(row)}
+                        onClick={() => trialInventoryRow(row)}
                       >
                         {trialRunning ? (
                           <CircleNotch className="is-spinning" size={15} weight="bold" />
@@ -1169,7 +1169,7 @@ function renderInventoryBatchReview() {
                   busy === "inventory-exception" ||
                   inventoryExceptionReason.trim().length < 2
                 }
-                onClick={confirmPhis27InventoryException}
+                onClick={confirmInventoryException}
               >
                 {busy === "inventory-exception" ? (
                   <CircleNotch className="is-spinning" size={16} weight="bold" />
@@ -1471,7 +1471,7 @@ function renderInventoryUndoPanel() {
           className="button button--secondary button--compact"
           type="button"
           disabled={busy === "inventory-undo-preview" || busy === "inventory-undo"}
-          onClick={previewPhis27InventoryUndo}
+          onClick={previewInventoryUndo}
         >
           <ListMagnifyingGlass size={16} />
           重新检查
@@ -1518,7 +1518,7 @@ function renderInventoryUndoPanel() {
               type="button"
               aria-busy={busy === "inventory-undo"}
               disabled={busy === "inventory-undo"}
-              onClick={undoPhis27Inventory}
+              onClick={undoInventoryBatch}
             >
               {busy === "inventory-undo" ? (
                 <CircleNotch className="is-spinning" size={18} weight="bold" />

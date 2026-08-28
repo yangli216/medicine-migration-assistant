@@ -185,12 +185,30 @@ export function ConnectionForm({
   showCredentialPreference = true,
   purpose = "SOURCE",
 }) {
+  const [advancedConnectionOpen, setAdvancedConnectionOpen] = useState(false);
   const set = (key, next) =>
     onChange({ ...value, [key]: key === "port" ? Number(next) : next });
   const kind = databaseKinds[value.kind] || databaseKinds.mysql;
   const driverPack = driverPacks.find(
     (pack) => pack.databaseKind === value.kind,
   );
+  const advancedConnectionConfigured = Boolean(
+    `${value.connectionString || ""}`.trim(),
+  );
+  const advancedConnectionNeedsAttention =
+    !`${value.driver || ""}`.trim() ||
+    Boolean(
+      driverPack && !["bundled", "installed"].includes(driverPack.state),
+    );
+  useEffect(() => {
+    setAdvancedConnectionOpen(
+      advancedConnectionConfigured || advancedConnectionNeedsAttention,
+    );
+  }, [
+    advancedConnectionConfigured,
+    advancedConnectionNeedsAttention,
+    value.kind,
+  ]);
   const changeKind = (nextKind) => {
     const next = databaseKinds[nextKind];
     const keywords = driverKeywords[nextKind] || [];
@@ -375,43 +393,66 @@ export function ConnectionForm({
           </div>
         </Field>
         {!kind.nativeProtocol && (
-          <>
-            <Field label="本机数据库驱动" wide>
-              <SearchableSelect
-                allowCustom
-                ariaLabel="本机数据库驱动"
-                value={value.driver}
-                onChange={(next) => set("driver", next)}
-                options={drivers.map((driver) => ({
-                  value: driver,
-                  label: driver,
-                }))}
-                placeholder={
-                  drivers.length
-                    ? `推荐：${kind.defaultDriver}`
-                    : `已预置：${kind.defaultDriver}`
-                }
-                searchPlaceholder="过滤驱动，或输入自定义驱动名"
-              />
-              <small>
-                {value.kind === "oracle"
-                  ? "内置 Oracle 19.31 支持服务端 11.2.0.4 及以上；更早的 11g 请安装匹配的 64 位 Oracle ODBC 驱动并在此选择"
-                  : drivers.length
-                  ? `已检测到 ${drivers.length} 个 ODBC 驱动`
-                  : "未检测到本机驱动；连接测试时会给出安装或导入提示"}
-              </small>
-            </Field>
-            <Field label="高级连接串（可选）" wide>
-              <textarea
-                rows={2}
-                value={value.connectionString}
-                onChange={(event) =>
-                  set("connectionString", event.target.value)
-                }
-                placeholder="${HOST}、${PORT}、${DATABASE}、${SERVICE}、${SCHEMA}、${USER}、${PASSWORD}"
-              />
-            </Field>
-          </>
+          <div className="form-field form-field--wide">
+            <span>专家连接选项（通常无需修改）</span>
+            <details
+              className={`connection-advanced ${advancedConnectionNeedsAttention ? "connection-advanced--attention" : ""}`}
+              open={advancedConnectionOpen}
+              onToggle={(event) =>
+                setAdvancedConnectionOpen(event.currentTarget.open)
+              }
+            >
+              <summary>
+                <span>
+                  <strong>驱动与高级连接串</strong>
+                  <small>
+                    {advancedConnectionConfigured
+                      ? "已使用自定义高级连接串，请在测试前核对"
+                      : advancedConnectionNeedsAttention
+                        ? "当前驱动尚未就绪，请展开选择"
+                        : `当前使用：${value.driver || kind.defaultDriver}`}
+                  </small>
+                </span>
+              </summary>
+              <div className="connection-advanced__fields">
+                <Field label="本机数据库驱动">
+                  <SearchableSelect
+                    allowCustom
+                    ariaLabel="本机数据库驱动"
+                    value={value.driver}
+                    onChange={(next) => set("driver", next)}
+                    options={drivers.map((driver) => ({
+                      value: driver,
+                      label: driver,
+                    }))}
+                    placeholder={
+                      drivers.length
+                        ? `推荐：${kind.defaultDriver}`
+                        : `已预置：${kind.defaultDriver}`
+                    }
+                    searchPlaceholder="过滤驱动，或输入自定义驱动名"
+                  />
+                  <small>
+                    {value.kind === "oracle"
+                      ? "内置 Oracle 19.31 支持服务端 11.2.0.4 及以上；更早的 11g 请安装匹配的 64 位 Oracle ODBC 驱动"
+                      : drivers.length
+                        ? `已检测到 ${drivers.length} 个 ODBC 驱动`
+                        : "未检测到本机驱动；连接测试时会给出安装提示"}
+                  </small>
+                </Field>
+                <Field label="高级连接串（可选）">
+                  <textarea
+                    rows={2}
+                    value={value.connectionString}
+                    onChange={(event) =>
+                      set("connectionString", event.target.value)
+                    }
+                    placeholder="${HOST}、${PORT}、${DATABASE}、${SERVICE}、${SCHEMA}、${USER}、${PASSWORD}"
+                  />
+                </Field>
+              </div>
+            </details>
+          </div>
         )}
       </div>
       {showCredentialPreference && <div className="credential-preference">

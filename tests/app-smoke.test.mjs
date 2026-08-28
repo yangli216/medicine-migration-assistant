@@ -16,6 +16,9 @@ test("main React flow compiles as JSX", async () => {
   assert.match(result.code, /function App\(/);
   assert.match(source, /tone === "danger" \? 15_000 : 4_000/);
   assert.match(source, /aria-label="关闭错误提示"/);
+  assert.match(source, /useLayoutEffect\(\(\) => \{/);
+  assert.match(source, /window\.scrollTo\(\{ top: 0, left: 0, behavior: "auto" \}\)/);
+  assert.match(source, /<main className="workspace" ref=\{workspaceRef\}>/);
 });
 
 test("target execution screen imports shared fields and root rendering has a visible fallback", async () => {
@@ -38,6 +41,77 @@ test("target execution screen imports shared fields and root rendering has a vis
   assert.match(mainSource, /<AppErrorBoundary>[\s\S]*<App \/>/);
   assert.match(boundarySource, /页面遇到错误，没有继续执行迁移/);
   assert.match(boundarySource, /重新加载应用/);
+});
+
+test("任务选择在连库前区分数据库连接与 HIS 业务适配能力", async () => {
+  const screenSource = await readFile(
+    new URL("../src/PrimaryFlowScreens.jsx", import.meta.url),
+    "utf8",
+  );
+  const capabilitySource = await readFile(
+    new URL("../src/sourceAdapterCapabilities.js", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(screenSource, /接入能力判断/);
+  assert.match(screenSource, /sourceAdapterCapabilityAssessment/);
+  assert.match(capabilitySource, /不能仅因数据库可连接就直接迁移/);
+  assert.match(capabilitySource, /通用数据库/);
+  assert.match(capabilitySource, /CSV \/ JSON/);
+
+  const appSource = await readFile(
+    new URL("../src/App.jsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(appSource, /sectionLabel=/);
+  assert.match(appSource, /机构库存初始化/);
+});
+
+test("非原生数据库把驱动和高级连接串收进可见的专家选项", async () => {
+  const connectionSource = await readFile(
+    new URL("../src/DatabaseConnections.jsx", import.meta.url),
+    "utf8",
+  );
+  const stylesSource = await readFile(
+    new URL("../src/styles.css", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(connectionSource, /专家连接选项（通常无需修改）/);
+  assert.match(connectionSource, /className=\{`connection-advanced/);
+  assert.match(connectionSource, /open=\{advancedConnectionOpen\}/);
+  assert.match(connectionSource, /onToggle=/);
+  assert.match(connectionSource, /advancedConnectionNeedsAttention/);
+  assert.match(stylesSource, /\.connection-advanced__fields/);
+});
+
+test("桌面界面保留高对比主操作、清晰键盘焦点和 200% 缩放重排", async () => {
+  const stylesSource = await readFile(
+    new URL("../src/styles.css", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    stylesSource,
+    /button:focus-visible,[\s\S]*?outline:\s*3px solid #005fcc;[\s\S]*?outline-offset:\s*2px;/,
+  );
+  assert.match(
+    stylesSource,
+    /\.button--primary\s*\{[\s\S]*?background:\s*var\(--teal-700\);/,
+  );
+  assert.match(stylesSource, /@media \(max-width: 720px\)/);
+  assert.match(
+    stylesSource,
+    /@media \(max-width: 720px\)[\s\S]*?\.topbar\s*\{[\s\S]*?display:\s*grid;/,
+  );
+  assert.match(
+    stylesSource,
+    /@media \(max-width: 720px\)[\s\S]*?\.step > span\s*\{[\s\S]*?display:\s*none;/,
+  );
+  assert.match(
+    stylesSource,
+    /@media \(max-width: 720px\)[\s\S]*?\.step--active > span\s*\{[\s\S]*?display:\s*inline;/,
+  );
 });
 
 test("every used Phosphor JSX icon is explicitly imported", async () => {
@@ -111,11 +185,20 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
     "InventoryMigrationScreen.jsx",
     "InventoryReview.jsx",
     "MigrationHistory.jsx",
+    "MigrationStatus.jsx",
     "MigrationResults.jsx",
     "PrimaryFlowScreens.jsx",
     "migrationFields.js",
     "fieldMappingStatus.js",
     "migrationPreview.js",
+    "sourceDatabaseObjects.js",
+    "sourceObjectDiagnostics.js",
+    "sourceObjectSurvey.js",
+    "sourceKeyAssessment.js",
+    "sourceAdapterWorkflow.js",
+    "SourceAdapterDiagnosticPanel.jsx",
+    "SourceStructureCompatibility.jsx",
+    "sourceFieldMatching.js",
   ];
   const appSource = (
     await Promise.all(
@@ -124,6 +207,18 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
       ),
     )
   ).join("\n");
+  const rootAppSource = await readFile(
+    new URL("../src/App.jsx", import.meta.url),
+    "utf8",
+  );
+  const apiSource = await readFile(
+    new URL("../src/api.js", import.meta.url),
+    "utf8",
+  );
+  const viteConfigSource = await readFile(
+    new URL("../vite.config.mjs", import.meta.url),
+    "utf8",
+  );
   const stylesSource = await readFile(
     new URL("../src/styles.css", import.meta.url),
     "utf8",
@@ -148,6 +243,26 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
     new URL("../src-tauri/src/local_store.rs", import.meta.url),
     "utf8",
   );
+  const dataSourceRust = await readFile(
+    new URL("../src-tauri/src/datasource.rs", import.meta.url),
+    "utf8",
+  );
+  const batchSource = await readFile(
+    new URL("../src-tauri/src/batch.rs", import.meta.url),
+    "utf8",
+  );
+  const adapterSettingsSource = await readFile(
+    new URL("../src-tauri/src/adapter_settings.rs", import.meta.url),
+    "utf8",
+  );
+  const odbcSource = await readFile(
+    new URL("../src-tauri/src/odbc.rs", import.meta.url),
+    "utf8",
+  );
+  const pgProtocolSource = await readFile(
+    new URL("../src-tauri/src/pg_protocol.rs", import.meta.url),
+    "utf8",
+  );
   const inventoryExceptionSource = await readFile(
     new URL("../src-tauri/src/inventory/exception.rs", import.meta.url),
     "utf8",
@@ -160,25 +275,42 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
     `${appSource}\n${selectSource}`,
     /<(?:select|datalist)\b/i,
   );
+  assert.match(rootAppSource, /lazy\(\(\) =>\s*import\("\.\/InventoryMigrationScreen"\)/);
+  assert.match(rootAppSource, /lazy\(\(\) =>\s*import\("\.\/MigrationHistory"\)/);
+  assert.match(rootAppSource, /<Suspense\s+fallback=/);
+  assert.doesNotMatch(rootAppSource, /from "\.\/InventoryReview"/);
+  assert.doesNotMatch(rootAppSource, /from "\.\/InventoryMigrationScreen"/);
+  assert.doesNotMatch(rootAppSource, /from "\.\/MigrationHistory"/);
+  assert.match(appSource, /createInventoryRenderers\(context\.inventoryRenderContext\)/);
+  assert.match(stylesSource, /\.deferred-module-loading/);
+  assert.match(viteConfigSource, /manualChunks/);
+  assert.match(viteConfigSource, /icon-vendor/);
+  assert.match(viteConfigSource, /react-vendor/);
   assert.match(appSource, /<SearchableSelect/);
   assert.match(appSource, /DRUG_NAME: "药品名称"/);
   assert.match(appSource, /SPEC: "制剂规格"/);
-  assert.match(appSource, /主数据读取与自动合并/);
-  assert.match(appSource, /机构在用范围只看/);
-  assert.match(appSource, /YK_CDXX，不关联 YK_YPXX、YF_YPXX/);
-  assert.match(appSource, /名称、规格、最小单位一致/);
-  assert.match(appSource, /每个 YPXH:YPCD 仍分别保留迁移映射/);
+  assert.match(appSource, /sourceAdapterInspection\.guidance/);
+  assert.doesNotMatch(appSource, /sourceAdapterInspection\.adapterId === "PHIS27"/);
+  assert.match(apiSource, /主数据读取与自动合并/);
+  assert.match(apiSource, /机构在用范围只看/);
+  assert.match(apiSource, /YK_CDXX，不关联 YK_YPXX、YF_YPXX/);
+  assert.match(apiSource, /名称、规格、最小单位一致/);
+  assert.match(apiSource, /每个 YPXH:YPCD 仍分别保留迁移映射/);
   assert.match(appSource, /任务 B · 已开放/);
-  assert.match(appSource, /inspect_phis27_inventory/);
+  assert.match(appSource, /inspect_inventory_source_adapter/);
   assert.match(appSource, /读取机构与库存范围/);
   assert.match(appSource, /读取并核对本批/);
   assert.match(appSource, /选择本批需要迁移的药库\/\u836f房/);
   assert.match(appSource, /load_inventory_target_storages/);
   assert.match(appSource, /load_inventory_target_organizations/);
-  assert.match(appSource, /load_phis27_inventory_catalog/);
+  assert.match(appSource, /load_inventory_source_catalog/);
+  assert.match(appSource, /选择库存来源适配器/);
+  assert.match(appSource, /当前数据库只显示明确声明兼容的适配器/);
   assert.match(appSource, /load_inventory_organization_mappings/);
   assert.match(appSource, /load_inventory_location_mappings/);
-  assert.match(appSource, /prepare_phis27_inventory/);
+  assert.match(appSource, /prepare_inventory_batch/);
+  assert.match(appSource, /execute_inventory_batch/);
+  assert.match(appSource, /trial_inventory_row/);
   assert.match(appSource, /读取机构与库房清单/);
   assert.match(appSource, /老系统机构 → 新系统机构/);
   assert.match(appSource, /老系统药库\/药房 → 新系统库房/);
@@ -212,7 +344,10 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(selectSource, /disabled: Boolean\(option\.disabled\)/);
   assert.match(selectSource, /aria-disabled=\{option\.disabled\}/);
   assert.match(appSource, /保存映射并检查重复/);
-  assert.match(appSource, /库房 \+ 药品商品 \+ 进销价格 \+ 批号 \+ 效期/);
+  assert.match(
+    appSource,
+    /库房 \+ 药品商品 \+ 进销价格 \+ 批号 \+\s*效期/,
+  );
   assert.match(appSource, /正式执行首次盘点/);
   assert.match(appSource, /当天日期 \+ 3 位流水/);
   assert.match(appSource, /目标库房已有盘点或库存，整库就会被阻止/);
@@ -225,7 +360,7 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /packagingNotes/);
   assert.match(appSource, /确认例外并继续/);
   assert.match(appSource, /人工确认原因/);
-  assert.match(appSource, /confirm_phis27_inventory_exception/);
+  assert.match(appSource, /confirm_inventory_exception/);
   assert.match(appSource, /原有试迁移结果会失效/);
   assert.match(inventoryPrepareSource, /PHARMACY_SINGLE_PACKAGE_UNCONFIRMED/);
   assert.match(inventoryPrepareSource, /reviewable: true/);
@@ -235,13 +370,15 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /inventoryExecutionLock/);
   assert.match(appSource, /已等待 \{inventoryExecutionSeconds\} 秒/);
   assert.match(appSource, /正在执行 · \$\{inventoryExecutionSeconds\}秒/);
-  assert.match(appSource, /preview_phis27_inventory_undo/);
-  assert.match(appSource, /undo_phis27_inventory/);
+  assert.match(appSource, /preview_inventory_undo/);
+  assert.match(appSource, /undo_inventory_batch/);
   assert.match(appSource, /安全撤销首次盘点/);
   assert.match(appSource, /发现后续业务，不能撤销/);
   assert.match(appSource, /库房药品配置 hi_sto_med 将保留/);
-  assert.match(appSource, /药库数量取 YK_KCMX\.KCSL/);
-  assert.match(appSource, /药房数量取 YF_KCMX\.YPSL/);
+  assert.doesNotMatch(appSource, /药库数量取 YK_KCMX\.KCSL/);
+  assert.doesNotMatch(appSource, /药房数量取 YF_KCMX\.YPSL/);
+  assert.match(apiSource, /药库数量取 YK_KCMX\.KCSL/);
+  assert.match(apiSource, /药房数量取 YF_KCMX\.YPSL/);
   assert.doesNotMatch(
     appSource,
     /<button className="task-card task-card--disabled" disabled>/,
@@ -256,7 +393,7 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /随机换一条/);
   assert.match(appSource, /指定预览药品/);
   assert.match(appSource, /新系统字典含义/);
-  assert.match(appSource, /二系列来源值/);
+  assert.match(appSource, /\$\{activeSourceAdapter\.name\}来源值/);
   assert.match(appSource, /sourceDictionaryText/);
   assert.match(appSource, /columnMetadata=\{columnMetadata\}/);
   assert.match(appSource, /二系列字典 → 新系统字典/);
@@ -269,7 +406,7 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /来源字段和字典项都可在此维护/);
   assert.match(
     appSource,
-    /字典 \{status\.dictionaryHandled\}\/\{status\.dictionaryTotal\}/,
+    /字典 \{status\.dictionaryHandled\}\/\s*\{status\.dictionaryTotal\}/,
   );
   assert.match(appSource, /详细配置/);
   assert.match(appSource, /DictionaryMappingEditor/);
@@ -289,7 +426,10 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(appSource, /搜索药品名称、规格、厂家、商品名或来源键/);
   assert.match(appSource, /每页最多 \{pageSize\} 条/);
   assert.match(appSource, /仅迁移校验通过的/);
-  assert.match(appSource, /跳过 \{validationFailureCount\} 条校验失败数据/);
+  assert.match(
+    appSource,
+    /跳过 \{validationFailureCount\}(?:\{" "\})?\s*条校验失败数据/,
+  );
   assert.match(appSource, /skipInvalidRows: skipInvalidRowsOnExecute/);
   assert.match(stylesSource, /\.dictionary-medicine-dialog/);
   assert.match(stylesSource, /\.dictionary-match-source__meta/);
@@ -451,16 +591,158 @@ test("all dropdowns use the searchable combobox and medicine previews use busine
   assert.match(connectionSettingsSource, /database_connection_library_v1/);
   assert.match(connectionSettingsSource, /DATABASE_CONNECTION_PASSWORD_PREFIX/);
   assert.match(rustAppSource, /list_database_connections/);
+  assert.match(rustAppSource, /list_source_adapters/);
+  assert.match(rustAppSource, /inspect_medicine_source_adapter/);
+  assert.match(rustAppSource, /load_medicine_source_adapter/);
+  assert.match(rustAppSource, /list_source_tables/);
+  assert.match(rustAppSource, /preview_source_object/);
+  assert.match(rustAppSource, /survey_source_objects/);
+  assert.match(rustAppSource, /count_source_object_rows/);
+  assert.match(dataSourceRust, /SELECT COUNT\(\*\) AS MIGRATION_ROW_COUNT/);
+  assert.match(dataSourceRust, /row_count/);
+  assert.match(dataSourceRust, /information_schema\.columns/);
+  assert.match(dataSourceRust, /source_object_column_metadata/);
+  assert.match(dataSourceRust, /SOURCE_OBJECT_SURVEY_MAXIMUM:\s*usize\s*=\s*5/);
+  assert.match(dataSourceRust, /SOURCE_OBJECT_SURVEY_ROW_LIMIT:\s*u32\s*=\s*2/);
+  assert.match(dataSourceRust, /SOURCE_OBJECT_SURVEY_TIMEOUT_SECONDS:\s*u64\s*=\s*8/);
+  assert.match(dataSourceRust, /metadata_message/);
+  assert.match(dataSourceRust, /当前驱动无法读取字段注释/);
+  assert.match(odbcSource, /connection\s*\.columns/);
+  assert.match(pgProtocolSource, /pg_catalog\.col_description/);
+  assert.match(rustAppSource, /inspect_inventory_source_adapter/);
+  assert.match(rustAppSource, /load_inventory_source_catalog/);
+  assert.match(rustAppSource, /prepare_inventory_batch/);
+  assert.match(rustAppSource, /execute_inventory_batch/);
+  assert.match(rustAppSource, /trial_inventory_row/);
+  assert.match(rustAppSource, /confirm_inventory_exception/);
+  assert.match(rustAppSource, /preview_inventory_undo/);
+  assert.match(rustAppSource, /undo_inventory_batch/);
   assert.match(rustAppSource, /save_database_connection/);
   assert.match(rustAppSource, /delete_database_connection/);
   assert.match(appSource, /load_saved_connections/);
+  assert.match(appSource, /list_source_adapters/);
+  assert.match(appSource, /inspect_medicine_source_adapter/);
+  assert.match(appSource, /load_medicine_source_adapter/);
+  assert.match(appSource, /loadSourceObjects/);
+  assert.match(appSource, /previewDatabaseObject/);
+  assert.match(appSource, /preview_source_object/);
+  assert.match(appSource, /免写 SQL 读取/);
+  assert.match(appSource, /读取表\/视图清单/);
+  assert.match(appSource, /预览字段与样例/);
+  assert.match(appSource, /可能的药品来源（仅按名称判断）/);
+  assert.match(appSource, /名称线索优先显示/);
+  assert.match(appSource, /导出脱敏结构诊断/);
+  assert.match(appSource, /不含连接信息、租户或原始数据值/);
+  assert.match(appSource, /buildSourceObjectDiagnostic/);
+  assert.match(appSource, /快速核对前/);
+  assert.match(appSource, /每个最多读取 2\s+行/);
+  assert.match(appSource, /按实际药品字段完整度排序，不会自动选表/);
+  assert.match(appSource, /sourceObjectSurveyCandidates\(sourceObjects, 5\)/);
+  assert.match(appSource, /command\("survey_source_objects"/);
+  assert.match(apiSource, /name === "survey_source_objects"/);
+  assert.match(apiSource, /preview\.rows\.slice\(0, limit\)/);
+  assert.match(appSource, /请选择一至三个能稳定识别三方记录的字段/);
+  assert.match(appSource, /我确认以上字段组合是老系统稳定业务键/);
+  assert.match(appSource, /不能使用行号代替/);
+  assert.match(appSource, /assessSourceKeyColumns/);
+  assert.match(appSource, /encodeSourceKey\(row, sourceKeyFields\)/);
+  assert.match(batchSource, /validate_batch_source_keys/);
+  assert.match(batchSource, /禁止使用行号代替/);
+  assert.match(batchSource, /来源唯一标识重复/);
+  assert.doesNotMatch(batchSource, /unwrap_or_else\(\|\| \(index \+ 1\)\.to_string\(\)\)/);
+  assert.match(appSource, /countDatabaseObjectRows/);
+  assert.match(appSource, /正在后台统计本批总行数/);
+  assert.match(appSource, /超过单批 10,000 行上限/);
+  assert.match(appSource, /让数据库人员提供已筛选业务视图/);
+  assert.match(stylesSource, /\.source-object-count--danger/);
+  assert.match(appSource, /确认使用并读取本批/);
+  assert.match(appSource, /limit: 6/);
+  assert.match(appSource, /invalidateSourceObjectPreview/);
+  assert.match(appSource, /样例仅用于核对字段和内容/);
+  assert.match(appSource, /sourceObjectSuitability/);
+  assert.match(appSource, /常用药品字段/);
+  assert.match(appSource, /不代表字段映射或业务校验已经通过/);
+  assert.match(appSource, /metadataMessage/);
+  assert.match(appSource, /字段注释不可用时将按字段名和样例辅助识别/);
+  assert.match(appSource, /对象名称来自数据库元数据并由后端再次验证/);
+  assert.match(appSource, /高级方式：编写多表只读 SQL/);
+  assert.match(dataSourceRust, /available\.iter\(\)\.find/);
+  assert.match(dataSourceRust, /quote_source_object_identifier/);
+  assert.match(dataSourceRust, /source_object_qualified_name/);
+  assert.match(dataSourceRust, /"SELECT \* FROM \{}"/);
+  assert.match(dataSourceRust, /SOURCE_OBJECT_COUNT_PROBE_LIMIT/);
+  assert.match(dataSourceRust, /SOURCE_OBJECT_PROBE_TIMEOUT_SECONDS/);
+  assert.match(dataSourceRust, /tokio::time::timeout/);
+  assert.match(odbcSource, /preview_source_with_timeout/);
+  assert.match(appSource, /短时行数探测未完成/);
+  assert.match(dataSourceRust, /ROWNUM <= \{SOURCE_OBJECT_COUNT_PROBE_LIMIT\}/);
+  assert.match(dataSourceRust, /LIMIT \{SOURCE_OBJECT_COUNT_PROBE_LIMIT\}/);
+  assert.match(appSource, /activeSourceObjectCount\.isExact === false/);
+  assert.match(appSource, /至少/);
+  assert.match(appSource, /selectedMedicineAdapterId/);
+  assert.match(appSource, /automaticMedicineAdapters/);
+  assert.match(appSource, /adapter\.automaticDetection/);
+  assert.match(appSource, /adapter\.migrationTasks\.includes\("MEDICINE_BASE"\)/);
+  assert.match(appSource, /activeSourceAdapterId/);
+  assert.match(appSource, /exportSourceAdapterDiagnostic/);
+  assert.match(appSource, /当前项目结构差异/);
+  assert.match(appSource, /本报告不包含主机地址、端口、数据库账号密码或目标租户/);
+  assert.doesNotMatch(appSource, /command\("inspect_phis27_source"/);
+  assert.doesNotMatch(appSource, /command\("load_phis27_medicine"/);
+  assert.match(appSource, /load_source_mapping_profile/);
+  assert.match(appSource, /recommend_source_mapping_profile/);
+  assert.match(appSource, /已套用同结构本地模板建议/);
+  assert.match(appSource, /请先核对并保存为当前来源模板，再执行导出/);
+  assert.match(adapterSettingsSource, /不复用旧查询、连接或来源字典/);
+  assert.match(rustAppSource, /recommend_source_mapping_profile/);
+  assert.match(appSource, /sourceMappingProfileForSelection/);
+  assert.match(appSource, /legacySourceMappingPromotionRequest/);
+  assert.match(appSource, /旧模板已自动按当前来源对象固化/);
+  assert.match(appSource, /旧模板已恢复，但对象级固化失败/);
+  assert.match(appSource, /mappingProfileStatus\?\.storageWarning/);
+  assert.match(appSource, /activeSourceSelection/);
+  assert.match(appSource, /sourceObject: usesObject \? objectName/);
+  assert.match(appSource, /legacyMappingProfile/);
+  assert.match(appSource, /baseScope\.sourceIdentity !== scope\.sourceIdentity/);
+  assert.match(appSource, /sourceSelection: activeSourceSelection/);
+  assert.match(appSource, /save_source_mapping_profile/);
+  assert.match(appSource, /adapterVersion: sourceAdapterVersionFor/);
+  assert.match(appSource, /templateCompatibleFromVersion/);
+  assert.match(appSource, /模板兼容 v/);
+  assert.match(appSource, /当前版本说明/);
+  assert.match(appSource, /save_source_adapter_diagnostic/);
+  assert.match(appSource, /objectStructures: inspection\.objectStructures/);
+  assert.match(appSource, /sourceAdapterDiagnostics/);
+  assert.match(appSource, /inventorySourceDiagnostics/);
+  assert.match(rootAppSource, /migrationTask: "INVENTORY"/);
+  assert.match(rootAppSource, /exportInventorySourceAdapterSupportPackage/);
+  assert.match(appSource, /当前库存结构差异/);
+  assert.match(appSource, /适配器版本已变化，请重新核对/);
+  assert.match(appSource, /本地诊断历史/);
+  assert.match(rustAppSource, /save_source_adapter_diagnostic/);
+  assert.match(rustAppSource, /load_source_adapter_diagnostics/);
+  assert.match(rustAppSource, /export_source_adapter_support_package/);
+  assert.match(adapterSettingsSource, /SOURCE_ADAPTER_SUPPORT_VERSION: u32 = 2/);
+  assert.match(appSource, /导出支持包/);
+  assert.match(appSource, /当前结构存在阻断项/);
+  assert.match(appSource, /查看需核对项和安全降级说明/);
+  assert.match(appSource, /compatibleFallbacks/);
+  assert.match(appSource, /inspection=\{inventoryReadiness\}/);
+  assert.match(
+    rootAppSource,
+    /readiness\.compatibility\?\.status === "BLOCKED"/,
+  );
+  assert.match(rootAppSource, /契约影响：\$\{compatibility\.status\}/);
+  assert.match(appSource, /sourceQuery: activeSourceAdapter\?\.automaticDetection/);
+  assert.doesNotMatch(appSource, /function isPhis27Source/);
+  assert.match(appSource, /saved\?\.sourceQuery/);
+  assert.match(appSource, /limit: 10000/);
   assert.match(appSource, /load_phis27_mapping_profile/);
-  assert.match(appSource, /save_phis27_mapping_profile/);
   assert.match(appSource, /load_cost_merge_mapping_profile/);
   assert.match(appSource, /save_cost_merge_mapping_profile/);
   assert.match(appSource, /费用归并映射已按当前新系统租户自动保存到本机/);
-  assert.match(appSource, /已恢复固化映射/);
-  assert.match(appSource, /数据库注释仍按本次连接实时刷新/);
+  assert.match(appSource, /已恢复.*个来源字段及其转换规则/);
+  assert.match(appSource, /来源字典和数据库注释仍会在连接时刷新/);
   assert.match(
     appSource,
     /Object\.prototype\.hasOwnProperty\.call\(restoredMapping/,

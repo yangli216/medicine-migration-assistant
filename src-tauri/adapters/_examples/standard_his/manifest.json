@@ -1,0 +1,46 @@
+{
+  "packageSchemaVersion": 1,
+  "id": "STANDARD_HIS",
+  "name": "标准教学 HIS（示例）",
+  "version": 1,
+  "templateCompatibleFromVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "提供独立于二系列的 PostgreSQL 药品与机构库存教学实现。"
+    }
+  ],
+  "summary": "仅用于开发与验收，演示如何通过公共 SDK 接入药品主档、厂家商品与机构库存。",
+  "sourceModes": ["database"],
+  "databaseFamilies": ["postgresql"],
+  "migrationTasks": ["MEDICINE_BASE", "INVENTORY"],
+  "automaticDetection": true,
+  "reusableMappingProfiles": true,
+  "builtIn": false,
+  "implementation": "STANDARD_HIS_EXAMPLE_BUILTIN",
+  "sourceCompatibility": {
+    "product": "标准教学 HIS（示例）",
+    "mode": "STRUCTURE_CONTRACT",
+    "declaredVersions": [],
+    "gate": "仅按教学结构契约验收，不代表任何厂商版本已获得生产认证。"
+  },
+  "medicineWorkflow": {
+    "sourceKeyMode": "ADAPTER_PROVIDED",
+    "sourceKeyField": "SOURCE_KEY",
+    "sourceKeyLabel": "药品编号:商品编号",
+    "mappingPreset": "GUIDED",
+    "batchSourceType": "GENERIC",
+    "factoryPolicy": "OPTIONAL_CREATE",
+    "legacyProfileKind": "NONE"
+  },
+  "inventoryWorkflow": {
+    "normalizedLocationKinds": ["WAREHOUSE", "PHARMACY"],
+    "sourceProductKeyLabel": "药品编号:商品编号",
+    "sourceStockKeyMode": "ADAPTER_SCOPED_V1",
+    "writeMode": "FIRST_STOCKTAKE",
+    "organizationMapping": "REQUIRED",
+    "medicineLedger": "REQUIRED",
+    "trialPolicy": "PER_TARGET_STORAGE",
+    "undoPolicy": "VERIFIED_BATCH_ONLY"
+  }
+}

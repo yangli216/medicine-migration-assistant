@@ -1,12 +1,12 @@
 use crate::datasource::connect_mysql;
 use crate::id::new_object_id;
-use crate::legacy_phis27::{load_inventory_stock_items, Phis27InventoryStockItem};
 use crate::local_store::{InventoryLocationMapping, InventoryOrganizationMapping, LocalStore};
 use crate::model::{BatchDetail, ConnectionProfile, MigrationAudit, MigrationBatch, MigrationRow};
 use crate::odbc::{
     configure_target_session, execute_strings, query_optional_row_strings, query_optional_string,
     query_rows_strings, with_connection,
 };
+use crate::source_adapter::{self, InventorySourceStockItem};
 use crate::target::{target_identity, ActiveBatchGuard};
 use chrono::{Local, NaiveDate, Utc};
 use odbc_api::Connection;
@@ -22,6 +22,14 @@ use sqlx_postgres::{PgPool, PgTransaction, Postgres};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
+
+pub(crate) const INSTITUTION_INVENTORY_SOURCE_TYPE: &str = "INSTITUTION_INVENTORY";
+const LEGACY_PHIS27_INVENTORY_SOURCE_TYPE: &str = "PHIS27_INVENTORY";
+
+pub(crate) fn is_inventory_batch_source_type(source_type: &str) -> bool {
+    source_type.eq_ignore_ascii_case(INSTITUTION_INVENTORY_SOURCE_TYPE)
+        || source_type.eq_ignore_ascii_case(LEGACY_PHIS27_INVENTORY_SOURCE_TYPE)
+}
 
 const INVENTORY_TARGET_TABLE_PROJECTIONS: &[(&str, &str)] = &[
     (
@@ -239,12 +247,18 @@ pub struct SaveInventoryMedicineMatchesResponse {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrepareInventoryRequest {
+    #[serde(default = "default_inventory_adapter_id")]
+    pub adapter_id: String,
     pub source: ConnectionProfile,
     pub target: ConnectionProfile,
     pub source_name: String,
     #[serde(default)]
     pub organization_mappings: Vec<InventoryOrganizationMapping>,
     pub mappings: Vec<InventoryLocationMapping>,
+}
+
+fn default_inventory_adapter_id() -> String {
+    "PHIS27".into()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -371,7 +385,8 @@ struct InventoryGroup {
     sale_unit: String,
     sale_specification: String,
     unit_sale_factor: String,
-    typk_unit_sale_factor: String,
+    single_minimum_package_factor: String,
+    single_minimum_package_factor_source: String,
     product_sale_unit: String,
     product_unit_sale_factor: String,
     factory_name: String,
@@ -410,3 +425,17 @@ include!("inventory/undo.rs");
 include!("inventory/write.rs");
 include!("inventory/pg.rs");
 include!("inventory/support.rs");
+
+#[cfg(test)]
+mod source_type_tests {
+    use super::{is_inventory_batch_source_type, INSTITUTION_INVENTORY_SOURCE_TYPE};
+
+    #[test]
+    fn accepts_current_and_legacy_inventory_batch_types() {
+        assert!(is_inventory_batch_source_type(
+            INSTITUTION_INVENTORY_SOURCE_TYPE
+        ));
+        assert!(is_inventory_batch_source_type("PHIS27_INVENTORY"));
+        assert!(!is_inventory_batch_source_type("PHIS27"));
+    }
+}

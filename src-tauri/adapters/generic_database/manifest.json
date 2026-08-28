@@ -1,0 +1,45 @@
+{
+  "packageSchemaVersion": 1,
+  "id": "GENERIC_DATABASE",
+  "name": "通用数据库查询",
+  "version": 2,
+  "templateCompatibleFromVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "建立免写 SQL 表/视图读取、样例核对，以及按具体来源对象或只读查询隔离的可复用字段模板。"
+    },
+    {
+      "version": 2,
+      "summary": "支持最多三个字段组成无碰撞来源业务键，并兼容旧单字段模板。"
+    }
+  ],
+  "summary": "通过可见表/视图或高级只读 SQL 接入三方 HIS，并按具体来源对象保存字段与转换配置。",
+  "sourceModes": ["database"],
+  "databaseFamilies": [
+    "mysql",
+    "oracle",
+    "dameng",
+    "opengauss",
+    "vastbase",
+    "gbase8c",
+    "gbase8a",
+    "gbase8s",
+    "kingbase",
+    "postgresql"
+  ],
+  "migrationTasks": ["MEDICINE_BASE"],
+  "automaticDetection": false,
+  "reusableMappingProfiles": true,
+  "builtIn": true,
+  "implementation": "GUIDED_MAPPING",
+  "medicineWorkflow": {
+    "sourceKeyMode": "USER_SELECTED",
+    "sourceKeyField": "",
+    "sourceKeyLabel": "",
+    "mappingPreset": "GUIDED",
+    "batchSourceType": "GENERIC",
+    "factoryPolicy": "OPTIONAL_CREATE",
+    "legacyProfileKind": "NONE"
+  }
+}
