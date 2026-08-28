@@ -1763,39 +1763,50 @@ async fn ensure_unit(
     tenant_id: &str,
     events: &mut Vec<WriteEvent>,
 ) -> Result<String, String> {
-    let unit = defaulted(data, "unitSale", &text(data, "unitPre"));
-    let factor = if text(data, "unitSaleFactor").is_empty() {
-        "1".to_string()
-    } else {
-        integer(data, "unitSaleFactor")?.to_string()
-    };
-    let exists: Option<String> = query_scalar::<MySql, String>(
-        "SELECT id_med_unit FROM hi_bd_med_unit WHERE id_tet=? AND id_med=? AND na_unit=? AND unit_factor=? LIMIT 1"
-    ).bind(tenant_id).bind(id_med).bind(&unit).bind(&factor).fetch_optional(&mut **tx).await.map_err(db_error)?;
-    if let Some(id) = exists {
-        events.push(WriteEvent {
-            operation: "REUSE",
-            table: "hi_bd_med_unit",
-            target_id: id.clone(),
-            message: "复用已存在的药品包装单位".into(),
-            before: json!({"idMedUnit":id,"idMed":id_med,"naUnit":unit,"unitFactor":factor}),
-            after: json!({"idMedUnit":id}),
-        });
-        return Ok(id);
+    let mut primary_id = String::new();
+    for (index, (unit, factor)) in medicine_unit_specs(data)?.into_iter().enumerate() {
+        let factor = factor.to_string();
+        let exists: Option<String> = query_scalar::<MySql, String>(
+            "SELECT id_med_unit FROM hi_bd_med_unit WHERE id_tet=? AND id_med=? AND na_unit=? AND unit_factor=? LIMIT 1"
+        ).bind(tenant_id).bind(id_med).bind(&unit).bind(&factor).fetch_optional(&mut **tx).await.map_err(db_error)?;
+        let id = if let Some(id) = exists {
+            events.push(WriteEvent {
+                operation: "REUSE",
+                table: "hi_bd_med_unit",
+                target_id: id.clone(),
+                message: if index == 0 {
+                    "复用已存在的药品最小单位"
+                } else {
+                    "复用已存在的药品包装单位"
+                }
+                .into(),
+                before: json!({"idMedUnit":id,"idMed":id_med,"naUnit":unit,"unitFactor":factor}),
+                after: json!({"idMedUnit":id}),
+            });
+            id
+        } else {
+            let id = new_object_id();
+            query::<MySql>("INSERT INTO hi_bd_med_unit(id_med_unit,id_med,na_unit,unit_factor,id_tet) VALUES (?,?,?,?,?)")
+                .bind(&id).bind(id_med).bind(&unit).bind(&factor).bind(tenant_id)
+                .execute(&mut **tx).await.map_err(db_error)?;
+            events.push(WriteEvent {
+                operation: "INSERT",
+                table: "hi_bd_med_unit",
+                target_id: id.clone(),
+                message: if index == 0 {
+                    "新增药品最小单位"
+                } else {
+                    "新增药品包装单位"
+                }
+                .into(),
+                before: Value::Null,
+                after: json!({"idMed":id_med,"naUnit":unit,"unitFactor":factor}),
+            });
+            id
+        };
+        primary_id = id;
     }
-    let id = new_object_id();
-    query::<MySql>("INSERT INTO hi_bd_med_unit(id_med_unit,id_med,na_unit,unit_factor,id_tet) VALUES (?,?,?,?,?)")
-        .bind(&id).bind(id_med).bind(&unit).bind(&factor).bind(tenant_id)
-        .execute(&mut **tx).await.map_err(db_error)?;
-    events.push(WriteEvent {
-        operation: "INSERT",
-        table: "hi_bd_med_unit",
-        target_id: id.clone(),
-        message: "新增药品包装单位".into(),
-        before: Value::Null,
-        after: json!({"idMed":id_med,"naUnit":unit,"unitFactor":factor}),
-    });
-    Ok(id)
+    Ok(primary_id)
 }
 
 async fn ensure_factory(
@@ -1994,6 +2005,24 @@ pub(crate) fn integer(data: &Map<String, Value>, key: &str) -> Result<i64, Strin
         .parse::<i64>()
         .map_err(|_| format!("{}必须是整数", key))
 }
+pub(crate) fn medicine_unit_specs(data: &Map<String, Value>) -> Result<Vec<(String, i64)>, String> {
+    let minimum_unit = text(data, "unitPre");
+    if minimum_unit.is_empty() {
+        return Err("unitPre不能为空".into());
+    }
+    let sale_unit = defaulted(data, "unitSale", &minimum_unit);
+    let sale_factor = if text(data, "unitSaleFactor").is_empty() {
+        1
+    } else {
+        integer(data, "unitSaleFactor")?
+    };
+    let mut specs = vec![(minimum_unit, 1)];
+    let sale_spec = (sale_unit, sale_factor);
+    if specs[0] != sale_spec {
+        specs.push(sale_spec);
+    }
+    Ok(specs)
+}
 pub(crate) fn decimal(data: &Map<String, Value>, key: &str) -> Result<Decimal, String> {
     text(data, key)
         .parse::<Decimal>()
@@ -2071,8 +2100,8 @@ pub(crate) fn limit(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        alias_search_fields, has_successful_trial, inserted_targets, target_identity,
-        updated_targets, ActiveBatchGuard,
+        alias_search_fields, has_successful_trial, inserted_targets, medicine_unit_specs,
+        target_identity, updated_targets, ActiveBatchGuard,
     };
     use crate::model::{
         BatchDetail, ConnectionProfile, MigrationAudit, MigrationBatch, MigrationRow,
@@ -2102,16 +2131,20 @@ mod tests {
         let audits = vec![
             audit("INSERT", "hi_bd_med", "med"),
             audit("INSERT", "hi_bd_med_alias", "alias"),
+            audit("INSERT", "hi_bd_med_unit", "minimum-unit"),
+            audit("INSERT", "hi_bd_med_unit", "sale-unit"),
             audit("INSERT", "hi_bd_med_pro", "product"),
             audit("REUSE", "hi_bd_fac", "reused-factory"),
             audit("INSERT", "unrelated_table", "unsafe"),
             audit("INSERT", "hi_bd_med_pro", "product"),
         ];
         let targets = inserted_targets(&audits);
-        assert_eq!(targets.len(), 3);
+        assert_eq!(targets.len(), 5);
         assert_eq!(targets[0].table, "hi_bd_med_pro");
         assert_eq!(targets[1].table, "hi_bd_med_alias");
-        assert_eq!(targets[2].table, "hi_bd_med");
+        assert_eq!(targets[2].target_id, "minimum-unit");
+        assert_eq!(targets[3].target_id, "sale-unit");
+        assert_eq!(targets[4].table, "hi_bd_med");
         assert!(targets.iter().all(|target| target.target_id != "unsafe"));
         assert!(targets
             .iter()
@@ -2153,6 +2186,35 @@ mod tests {
         assert_eq!(py, "amxljn");
         assert_eq!(wb, "bsoexa");
         assert_eq!(instr, "阿莫西林胶囊,amxljn,bsoexa");
+    }
+
+    #[test]
+    fn medicine_units_always_start_with_the_phis_minimum_unit() {
+        let packaged = serde_json::json!({
+            "unitPre":"支",
+            "unitSale":"盒",
+            "unitSaleFactor":"10"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            medicine_unit_specs(&packaged).unwrap(),
+            vec![("支".into(), 1), ("盒".into(), 10)]
+        );
+
+        let minimum_only = serde_json::json!({
+            "unitPre":"支",
+            "unitSale":"支",
+            "unitSaleFactor":"1"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            medicine_unit_specs(&minimum_only).unwrap(),
+            vec![("支".into(), 1)]
+        );
     }
 
     #[test]

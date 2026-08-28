@@ -12,9 +12,9 @@ use crate::odbc::{
 use crate::overwrite::{medicine_patch, product_patch, restore_patch, ColumnPatch};
 use crate::target::{
     alias_event_message, alias_search_fields, audit_overwrite_preview, audit_undo_failure,
-    audit_undo_start, build_field_diffs, finish_undo, summarize_overwrite_preview, target_identity,
-    validate_overwrite_execution_preview, validate_undo_request, RestoreTarget, TrialWriteSummary,
-    UndoEvent, UndoTarget,
+    audit_undo_start, build_field_diffs, finish_undo, medicine_unit_specs,
+    summarize_overwrite_preview, target_identity, validate_overwrite_execution_preview,
+    validate_undo_request, RestoreTarget, TrialWriteSummary, UndoEvent, UndoTarget,
 };
 use crate::target_contract::validate_execution_context;
 use chrono::Utc;
@@ -1129,45 +1129,56 @@ fn ensure_unit(
     tenant_id: &str,
     events: &mut Vec<WriteEvent>,
 ) -> Result<String, String> {
-    let unit = defaulted(data, "unitSale", &text(data, "unitPre"));
-    let factor = if text(data, "unitSaleFactor").is_empty() {
-        "1".to_string()
-    } else {
-        integer(data, "unitSaleFactor")?
-    };
-    let exists = query_optional_string(
-        connection,
-        "SELECT id_med_unit FROM hi_bd_med_unit WHERE id_tet=? AND id_med=? AND na_unit=? AND unit_factor=?",
-        vec![tenant_id.into(), id_med.into(), unit.clone(), factor.clone()],
-    )?;
-    if let Some(id) = exists {
-        events.push(WriteEvent {
-            operation: "REUSE",
-            table: "hi_bd_med_unit",
-            target_id: id.clone(),
-            message: "复用已存在的药品包装单位".into(),
-            before: json!({"idMedUnit":id,"idMed":id_med,"naUnit":unit,"unitFactor":factor}),
-            after: json!({"idMedUnit":id}),
-        });
-        return Ok(id);
+    let mut primary_id = String::new();
+    for (index, (unit, factor)) in medicine_unit_specs(data)?.into_iter().enumerate() {
+        let factor = factor.to_string();
+        let exists = query_optional_string(
+            connection,
+            "SELECT id_med_unit FROM hi_bd_med_unit WHERE id_tet=? AND id_med=? AND na_unit=? AND unit_factor=?",
+            vec![tenant_id.into(), id_med.into(), unit.clone(), factor.clone()],
+        )?;
+        let id = if let Some(id) = exists {
+            events.push(WriteEvent {
+                operation: "REUSE",
+                table: "hi_bd_med_unit",
+                target_id: id.clone(),
+                message: if index == 0 {
+                    "复用已存在的药品最小单位"
+                } else {
+                    "复用已存在的药品包装单位"
+                }
+                .into(),
+                before: json!({"idMedUnit":id,"idMed":id_med,"naUnit":unit,"unitFactor":factor}),
+                after: json!({"idMedUnit":id}),
+            });
+            id
+        } else {
+            let id = new_object_id();
+            let stage = if index == 0 {
+                "新增药品最小单位"
+            } else {
+                "新增药品包装单位"
+            };
+            execute_target_strings(
+                connection,
+                "hi_bd_med_unit",
+                stage,
+                "INSERT INTO hi_bd_med_unit(id_med_unit,id_med,na_unit,unit_factor,id_tet) VALUES (?,?,?,?,?)",
+                vec![id.clone(), id_med.into(), unit.clone(), factor.clone(), tenant_id.into()],
+            )?;
+            events.push(WriteEvent {
+                operation: "INSERT",
+                table: "hi_bd_med_unit",
+                target_id: id.clone(),
+                message: stage.into(),
+                before: Value::Null,
+                after: json!({"idMed":id_med,"naUnit":unit,"unitFactor":factor}),
+            });
+            id
+        };
+        primary_id = id;
     }
-    let id = new_object_id();
-    execute_target_strings(
-        connection,
-        "hi_bd_med_unit",
-        "新增药品包装单位",
-        "INSERT INTO hi_bd_med_unit(id_med_unit,id_med,na_unit,unit_factor,id_tet) VALUES (?,?,?,?,?)",
-        vec![id.clone(), id_med.into(), unit.clone(), factor.clone(), tenant_id.into()],
-    )?;
-    events.push(WriteEvent {
-        operation: "INSERT",
-        table: "hi_bd_med_unit",
-        target_id: id.clone(),
-        message: "新增药品包装单位".into(),
-        before: Value::Null,
-        after: json!({"idMed":id_med,"naUnit":unit,"unitFactor":factor}),
-    });
-    Ok(id)
+    Ok(primary_id)
 }
 
 fn ensure_factory(
